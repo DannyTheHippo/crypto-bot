@@ -322,6 +322,74 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   > v10 had a −70.5 bps tailwind). **Restate the expected-positive against the live-vs-live v8 cell the
   > tool already computes** (`REPLAY_REFERENCE.incumbent` is loaded and never rendered) before any
   > future pass tries to adjudicate this again.
+  >
+  > **AMENDMENT 2026-08-04 — THE CLAUSE, RESTATED. Nothing above is re-adjudicated; the FIRED-POWERED
+  > reading stands as written.** This appends the replacement clause the block itself demanded, in two
+  > tiers, and is honest that **only the second tier can ever be adjudicated**. Live cells re-read
+  > `pnpm loop:forward-return` 2026-08-04 against the same Postgres instance; v10's four cells are
+  > unchanged from the Pass-59 sweep, which is itself the check that this restatement is not resting on
+  > a moved number.
+  >
+  > **The live v8 cell, printed for the first time.** `REPLAY_REFERENCE.incumbent` is a *replay* row and
+  > is not what this restatement uses — the live v8 panel the tool already renders is:
+  >
+  > | version | population | n | clusters | h=1 | h=4 | h=8 | h=24 | power |
+  > | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  > | 8 (`champion_v8`) | `all` = `flat_only` | 8 | 5 | −2.1 | −97.3 | −69.0 | +20.2 | **UNDERPOWERED (n=8<12), no interval** |
+  > | 10 (`inverted`) | `all` = `flat_only` | 21 | 8 | −26.4 | −45.3 | −52.8 | −11.0 | **POWERED** |
+  > | delta (v10 − v8) | — | — | — | −24.3 | **+52.0** | **+16.2** | −31.2 | inherits v8's UNDERPOWERED label |
+  >
+  > v10's intervals: h=1 [−82.4, +10.2], h=4 [−122.0, −0.3], h=8 [−134.9, −1.5], h=24 [−90.5, +50.5].
+  > v8 has none and never will (below).
+  >
+  > **TIER 1 — DIRECTIONAL ONLY, AND CAPPED UNDERPOWERED FOREVER.** Restated clause: *live-realised
+  > entry forward return under v10 lands above the same metric under v8, measured on the same
+  > instrument, the same price source and the same close convention.* On today's read v10 is better at
+  > h=4 (+52.0) and h=8 (+16.2) and worse at h=1 (−24.3) and h=24 (−31.2). **None of that is evidence
+  > and none of it ever will be.** v10 is the deployed champion, so `selectCandidate` routes no new
+  > entries to v8: its **n=8 is terminal, not merely current**, and no amount of waiting moves it past
+  > `MIN_ENTRIES=12`. A clause whose comparator can never reach the power bar is a clause that can
+  > never be adjudicated — recording that plainly is the point of this tier, not a defect in it. The
+  > two cells also sit in **disjoint windows** (v8's 8 entries precede the 2026-07-30T16:57Z boot,
+  > v10's 21 follow it), which the recorded −240.3 vs −70.5 bps basket figures already price.
+  >
+  > **What `research/studies/passive-benchmark-truth-2026-08-04.md` does and does not move here.** It does
+  > **not** move −240.3 / −70.5: those are entry-window drift terms over the 40 live series, a
+  > different object from that study's buy-and-hold basket over the promotion evidence window. It
+  > **does** establish, on both windows it measured, that a **40-symbol-string** equal-weight basket
+  > reads more negative than a **28-base-asset** one (by 0.42 pp and 0.29 pp), because the twelve
+  > dual-listed majors fell while the spot-only alt tail rose. The market-neutral adjustment in the
+  > block above is symbol-weighted over 40 series, while this loop's own `MIN_CLUSTERS` doctrine makes
+  > the base asset the unit. **Direction of that unit error, argued not measured:** market-neutral bps
+  > is `signed − dir × drift`, so for a 76%-short arm a more-negative drift reads *worse*. Re-cutting
+  > the drift on bases could therefore only **soften** "v10 is worse at all four", never strengthen it.
+  > **NOT MEASURED on the entry-window drift** — recorded as an open unit question, and the reason the
+  > market-neutral cell below is quoted as recorded rather than re-derived.
+  >
+  > **TIER 2 — THE ADJUDICABLE PRIMARY, and it is already powered.** Three readings, in the order a
+  > future pass should take them:
+  >
+  > 1. **Market-neutral v10 versus zero** — h=4 **−48.6** CI [−123.8, −1.7], h=8 **−65.0** CI
+  >    [−148.5, −10.1], n=21/k=8, **POWERED, excludes zero**. Carried verbatim from the FIRED-POWERED
+  >    record above, *not* re-derived — that block forbids re-derivation and this amendment obeys it.
+  > 2. **Raw live v10 versus zero** — re-read 2026-08-04 and unchanged: h=4 **−45.3** CI [−122.0, −0.3]
+  >    and h=8 **−52.8** CI [−134.9, −1.5] are POWERED and both exclude zero; **h=1 and h=24 do not**
+  >    (their intervals straddle zero) and may not be quoted as adverse. This comparator has no
+  >    live-vs-replay axis, no v8 axis and no window axis — it is v10 against nothing, which is the only
+  >    comparison in this whole block that is free of a confound.
+  > 3. **The filled-vs-unfilled split on the same 21 rows** (16 filled / 5 not, 76.2%) — FILLED h=4
+  >    **−68.1**, NOFILL **+27.5**, a +95.6 bps gap in the adverse-selection direction. **NOFILL is
+  >    n=5/k=3: `RECORDED, NOT EVIDENCE`, and its point estimate is not quotable.** It re-reads when
+  >    NOFILL reaches n≥12, projected **~2026-08-09**. This is the real adverse-selection instrument;
+  >    the sentence in the original expected-positive is FALSE for the headline metric and stays so.
+  >
+  > **Named defect outcomes for the restated clause, symmetric as before:** tier-2 reading 2 losing
+  > power at h=4 or h=8 on a later read (entries can be revised out by a grid gap, so a shrinking n is
+  > a finding about the grid, not about v10); tier-2 reading 3 arriving at n≥12 with the gap **closed**,
+  > which would refute adverse selection rather than confirm it and must be reported that way; or tier-2
+  > readings 1 and 2 disagreeing in sign, which would make the drift term — not the entries — the
+  > finding. **Deadline: the pass after NOFILL reaches n≥12 (~2026-08-09) resolves tier 2 explicitly.**
+  > Tier 1 carries **no deadline** by construction and must never be given one.
 
 ### WATCH-V4-10 — an orphaned perp algo stop resting against a flat book (2026-07-30, Pass 49)
 

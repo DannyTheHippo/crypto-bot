@@ -5,18 +5,23 @@
 // that name everything the data could not price. The runner (loop-llm-attrib.mjs) only gathers rows
 // and renders what this returns.
 //
-// STATUS 2026-08-03 — INCOMPLETE, UNVERIFIED, UNWIRED. This core landed but its three companions did
-// NOT: there is no loop-llm-attrib.mjs runner, no offline spec, and no `loop:llm-attrib` entry in
-// package.json. Nothing imports it, so it cannot affect the gate or the runtime — but no number it
-// produces has ever been checked against the book, and the cross-check against the evaluate() tuple's
-// llmCostUsd that would validate it has not been run. Do not cite its output until the spec exists.
+// STATUS 2026-08-04 — WIRED and VERIFIED against the live book. `pnpm loop:llm-attrib` runs the
+// runner; test/features/strategy/loop-sweep/llm-attrib.spec.ts pins this core offline (no database).
+// The cross-check that validates it RAN and PASSED, on both of its branches: at 2026-08-03T22:12:28Z
+// the recomputed book cost $28.7683109 equalled the gate's own published
+// `agentic_promotion_llm_cost_usd` outright (EXACT, delta $0), and against the gauge's earlier
+// $28.7007443 sample it matched EXACTLY once the one priced row written after 2026-08-03T22:00:31Z
+// was peeled off (EXACT_AT_CUT). Both folds price the same raw token columns at the same rates in
+// the same order, so those equalities are identity tests, not tolerances. Full record:
+// research/studies/llm-cost-attribution-2026-08-04.md.
 //
 // WHY THIS EXISTS. The book's objective is `net-of-cost PnL = realizedPnl − fees − llmCostUsd`, but
 // NO per-trip statistic anywhere contains the LLM term. promotion-readiness.service.ts:136-139 fixes
 // `winRate` on `realizedPnl − feesQuote` and carries llmCostUsd at BOOK level only — a deliberate,
 // documented choice, but the consequence is that the largest per-trip cost term is invisible by
-// construction. The measured fee floor is ~9 bps/trip and the whole program optimises against it;
-// this instrument's job is to put the LLM term on the same page, in the same units, permanently.
+// construction. The measured fee floor is 9.29 bps/trip (fee-floor-derivation-2026-07-31.md:117) and
+// the whole program optimises against it; this instrument's job is to put the LLM term on the same
+// page, in the same units, permanently.
 //
 // FAILURE DIRECTION — this is a MEASUREMENT, so it fails toward OVERSTATEMENT, LOUDLY, and NEVER
 // toward a flattering silence. A zero printed by this module always means a MEASURED zero; absent
@@ -24,7 +29,7 @@
 //   * an unknown / unpriced model is charged the MOST EXPENSIVE configured rate per component
 //     (`resolveRates` below mirrors promotion-readiness.service.ts's `ratesFor` fold) — a model the
 //     operator never priced can only ever OVER-count;
-//   * rows that attempted a client call and carry NULL tokens are reported as a named
+//   * rows the caller marks `billable` that carry NULL tokens are reported as a named
 //     `unpriceable_rows` count, never folded in as zero;
 //   * a transport failure, an unreadable rate table, or an unreadable model fold voids the WHOLE
 //     reading as `MEASUREMENT-VOID` — it is never rendered as `$0.00`;
@@ -32,16 +37,27 @@
 //     a book number divided by a guessed denominator is the exact defect this instrument exists to
 //     stop, so the denominator is never guessed.
 // It emits no alarms and carries no gate: a broken measurement must never block the thing it
-// measures.
+// measures. THE ONE AXIS THAT UNDER-STATES is the bps denominator, and it is named where it is used
+// (see `notionalBasis` on computeLlmAttribution) rather than left for a reader to discover.
+//
+// TRIP BOUNDARIES — NOT derived here, by decision. `walkRoundTrips`
+// (src/domain/trading/risk/round-trips.ts) is the single source of the closed-round-trip count the
+// promotion gate returns; a second walk in this file would become a second truth, and the whole
+// point of the cross-check below is that this instrument and the gate divide the same book by the
+// same denominator. `trips` is therefore an EXPLICIT INPUT the caller supplies together with
+// `tripsSource` naming where it came from, and the runner sources it from the gate's own
+// `agentic_promotion_round_trips` gauge — which is walkRoundTrips' published output, read rather
+// than re-derived. A caller that cannot state a source gets per-trip figures voided by name.
 //
 // MONEY EXACTNESS (root CLAUDE.md hard rule 1). Token counts are exact integers and arrive already
 // summed by the database (bigint SUM, exact). Every USD product is decimal.js — already a scripts
 // dependency (scripts/loop-sweep-core.mjs:32, scripts/loop-authoring.mjs:32) — never a native float,
 // and never `parseFloat`/`Number()`. The per-component fold below is `Decimal(tokens).div(1e6)
 // .mul(rate)`, ORDER-IDENTICAL to promotion-readiness.service.ts:167-171, which is what makes the
-// cross-check in `crossCheck` a real equality test rather than a rounding-tolerance test. The only
-// native-float numbers this module touches are COUNTS (rows, trips, fan-out) and the bps RATIO,
-// which is a dimensionless presentation figure derived from Decimals and rendered to one decimal.
+// cross-check in `crossCheck` a real equality test rather than a rounding-tolerance test. Two native
+// -float uses are deliberate and are the only ones: COUNTS (rows, trips, fan-out) and the bps RATIO,
+// a dimensionless presentation figure rendered to one decimal; plus the ONE `Decimal.toNumber()`
+// pair in `matchesGauge` below, which exists because the gauge is itself a float64 image.
 
 import Decimal from 'decimal.js';
 
@@ -53,16 +69,21 @@ export const MTOK = new Decimal(1_000_000);
  *
  * `hold` is excluded deliberately and it is the whole argument of the marginal number below: a hold
  * consult fires because the bar closed, not because a trip existed. `error` is excluded because an
- * errored consult produced no action at all (and is separately disclosed as unpriceable when the
- * client was actually called).
+ * errored consult produced no action at all.
+ *
+ * Exported so the runner's SQL builds its `action in (…)` list from THIS array rather than a second
+ * hand-typed copy — a silently divergent trade-action set would move the marginal bracket with no
+ * visible edit to either file.
  */
 export const TRADE_ACTIONS = ['open_long', 'open_short', 'close', 'adjust'];
 
-/** USD rendered at full precision — `toFixed()` with no argument on a Decimal is exact, never rounded. */
+/** USD at decimal.js default precision (20 significant digits). Exact for every SUM and PRODUCT this
+ *  module forms; a QUOTIENT (cost/trips) may be non-terminating, so the renderer says "full
+ *  precision", never "exact", wherever it prints a quotient. */
 export const usd = (d) => (d === null || d === undefined ? 'n/a' : `$${d.toFixed()}`);
 
-/** USD rendered to cents, for figures a human compares at a glance. The exact value is always
- *  available alongside; this is presentation only and is labelled as such wherever it is printed. */
+/** USD rendered to cents, for figures a human compares at a glance. The full-precision value is
+ *  always available alongside; this is presentation only and is labelled as such where it is printed. */
 export const usd2 = (d) => (d === null || d === undefined ? 'n/a' : `$${d.toFixed(2)}`);
 
 /**
@@ -73,8 +94,8 @@ export const usd2 = (d) => (d === null || d === undefined ? 'n/a' : `$${d.toFixe
  */
 export function bps(costUsd, notionalUsd) {
   if (costUsd === null || notionalUsd === null || notionalUsd === undefined) return null;
-  const n = new Decimal(notionalUsd);
-  if (!n.gt(0)) return null;
+  const n = dec(notionalUsd);
+  if (n === null || !n.gt(0)) return null;
   return Number(costUsd.div(n).mul(10_000).toFixed(4));
 }
 
@@ -83,6 +104,24 @@ export const fmtBps = (v) =>
 
 function annotation(kind, detail) {
   return { kind, detail };
+}
+
+/**
+ * `new Decimal(x)` that returns null instead of THROWING on unparseable input.
+ *
+ * decimal.js raises `[DecimalError] Invalid argument` rather than yielding a NaN Decimal, so an
+ * `isFinite()` check placed after the construction never runs — the module's "never throws" contract
+ * dies at the constructor. That is not hypothetical for a rate table: these values arrive as strings
+ * off the process env, where a stray character in AGENTIC_TOKEN_PRICES_JSON is one typo away, and a
+ * throw would abort the whole reading instead of voiding it BY NAME the way every other failure path
+ * here does. Caught 2026-08-04 by this module's own spec.
+ */
+function dec(v) {
+  try {
+    return new Decimal(v);
+  } catch {
+    return null;
+  }
 }
 
 // ── rates ────────────────────────────────────────────────────────────────────────────────────────
@@ -98,7 +137,16 @@ function annotation(kind, detail) {
  * Clause 3 is the fail-toward-overstatement rule, and it is why `resolution` is returned alongside
  * the rates rather than kept private: a cost line priced at `max_of_configured` is an UPPER BOUND on
  * a model nobody priced, and a report that printed it without saying so would be asserting a
- * measurement it does not have.
+ * measurement it does not have. Clause 3 is NOT hypothetical here — `claude-opus-4-8` carries live
+ * reflection tokens in `llm_usage` and has no entry in AGENTIC_TOKEN_PRICES_JSON, so the gate itself
+ * is charging it at max_of_configured today (verified: the recompute matched the gauge EXACTLY only
+ * under that rule).
+ *
+ * One deliberate DIVERGENCE from the service, in the safe direction: a mapped entry whose rates do
+ * not parse to finite Decimals falls through to clause 3 here, where the service would carry the
+ * NaN. Config validation (environment.config.ts's tokenPriceEntrySchema requires all four rates as
+ * decimal strings) makes this unreachable through the app's own config path; a hand-built rate table
+ * passed to this core is the case it covers, and over-charging beats propagating NaN.
  *
  * Returns null when NO rate set is available at all. That is not "free" — it is unpriceable, and the
  * caller voids on it.
@@ -109,14 +157,14 @@ export function resolveRates(model, rateTable) {
   const toSet = (e, resolution) => {
     if (!e) return null;
     const out = {
-      input: new Decimal(e.inputPerMtok),
-      output: new Decimal(e.outputPerMtok),
-      cacheRead: new Decimal(e.cacheReadPerMtok ?? '0'),
-      cacheWrite: new Decimal(e.cacheWritePerMtok ?? '0'),
+      input: dec(e.inputPerMtok),
+      output: dec(e.outputPerMtok),
+      cacheRead: dec(e.cacheReadPerMtok ?? '0'),
+      cacheWrite: dec(e.cacheWritePerMtok ?? '0'),
       resolution,
     };
     for (const k of ['input', 'output', 'cacheRead', 'cacheWrite']) {
-      if (!out[k].isFinite()) return null;
+      if (out[k] === null || !out[k].isFinite()) return null;
     }
     return out;
   };
@@ -141,6 +189,11 @@ export function resolveRates(model, rateTable) {
  * Σ (tokens × rate) / 1M per component. Fold order is byte-identical to
  * promotion-readiness.service.ts:167-171 — see the module header's MONEY EXACTNESS note for why that
  * identity is load-bearing rather than stylistic.
+ *
+ * The gate folds BOTH source tables into ONE per-model bucket before pricing; this core prices each
+ * (model, source) bucket separately and sums. Those agree exactly, because the fold is linear in the
+ * token counts and every step is exact Decimal arithmetic — which is what lets the report show the
+ * `llm_usage` half separately (it has no live writer) without breaking the equality test.
  */
 export function costOf(totals, rates) {
   return new Decimal(totals.inputTokens ?? 0)
@@ -149,6 +202,20 @@ export function costOf(totals, rates) {
     .plus(new Decimal(totals.outputTokens ?? 0).div(MTOK).mul(rates.output))
     .plus(new Decimal(totals.cacheReadTokens ?? 0).div(MTOK).mul(rates.cacheRead))
     .plus(new Decimal(totals.cacheCreationTokens ?? 0).div(MTOK).mul(rates.cacheWrite));
+}
+
+/**
+ * Equality AT THE GAUGE'S OWN RESOLUTION.
+ *
+ * `agentic_promotion_llm_cost_usd` is the float64 IMAGE of the gate's Decimal —
+ * promotion-metrics.service.ts:141 calls `.toNumber()` before prom-client renders it — so the
+ * strongest equality test that exists compares float64 to float64. The lossy step belongs to the
+ * GATE's publication path, not to this instrument, and pretending otherwise (a Decimal-exact test
+ * against a float64 rendering) would report DISAGREE on a book that agrees. The full-precision
+ * Decimal delta is reported alongside regardless, so nothing is hidden by this choice.
+ */
+export function matchesGauge(candidate, gauge) {
+  return candidate.toNumber() === gauge.toNumber();
 }
 
 // ── the measurement ──────────────────────────────────────────────────────────────────────────────
@@ -162,16 +229,32 @@ const VOID = (annotations) => ({ status: 'MEASUREMENT-VOID', annotations });
  *                     show that the historical `llm_usage` half has no live writer.
  * @param rateTable    { defaults, models } or null when config could not be read.
  * @param trips        closed round-trip COUNT for the window, or null. NEVER derived here — see the
- *                     TRIP BOUNDARIES note on `tripsSource` below.
+ *                     module header's TRIP BOUNDARIES note.
  * @param tripsSource  free text naming where `trips` came from. Required whenever trips is non-null:
  *                     a denominator whose provenance is unstated is a denominator nobody can check.
  * @param gaugeLlmCostUsd  the live `agentic_promotion_llm_cost_usd` gauge as a string, or null. This
  *                     is PromotionReadinessService.evaluate()'s own llmCostUsd, published from ONE
  *                     evaluate() call, and the cross-check against it is what validates both sides.
+ * @param gaugeReadAtIso  when the gauge sample was read, or null. A gauge quoted without its instant
+ *                     cannot be compared against a book that keeps growing.
+ * @param costCurveTail  the most recent priced rows in the window, ASCENDING by created_at, each
+ *                     { createdAtIso, model, inputTokens, outputTokens, cacheReadTokens,
+ *                     cacheCreationTokens }, or null. Defeats scrape lag: the gauge is a 5-minute
+ *                     sample (promotion-metrics.service.ts:79) of a book that keeps growing, so a raw
+ *                     delta against the CURRENT book is expected to be non-zero and proves nothing.
+ *                     Peeling this tail back one row at a time finds the row cut at which the two
+ *                     folds are IDENTICAL, which is the equality test the raw delta cannot be.
  * @param consultRows  [{ consultId, fanout, tradeActionRows, model, inputTokens, outputTokens,
  *                        cacheReadTokens, cacheCreationTokens }] or null.
- * @param unpriceable  [{ klass, rows, detail }] or null when the probe failed.
- * @param oneWayNotionalUsd  mean one-way fill notional in quote USD, as a string, or null.
+ * @param unpriceable  [{ klass, rows, detail, billable }] or null when the probe failed. The caller
+ *                     owns the billable/not-billable call because only the caller can see the row
+ *                     STRUCTURE that decides it — see the runner's UNPRICEABLE_SQL for the live
+ *                     classification and why the biggest NULL-token class is not billable.
+ * @param oneWayNotionalUsd  mean ONE-LEG fill notional in quote USD, as a string, or null.
+ * @param notionalBasis  free text naming how `oneWayNotionalUsd` was constructed AND its direction of
+ *                     bias. Required whenever the notional is non-null: every bps figure below is a
+ *                     ratio, and a ratio whose denominator's construction is unstated is not a
+ *                     measurement. This is the ONE axis on which the instrument can UNDER-state.
  * @param window       { epochMs, epochIso, firstIso, lastIso, readAtIso } — the as-of block. Every
  *                     money figure this module renders is printed with its denominator AND this
  *                     as-of, because a cost figure without both is not falsifiable.
@@ -183,9 +266,12 @@ export function computeLlmAttribution({
   trips,
   tripsSource,
   gaugeLlmCostUsd,
+  gaugeReadAtIso,
+  costCurveTail,
   consultRows,
   unpriceable,
   oneWayNotionalUsd,
+  notionalBasis,
   window,
 } = {}) {
   const annotations = [];
@@ -216,7 +302,6 @@ export function computeLlmAttribution({
   // ── book cost, recomputed from raw token columns ───────────────────────────────────────────────
   const byModel = [];
   let bookCost = new Decimal(0);
-  let anyUnpricedModel = false;
   for (const m of modelTotals) {
     const rates = resolveRates(m.model, rateTable);
     if (rates === null) {
@@ -231,7 +316,6 @@ export function computeLlmAttribution({
       return VOID(annotations);
     }
     const cost = costOf(m, rates);
-    if (rates.resolution === 'max_of_configured') anyUnpricedModel = true;
     byModel.push({ ...m, rates, cost, resolution: rates.resolution });
     bookCost = bookCost.plus(cost);
   }
@@ -241,14 +325,23 @@ export function computeLlmAttribution({
     (m) => m.resolution === 'max_of_configured' && m.cost.gt(0),
   );
   if (maxPricedWithTokens.length > 0) {
+    const share = bookCost.gt(0)
+      ? maxPricedWithTokens
+          .reduce((s, m) => s.plus(m.cost), new Decimal(0))
+          .div(bookCost)
+          .mul(100)
+          .toFixed(1)
+      : '0.0';
     annotations.push(
       annotation(
         'llm_attrib_unpriced_model_charged_max',
         `${maxPricedWithTokens.length} model(s) carry tokens but have NO configured rate entry and ` +
           'were charged the MOST EXPENSIVE configured rate per component (the fail-toward-' +
           `overstatement rule): ${maxPricedWithTokens.map((m) => `${m.model} → ${usd(m.cost)}`).join(', ')}. ` +
-          'These figures are UPPER BOUNDS, not measurements — price the model in ' +
-          'AGENTIC_TOKEN_PRICES_JSON to turn them into measurements',
+          `That is ${share}% of the book cost carried as an UPPER BOUND rather than a measurement — ` +
+          'price the model in AGENTIC_TOKEN_PRICES_JSON to convert it. Note this is not this ' +
+          "instrument's convention alone: the promotion gate prices those same tokens the same way, " +
+          'so the gate is running on the same upper bound',
       ),
     );
   }
@@ -266,7 +359,7 @@ export function computeLlmAttribution({
       ),
     );
   }
-  if (anyUnpricedModel === false && byModel.length === 0) {
+  if (byModel.length === 0) {
     annotations.push(
       annotation(
         'llm_attrib_no_token_rows',
@@ -277,41 +370,14 @@ export function computeLlmAttribution({
   }
 
   // ── cross-check against the gate's own published cost ──────────────────────────────────────────
-  let crossCheck;
-  if (gaugeLlmCostUsd === null || gaugeLlmCostUsd === undefined || gaugeLlmCostUsd === '') {
-    crossCheck = { gauge: null, recomputed: bookCost, delta: null, verdict: 'UNAVAILABLE' };
-    annotations.push(
-      annotation(
-        'llm_attrib_crosscheck_unavailable',
-        'the `agentic_promotion_llm_cost_usd` gauge could not be read, so the recomputed book cost ' +
-          'below is UNVALIDATED. Absence of a disagreement here is not agreement — the comparison ' +
-          'did not run',
-      ),
-    );
-  } else {
-    const gauge = new Decimal(gaugeLlmCostUsd);
-    const delta = bookCost.minus(gauge);
-    crossCheck = {
-      gauge,
-      recomputed: bookCost,
-      delta,
-      verdict: delta.isZero() ? 'EXACT' : 'DISAGREE',
-    };
-    if (!delta.isZero()) {
-      annotations.push(
-        annotation(
-          'llm_attrib_crosscheck_disagrees',
-          `recomputed book LLM cost ${usd(bookCost)} vs the gate's published ` +
-            `agentic_promotion_llm_cost_usd ${usd(gauge)} — delta ${usd(delta)}. Both sides fold ` +
-            'the SAME raw token columns at the SAME rates in the SAME order, so a non-zero delta is ' +
-            'a FINDING about the row window or the rate fold, not a rounding artifact. The benign ' +
-            'explanation is scrape lag: the gauge is a snapshot and agent_decisions keeps growing, ' +
-            'so a delta of the size of a few consults with the recompute HIGHER is the expected ' +
-            'shape. A delta with the recompute LOWER, or a large one, is not',
-        ),
-      );
-    }
-  }
+  const crossCheck = crossCheckGauge(
+    bookCost,
+    gaugeLlmCostUsd,
+    gaugeReadAtIso,
+    costCurveTail,
+    rateTable,
+    annotations,
+  );
 
   // ── per-trip attributions ──────────────────────────────────────────────────────────────────────
   const tripCount = Number.isInteger(trips) && trips > 0 ? trips : null;
@@ -326,21 +392,56 @@ export function computeLlmAttribution({
           'still a real reading — only the denominator is missing',
       ),
     );
+  } else if (tripsSource === null || tripsSource === undefined || tripsSource === '') {
+    annotations.push(
+      annotation(
+        'llm_attrib_trips_source_unstated',
+        `the caller supplied trips=${tripCount} with NO source — the per-trip figures below are ` +
+          'computed but their denominator cannot be checked by anyone reading this report',
+      ),
+    );
   }
 
   const amortizedUsd = tripCount === null ? null : bookCost.div(tripCount);
 
-  // Consult-chain marginal. Structure verified against the live table 2026-08-03: `consult_id`
-  // identifies ONE Anthropic call whose result fans out to N per-symbol decision rows (rows-per-
-  // consult equals distinct-symbols-per-consult exactly, 1..8), and exactly one row per consult
-  // carries the token columns. So a consult's cost is indivisible at the call level and SHARED at
-  // the symbol level, which is why the marginal is reported as a BRACKET rather than a point:
+  // The notional denominator is the one place this instrument can UNDER-state (a bps figure is a
+  // ratio; an inflated denominator shrinks it), so an unnamed basis is disclosed rather than assumed.
+  if (
+    oneWayNotionalUsd !== null &&
+    oneWayNotionalUsd !== undefined &&
+    (notionalBasis === null || notionalBasis === undefined || notionalBasis === '')
+  ) {
+    annotations.push(
+      annotation(
+        'llm_attrib_notional_basis_unstated',
+        'a one-way notional was supplied with NO statement of how it was constructed — every bps ' +
+          'figure below is therefore uncheckable. bps is the ONE axis on which this instrument can ' +
+          'under-state (an over-large denominator shrinks the ratio), which is exactly why the basis ' +
+          'is required rather than optional',
+      ),
+    );
+  }
+  if (oneWayNotionalUsd === null || oneWayNotionalUsd === undefined) {
+    annotations.push(
+      annotation(
+        'llm_attrib_notional_unknown',
+        'the mean one-way fill notional could not be read, so no bps figure is printed. The USD ' +
+          'per-trip figures are unaffected — only the comparison against the bps fee floor is missing',
+      ),
+    );
+  }
+
+  // Consult-chain marginal. Structure VERIFIED against the live table 2026-08-04, not assumed:
+  // `consult_id` identifies ONE Anthropic call whose result fans out to N per-symbol decision rows
+  // (rows-per-consult equals distinct-(symbol,venue)-per-consult EXACTLY, 1..8, over all 667
+  // post-epoch consults), and EXACTLY ONE row per consult carries the token columns (every consult,
+  // no exceptions). So a consult's cost is indivisible at the call level and SHARED at the symbol
+  // level, which is why the marginal is reported as a BRACKET rather than a point:
   //   upper  — every consult that emitted at least one trade action, charged in FULL. Over-counts,
   //            because the same call also decided symbols that did not trade.
   //   proRata— that same consult cost times (its trade-action rows / its fan-out). The trip's
   //            per-symbol slice.
-  // Both are true; neither is the counterfactual (see `cadenceOnlyUsd` and the header note the
-  // renderer prints).
+  // Both are true; neither is the counterfactual (see `cadenceOnlyUsd` and the renderer's note).
   let marginal = null;
   if (!Array.isArray(consultRows)) {
     annotations.push(
@@ -401,9 +502,9 @@ export function computeLlmAttribution({
     annotations.push(
       annotation(
         'llm_attrib_unpriceable_probe_failed',
-        'the unpriceable-row probe failed, so the count of rows that CALLED the client and carry ' +
-          'NULL tokens is unknown. That is not zero — it means the size of the unmeasured cost tail ' +
-          'is itself unmeasured, and every cost figure above is a lower bound by an unknown amount',
+        'the unpriceable-row probe failed, so the count of NULL-token rows that carry real spend is ' +
+          'unknown. That is not zero — it means the size of the unmeasured cost tail is itself ' +
+          'unmeasured, and every cost figure above is a lower bound by an unknown amount',
       ),
     );
   } else {
@@ -417,11 +518,27 @@ export function computeLlmAttribution({
       annotations.push(
         annotation(
           'llm_attrib_unpriceable_rows',
-          `unpriceable_rows=${unpriceableTotal} — rows that attempted a client call and carry NULL ` +
-            'token columns. Their cost is NOT in any figure above and is NOT zero: an API call that ' +
-            'errored after the model produced tokens still bills. Every cost figure in this report ' +
-            'is therefore a LOWER bound by this tail, which is the one place the instrument ' +
-            'under-states and the reason the tail is named rather than folded in as zero',
+          `unpriceable_rows=${unpriceableTotal} — NULL-token rows the classifier could NOT account ` +
+            'for through an already-priced sibling call: ' +
+            unpriceableClasses
+              .filter((u) => u.billable === true && u.rows > 0)
+              .map((u) => `\`${u.klass}\` ${u.rows}`)
+              .join(', ') +
+            '. Their cost is NOT in any figure above and is NOT zero: an API call that errored after ' +
+            'the model produced tokens still bills. Every cost figure in this report is therefore a ' +
+            'LOWER bound by this tail, which is the one place the instrument under-states and the ' +
+            'reason the tail is named rather than folded in as zero',
+        ),
+      );
+    } else {
+      annotations.push(
+        annotation(
+          'llm_attrib_unpriceable_rows_measured_zero',
+          'unpriceable_rows=0 — a MEASURED zero, not an absent probe. Every NULL-token row in the ' +
+            'window was classified as either a fan-out sibling of a consult whose single ' +
+            'token-bearing row IS priced above, or a row that never called the client. The ' +
+            'not-billable class counts are printed in full so the classification can be re-checked ' +
+            'rather than trusted',
         ),
       );
     }
@@ -435,12 +552,13 @@ export function computeLlmAttribution({
     trips: tripCount,
     tripsSource: tripCount === null ? null : (tripsSource ?? 'UNSTATED'),
     oneWayNotionalUsd: oneWayNotionalUsd ?? null,
+    notionalBasis: notionalBasis ?? null,
     perTrip: {
       amortizedUsd,
-      amortizedBps: bps(amortizedUsd, oneWayNotionalUsd),
+      amortizedBps: bps(amortizedUsd, oneWayNotionalUsd ?? null),
       marginal,
-      marginalUpperBps: bps(marginal?.upperPerTripUsd ?? null, oneWayNotionalUsd),
-      marginalProRataBps: bps(marginal?.proRataPerTripUsd ?? null, oneWayNotionalUsd),
+      marginalUpperBps: bps(marginal?.upperPerTripUsd ?? null, oneWayNotionalUsd ?? null),
+      marginalProRataBps: bps(marginal?.proRataPerTripUsd ?? null, oneWayNotionalUsd ?? null),
     },
     unpriceableRows: unpriceableTotal,
     unpriceableClasses,
@@ -448,7 +566,142 @@ export function computeLlmAttribution({
   };
 }
 
+/**
+ * The cross-check, extracted so its lag discipline reads as one thing.
+ *
+ * A RAW delta against the gauge proves nothing on its own. The gauge is a 5-minute sample
+ * (promotion-metrics.service.ts:79) of a book that keeps growing, so the current recompute is
+ * expected to exceed it by however many consults billed since the last tick. Calling that
+ * "DISAGREE" would cry wolf on every run; calling it "agreement" would validate nothing. So the
+ * check peels the tail back one priced row at a time and asks whether the gauge sits EXACTLY on the
+ * recomputed cost curve. If it does, the two folds are identical at a nameable instant, which is a
+ * real equality test. If it does not, the direction of the residual decides the verdict — recompute
+ * BELOW the gauge is the one shape lag cannot produce.
+ */
+function crossCheckGauge(
+  bookCost,
+  gaugeLlmCostUsd,
+  gaugeReadAtIso,
+  costCurveTail,
+  rateTable,
+  annotations,
+) {
+  // An unparseable gauge is folded into the SAME unavailable path as an absent one, on purpose: a
+  // gauge string this module cannot read is a gauge it did not compare against, and inventing a
+  // third verdict for it would only invite the reader to treat one of them as softer than the other.
+  const gauge =
+    gaugeLlmCostUsd === null || gaugeLlmCostUsd === undefined || gaugeLlmCostUsd === ''
+      ? null
+      : dec(gaugeLlmCostUsd);
+  if (gauge === null || !gauge.isFinite()) {
+    annotations.push(
+      annotation(
+        'llm_attrib_crosscheck_unavailable',
+        'the `agentic_promotion_llm_cost_usd` gauge could not be read, so the recomputed book cost ' +
+          'is UNVALIDATED. Absence of a disagreement here is not agreement — the comparison did not run',
+      ),
+    );
+    return {
+      gauge: null,
+      gaugeReadAtIso: gaugeReadAtIso ?? null,
+      recomputed: bookCost,
+      delta: null,
+      verdict: 'UNAVAILABLE',
+      cutRows: null,
+      cutAtIso: null,
+      tailScanned: 0,
+      tailCost: null,
+    };
+  }
+
+  const delta = bookCost.minus(gauge);
+  const base = {
+    gauge,
+    gaugeReadAtIso: gaugeReadAtIso ?? null,
+    recomputed: bookCost,
+    delta,
+    cutRows: null,
+    cutAtIso: null,
+    tailScanned: 0,
+    tailCost: null,
+  };
+
+  if (matchesGauge(bookCost, gauge)) {
+    return { ...base, verdict: 'EXACT', cutRows: 0 };
+  }
+
+  // Peel the tail. `costCurveTail` is ascending by created_at, so walking it backwards removes the
+  // newest priced row first — the exact order the gauge's own sample lag removes them in.
+  let peeled = new Decimal(0);
+  let scanned = 0;
+  if (Array.isArray(costCurveTail)) {
+    for (let i = costCurveTail.length - 1; i >= 0; i -= 1) {
+      const r = costCurveTail[i];
+      const rates = resolveRates(r.model, rateTable);
+      if (rates === null) break;
+      peeled = peeled.plus(costOf(r, rates));
+      scanned += 1;
+      if (matchesGauge(bookCost.minus(peeled), gauge)) {
+        annotations.push(
+          annotation(
+            'llm_attrib_crosscheck_exact_at_cut',
+            `recomputed book LLM cost equals the gate's published agentic_promotion_llm_cost_usd ` +
+              `${usd(gauge)} EXACTLY once the ${scanned} priced row(s) written after ` +
+              `${r.createdAtIso} are peeled off — i.e. the gauge is this instrument's own cost curve ` +
+              `evaluated at the gate's last 5-minute sample. Current book ${usd(bookCost)} (${usd(delta)} ` +
+              'of consults billed since that tick). Both folds price the SAME raw token columns at ' +
+              'the SAME rates in the SAME order, so this is an identity, not a tolerance',
+          ),
+        );
+        return {
+          ...base,
+          verdict: 'EXACT_AT_CUT',
+          cutRows: scanned,
+          cutAtIso: r.createdAtIso ?? null,
+          tailScanned: scanned,
+          tailCost: peeled,
+        };
+      }
+    }
+  }
+
+  if (delta.lt(0)) {
+    annotations.push(
+      annotation(
+        'llm_attrib_crosscheck_disagrees',
+        `recomputed book LLM cost ${usd(bookCost)} is BELOW the gate's published ` +
+          `agentic_promotion_llm_cost_usd ${usd(gauge)} — delta ${usd(delta)}. This is the one shape ` +
+          'sample lag CANNOT produce (the gauge samples a strictly growing book), so it is a FINDING ' +
+          'about the row window or the rate fold — a filter this instrument applies and the gate ' +
+          'does not, or a rate resolved differently. Do not reconcile it away',
+      ),
+    );
+    return { ...base, verdict: 'DISAGREE', tailScanned: scanned, tailCost: peeled };
+  }
+
+  annotations.push(
+    annotation(
+      'llm_attrib_crosscheck_lag_unresolved',
+      `recomputed book LLM cost ${usd(bookCost)} exceeds the gate's published ` +
+        `agentic_promotion_llm_cost_usd ${usd(gauge)} by ${usd(delta)}, and peeling the ${scanned} ` +
+        'row(s) of supplied cost-curve tail never landed on the gauge exactly. The direction is the ' +
+        'benign one (sample lag on a growing book), but the EQUALITY TEST DID NOT RUN: either the ' +
+        'tail is shorter than the lag, or the two folds genuinely differ. This is NOT agreement',
+    ),
+  );
+  return { ...base, verdict: 'LAG_UNRESOLVED', tailScanned: scanned, tailCost: peeled };
+}
+
 // ── rendering ────────────────────────────────────────────────────────────────────────────────────
+
+/** The notional as a Decimal, or null when it is absent OR unparseable — the renderer must not be
+ *  the one place in this module that can throw on caller data. */
+function notionalFor(result) {
+  const n = result.oneWayNotionalUsd;
+  if (n === null || n === undefined) return null;
+  const d = dec(n);
+  return d === null || !d.isFinite() ? null : d;
+}
 
 /**
  * Renderable report. Kept here (pure) so the runner cannot assemble a money figure without its
@@ -469,11 +722,9 @@ export function renderLlmAttribution(result) {
 
   const w = result.window ?? {};
   lines.push(
-    `_As of ${w.readAtIso ?? 'unknown'} · window ${w.epochIso ?? 'all-time'} → ` +
-      `${w.lastIso ?? 'unknown'} (PROMOTION_EVIDENCE_EPOCH-anchored, `,
-    `filtered on \`created_at\` exactly as the promotion evidence fold is)._',`.slice(0, 0) +
-      '_' +
-      'filtered on `created_at` exactly as the promotion evidence fold is)._',
+    `_As of ${w.readAtIso ?? 'unknown'} · window ${w.epochIso ?? 'all-time'} → ${w.lastIso ?? 'unknown'}_`,
+    '_(PROMOTION\\_EVIDENCE\\_EPOCH-anchored, filtered on `created_at` exactly as the promotion_',
+    '_evidence fold is — promotion-stats.repository.ts:113-122.)_',
     '',
     '_Measurement only — annotations, never alarms. Fails toward OVERSTATEMENT: a zero here always_',
     '_means a measured zero._',
@@ -499,10 +750,17 @@ export function renderLlmAttribution(result) {
     lines.push('- **UNAVAILABLE** — the gauge could not be read. This is not agreement.', '');
   } else {
     lines.push(
-      `- recomputed ${usd(cc.recomputed)} vs published ${usd(cc.gauge)} — ` +
-        `**${cc.verdict}** (delta ${usd(cc.delta)})`,
-      '',
+      `- recomputed ${usd(cc.recomputed)} vs published ${usd(cc.gauge)}` +
+        `${cc.gaugeReadAtIso ? ` (read ${cc.gaugeReadAtIso})` : ''} — **${cc.verdict}**` +
+        ` (raw delta ${usd(cc.delta)})`,
     );
+    if (cc.verdict === 'EXACT_AT_CUT') {
+      lines.push(
+        `  - identical once the ${cc.cutRows} priced row(s) written after ${cc.cutAtIso} are peeled ` +
+          `off — the gauge is this cost curve at the gate's last 5-minute sample.`,
+      );
+    }
+    lines.push('');
   }
 
   lines.push('### Per-trip cost — TWO attributions, not interchangeable', '');
@@ -512,16 +770,19 @@ export function renderLlmAttribution(result) {
       '',
     );
   } else {
-    const notional = result.oneWayNotionalUsd;
+    const notional = notionalFor(result);
     const denom =
       `over ${result.trips} closed round trip(s) (${result.tripsSource})` +
-      (notional === null ? '' : `, mean one-way notional $${new Decimal(notional).toFixed(2)}`);
+      (notional === null ? '' : `, mean one-way notional $${notional.toFixed(2)}`);
     lines.push(
       `- **AMORTIZED AVERAGE** — ${usd2(result.perTrip.amortizedUsd)}/trip ` +
         `(${fmtBps(result.perTrip.amortizedBps)} of one-way notional), ${denom}.`,
-      '  Answers: _does this book pay for itself?_ Exact: ' +
+      '  Answers: _does this book pay for itself?_ Full precision (a quotient, so not exact): ' +
         `${usd(result.perTrip.amortizedUsd)}.`,
     );
+    if (notional !== null) {
+      lines.push(`  Notional basis: ${result.notionalBasis ?? 'UNSTATED'}`);
+    }
     const m = result.perTrip.marginal;
     if (m === null) {
       lines.push('- **CONSULT-CHAIN MARGINAL** — not computed (consult probe failed).');
@@ -539,16 +800,16 @@ export function renderLlmAttribution(result) {
     lines.push(
       '',
       '_Both numbers are true and they answer different questions._ The amortized average is the one',
-      '_the objective function needs_ — `net-of-cost PnL = realizedPnl − fees − llmCostUsd` divides the',
-      "book cost across the book's trips, and that is the figure to compare against the ~9 bps/trip fee",
-      'floor. The marginal bracket above is NOT that figure and must never be substituted for it.',
+      'the objective function needs — `net-of-cost PnL = realizedPnl − fees − llmCostUsd` divides the',
+      "book cost across the book's trips, and that is the figure to compare against the 9.29 bps/trip",
+      'fee floor. The marginal bracket above is NOT that figure and must never be substituted for it.',
       '',
-      "**The true counterfactual marginal is near ZERO.** The lane's consult cadence is TIME-driven —",
-      'a consult fires when a bar closes, whether or not a position exists — so one more trip does not',
-      'buy one more consult. The cadence-only line above is the direct evidence: that spend happened',
-      'with no trade action attached to it at all. Reading the marginal as "what a trip costs" would',
-      'therefore understate the book cost by design, which is exactly why the amortized figure is',
-      'printed first and why neither number is ever printed alone.',
+      "**The true counterfactual marginal cost of ONE MORE TRIP is near ZERO.** The lane's consult",
+      'cadence is TIME-driven — a consult fires when a bar closes, whether or not a position exists —',
+      'so one more trip does not buy one more consult. The cadence-only line above is the direct',
+      'evidence: that spend happened with no trade action attached to it at all. Reading the marginal',
+      'as "what a trip costs" would therefore understate the book cost by design, which is exactly why',
+      'the amortized figure is printed first and why neither number is ever printed alone.',
       '',
     );
   }

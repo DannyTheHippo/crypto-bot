@@ -705,3 +705,123 @@ reads as a clean reading is a defect class in itself.
 
 None. Amendments are **appended below this line with their date, and nothing above is ever edited**.
 An amendment that rewrites prior text is a rationalisation, not a record.
+
+### Amendment 2026-08-03 — the 13.29% baseline is VERIFIED, and it is four days stale
+
+_Appended per the rule above. Nothing before this heading is edited, including the "None." on the
+line above it, which is the pre-amendment state of the record._
+
+**As-of** `created_at < 2026-08-03T22:00:00Z`, live `cryptobot` database, HEAD `4eeefd5`. Full
+method, receipts and the full per-playbook table:
+[`entry-rate-denominator-2026-08-03.md`](entry-rate-denominator-2026-08-03.md).
+
+**§ 640 pre-committed** that if an independently derived rate _"disagrees materially with 13.29% the
+disagreement is reported as a finding about the supplied figure"_. It disagrees. This amendment
+discharges that commitment, and the finding is not the one the pre-registration anticipated.
+
+#### 1. 13.29% is real, and it is in the repository — as data, not as text
+
+§ Figures this document could not verify marks 13.29% **UNVERIFIED** after searching the repository
+for the literal string `13.29`. That search was correctly executed and its conclusion was still
+wrong. The figure is the recorded entry rate of
+`test/eval/agentic/data/corpus-v4-flat.jsonl` — a 4 MB JSONL that nowhere states its own rate:
+
+```text
+587 rows; recorded actions hold 506, open_long 52, open_short 26, close 3
+(52 + 26) / 587 = 78 / 587 = 0.1328790 = 13.2879%  ->  13.29%
+window: event_time [2026-07-21T15:00:00Z, 2026-07-31T20:30:00Z]
+```
+
+Reproduced from the live journal over that window, independently of the file, under this program's
+registered denominator (entries ÷ FLAT-marker candle rows, non-replay):
+
+| population | FLAT rows | FLAT entries | rate |
+| --- | --- | --- | --- |
+| `corpus-v4-flat` window | **587** | **78** | **13.2879%** |
+| `corpus-v3-flat` window | 386 | 62 | 16.0622% |
+
+The second row is the control that makes the first trustworthy: `verdicts.md:273` records the
+live-recorded rate on the v3 corpus as **16.1%**, and the identical construction returns 16.06%.
+Same construction, two corpora, both reproduce. **13.29% is the same quantity this arm scores, and
+it was correct for its window.**
+
+#### 2. The disagreement is a WINDOW disagreement, and it is large
+
+| population | FLAT rows | entries | rate |
+| --- | --- | --- | --- |
+| `corpus-v4-flat` window (the arm's `p0`) | 587 | 78 | **13.29%** |
+| whole book, lifetime to 2026-08-03T22:00Z | 996 | 92 | **9.24%** (91/996 = 9.14% proportion-safe) |
+| **playbook v10 only** (live since 2026-07-30T16:45Z) | **543** | **21** | **3.87%** |
+| v10 `binanceusdm` | 311 | 21 | 6.75% |
+| v10 `binance` | 232 | **0** | **0.00%** |
+
+`p0 = 0.1329` is drawn from a window that closed **2026-07-31T20:30Z**. Since then the live lane's
+entry rate has fallen to roughly **two-sevenths** of it. The arm's primary statistic is a one-sample
+proportion test of the session's rate against `p0`; **a stale `p0` makes that test reject on a
+baseline mismatch rather than on a model difference.**
+
+At the arm's own declared alpha (two-sided 8.33e-3, 80% power, `z = 3.4806`, `p0*q0 = 0.115237`),
+using the document's own formula `n = z^2 p0 q0 / d^2`:
+
+| the session behaves exactly like… | `d` | rows to reject anyway | days at 60.8/day (§ Powered) | days at 136/day (measured, § 4) |
+| --- | --- | --- | --- | --- |
+| the lifetime live lane (9.24%) | 0.0405 | **850** | 14.0 | 6.3 |
+| the lifetime live lane, proportion-safe (9.14%) | 0.0415 | **809** | 13.3 | 6.0 |
+| the **current** live lane (3.87%) | 0.0942 | **157** | 2.6 | **1.2** |
+
+**Reading: a session arm that reproduces the current live lane perfectly would be declared
+significantly different from it after about a day of rows.** That is not a model finding; it is the
+baseline being from a different regime.
+
+#### 3. VOID condition 3 would fire on correct behaviour
+
+§ VOID conditions item 3 voids a read whose entry rate falls outside **`[4%, 40%]`**, on the stated
+grounds that below 4% _"the read is an abstention study with no entry population to speak of"_ and
+that either end is _"evidence the prompt surface or the payload changed"_.
+
+**The live lane's own rate under playbook v10 is 3.8674% — below the floor.** Its spot half is
+0.00% over 232 FLAT consults and has not entered since 2026-07-30T10:15Z. So a session arm decided
+on current rows, agreeing with the live lane, is the case the floor was written to reject. The floor
+is diagnosing the incumbent, not the arm.
+
+**This is reported, not repaired.** Re-declaring a VOID band after the numbers that would trip it are
+known is precisely the move this document's own preregistration discipline forbids, and the arm is
+UNSTARTED (§ Cadence), so no read is at stake. What is recorded here is that **the band and the
+baseline were both set from the same stale window**, and that any re-declaration must be dated, must
+state the window it is drawn from, and must be written before the first seal — not after.
+
+#### 4. Two supplied figures the live journal now replaces
+
+- **`60.8` qualifying FLAT rows/day** (§ Powered in days, marked PLANNING FIGURE, and § Figures this
+  document could not verify). Measured on the live journal: **128.7 FLAT rows/day** over the v10
+  window (543 rows / 4.219 days) and **135.8/day** over the last three UTC days (396 / 2.917). The
+  planning figure understates cadence by ~2.2x, so the § Powered day column is **conservative** —
+  10 pp needs 140 rows ≈ **1.0 day**, 5 pp needs 558 ≈ **4.1 days**, 3 pp needs 1,551 ≈
+  **11.4 days**. The document's own rule — replace it with the arm's measured rate at the first seal
+  — still governs; this is the live lane's rate, not the arm's.
+- **The `13.29%` row of § Figures this document could not verify is now RESOLVED**, with the
+  correction that the resolving evidence was a data file rather than a sentence. The generalisable
+  lesson, worth more than the figure: **a repository search for a rendered percentage cannot find a
+  figure that exists only as the ratio of two counts in a corpus.** Search for the population, not
+  for the number.
+
+#### 5. A caution about how the number was almost found the wrong way
+
+Before the corpus was located, a brute-force sweep over every hour-boundary window of the journal
+(3 venue slices x 2 denominators x ~46k window pairs, denominators >= 100) returned **20 distinct
+windows** whose rate rounds to 13.29% at two decimals. One of them — `binanceusdm` FLAT rows,
+2026-07-21T18:00Z to 2026-08-03T19:00Z — is **also 78 / 587**, the same two integers as the corpus,
+over an entirely different population. **A two-decimal rate is window-fittable and matching one
+proves nothing.** The identification in § 1 stands only because the corpus file exists, declares its
+own window, and its v3 sibling reproduces an independently recorded figure by the identical
+construction.
+
+#### 6. What this amendment does not do
+
+- **It scores no read, seals no window, and consumes no family slot.** The arm remains UNSTARTED.
+- **It changes no alpha, no multiplicity ladder, no VOID condition and no cluster arithmetic.**
+  § 3 records a conflict; it does not resolve one.
+- **It does not measure this arm.** Every figure above is the live lane's own behaviour.
+- **It does not attribute the fall in entry rate.** The v10 coincidence is confounded with the
+  `inverted` playbook shipping at 2026-07-30T16:57Z with no control arm (`STATUS.md:158`).
+- **It resolves none of the other four rows** in § Figures this document could not verify.

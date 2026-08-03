@@ -22,6 +22,7 @@
     "loop:forward-return": "node scripts/loop-forward-return.mjs",
     "loop:oos-arm": "node scripts/loop-oos-arm.mjs",
     "loop:horizon-rescore": "node scripts/loop-horizon-rescore.mjs",
+    "loop:llm-attrib": "node --env-file-if-exists=.env.app scripts/loop-llm-attrib.mjs",
     "loop:harness": "node scripts/loop-harness.mjs",
     "loop:authoring": "node --env-file-if-exists=.env.app --env-file-if-exists=.env scripts/loop-authoring.mjs",
     "loop:experiment": "node --env-file-if-exists=.env.app scripts/log-eval-experiment.mjs",

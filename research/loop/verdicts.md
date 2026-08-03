@@ -761,3 +761,143 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   `scripts/loop-authoring.mjs`** — one qualifying clause and one addition to the evidence block. **No
   new machinery is warranted and none should be built**; the step stays open until those two land, or
   until a dated record re-specifies it against what was actually measured.
+
+## Addendum 2026-08-04 — the break-even bar, derived; +13.0/+24.2 superseded FORWARD ONLY
+
+**Appended, not substituted. Nothing above this line is edited.** Studies:
+`research/studies/break-even-bar-derivation-2026-08-04.md` (the derivation) and
+`research/studies/book-truth-2026-08-04.md` (the population ledger it stands on). Harnesses:
+`test/backtest/break-even-bar.spec.ts` over `test/backtest/break-even.ts`, and
+`test/backtest/book-truth.spec.ts` — all DB-gated, self-skipping, off the production gate.
+Anchor as-of **2026-08-03T16:07:00Z**; 48 closed round trips; Σ one-way notional $3,996.1492;
+12 base-asset clusters; cluster bootstrap seed 20260731, N_BOOT 20,000, `MIN_CLUSTERS=5`.
+
+### (i) The +13.0 / +24.2 pair is SUPERSEDED FORWARD ONLY
+
+**No completed study is re-adjudicated.** Every result already scored against +13.0 stays scored
+against +13.0. This is the same rule the deployment bar's own amendment declared for itself —
+`research/studies/deployment-bar-halves-clause-2026-07-31.md:22-25`: _"no deployment comparison, mint
+or deploy may run under the new bar before this file exists. Any comparison already scored under the
+two-conjunct rule stays scored under the two-conjunct rule; this clause is not applied retroactively
+to a result already seen."_ Lowering or raising a bar after seeing results is what this program's
+pre-registration discipline forbids, and that prohibition binds a CORRECT bar exactly as hard as an
+incorrect one.
+
+**The code constants are UNCHANGED by this addendum** (§ v). Changing them is a separate, newly
+dated pre-registration under owner autonomy grant 6.
+
+### (ii) The derived bars, named separately, with their denominators
+
+| bar | value | denominators — inseparable from the figure |
+| --- | --- | --- |
+| **GROSS research bar** — venue fees + slippage; what _"beats venue cost"_ actually requires | **+8.36 bps/round trip**, cluster CI95 **[+6.20, +10.76]** | n=48 trips, 12 base-asset clusters, per-cycle `feesQuote ÷ (turnover/2)` with no ×2 leg approximation; book-weighted variant 8.34; fees 8.67 (spot 20.0000, perp 7.2208, 88.65% perp by notional) + slippage −0.33 |
+| **ALL-IN book bar** — gross + amortized LLM/trip; what the book must earn to pay for itself | **+78.80 bps/round trip** | the GROSS bar + **70.44 bps** of inference, at **48 trips / 10.85 days / $83.2531 mean one-way notional / $28.1473391 book LLM cost**. Range across denominator choices **63.88–78.45 bps** (window-consistent snapshots at 23/38/46/48 trips) |
+
+**The asserted +13.0 is outside the GROSS bar's CI on the high side** — as a venue-cost bar it demands
+~4.6 bps more than the venue charges, which is the conservative direction and confirms
+`fee-floor-derivation-2026-07-31.md`. **Against the all-in question it is ~66 bps too low.**
+
+**The ALL-IN bar is not a constant and must never be pasted into code as one.** It is a function of
+trade rate and notional; quoting it without _"at 48 trips / 10.85 days / $83.25"_ quotes a number that
+does not exist. The LLM term carries **no confidence interval** and never will — it is one book-level
+scalar over one contested count, and the honest uncertainty is the denominator range above, not
+sampling error.
+
+**Two figures in circulation are corrected.** The `~81 bps/trip` LLM inference is **70.44 bps** — the
+$0.59/trip operand is right ($0.5864 measured), the `$72` one-way notional is not (measured mean
+**$83.2531**, median **$80.1664**; `$72` reproduces as no statistic of the distribution). And the
+recorded slippage `+0.333 bps/leg` no longer reproduces: on its own cut it is now **−0.0821**, and on
+this study's fresher-ref cut **−0.4838**. Slippage is indistinguishable from zero at this book size
+and its sign is not stable; it is carried at its measured value and changes nothing.
+
+**Cross-checked against the parallel lane and they agree.**
+`research/studies/llm-cost-attribution-2026-08-04.md` derived the LLM term independently on the
+49-trip uncapped population: **$0.587/trip identical to the digit**, +69.5 bps against this study's
++70.91 on the same population. The 1.4 bps gap is one denominator definition — all-fill notional ÷ 2
+($84.43) versus closed-cycle-member notional ($82.7969), differing by exactly the $159.67 of fill
+notional in still-open cycles — and that study already labelled its own figure a lower bound for that
+reason. **No disagreement of substance exists between the two lanes.**
+
+### (iii) _"Do not propose cost work as a profitability lever"_ — RE-SCOPED TO FEES ONLY
+
+The sentence stands at `verdicts.md:436`, closing the **Cost cutting cannot close the gap** bullet
+(`:431-436`) and cited at `STATUS.md:71`. Quoted in full, because the re-scoping must be checkable
+against what it actually says:
+
+> **Cost cutting cannot close the gap.** Gross realised −$20.10 on $1,982.66 of notional =
+> **−101.9 bps/trip** (95% CI [−185, −8], P(gross > 0) = 0.018); marking the 4 open cycles — all four
+> losing — gives n=27 at **−106.0 bps/trip**. Required gross edge for net-of-cost break-even under the
+> BEST achievable cost structure is **+13.0 bps/trip** (demo fees) or **+24.2** (live 20 bps). The gap
+> is **115–130 bps/trip**, and LLM spend is $15.48 of the $37.56 net loss — **free inference still
+> leaves −$22.08.** Do not propose cost work as a profitability lever.
+
+**A correction to the framing this addendum was commissioned under, stated before the re-scoping so
+the re-scoping is not read as more than it is:** the premise that this verdict _"never priced an LLM
+term"_ is **wrong**. It priced one explicitly — _"LLM spend is $15.48 of the $37.56 net loss"_ — and
+that book-level argument **reproduces and still holds**: at the 2026-08-03 anchor, zeroing inference
+entirely leaves gross at **−$32.19**, still negative. **The prohibition is not being weakened on the
+ground it was actually argued.**
+
+**What it is re-scoped away from** is a use it never covered: **the per-trip BAR every study is scored
+against.** The verdict argues about a book-level total; +13.0 is a per-trip threshold, and it contains
+**no inference term at all**. Those are different objects, and the second was silently inheriting the
+first's authority.
+
+Therefore, from this date:
+
+- **FEES: the prohibition binds unchanged and harder.** 8.36 bps of venue cost against a −69.90
+  bps/trip realised deficit. Do not propose fee work, venue-rate work, or maker/taker mix work as a
+  profitability lever.
+- **BOOK-LEVEL INFERENCE: the prohibition binds unchanged.** Free inference still leaves the book
+  negative. Do not propose "cut the model" or "cheaper decides" as the route to profitability.
+- **THE BAR ITSELF IS OUT OF SCOPE OF THE PROHIBITION.** Deriving, correcting or restating the bar a
+  study is scored against is a **measurement correction, not a cost lever**, and proposing it is not
+  proposing cost work. This matters concretely: a study returning **+30 bps/trip** reads as a
+  research-bar PASS against +13.0 while failing the ALL-IN bar of +78.80 by 49 bps. That gap is the
+  reason this clause is being re-scoped rather than merely annotated.
+- **TRADE RATE is named as the term that moves the amortized component, and is NOT adjudicated here.**
+  The LLM/trip term falls roughly as 1/trips at fixed cadence — measured, 78.45 → 63.88 bps between
+  the 23-trip and 38-trip snapshots — because cadence is time-driven and the **marginal** cost of one
+  more trip is ≈0 (consult-chain marginal $0.070969/trip = 8.52 bps, and even that consult would have
+  been billed anyway). **So a cost argument against trading MORE is wrong.** Whether more trades at
+  this entry quality helps is an **edge** question; the ENTRIES and NO_SURVIVOR verdicts are untouched
+  and no pass may read this bullet as reopening them.
+
+**The gap, restated on the derived bar** (`break-even-bar-derivation-2026-08-04.md` § 7): realised
+gross **−69.90 bps/trip** over the 48-trip population against the ALL-IN bar gives **148.70 bps/trip**,
+**wider** than the 111–130 the record carries. Both halves moved — the realised side is less negative
+than at n=23, the bar is much higher — and neither may be quoted alone.
+
+### (iv) The +24.2 live figure is recorded as UNDERIVABLE
+
+Not "unverified", not "approximately right": **the repo cannot state it.** There is no live book —
+all 295 fills are `mode='testnet'` — and the repo holds no authoritative live fee schedule. The only
+structural observation available remains `fee-floor-derivation-2026-07-31.md` § 4's: `24.2 − 20.0 =
+4.2` against a parenthetical reading _"(live 20 bps)"_, with the unresolved flag that if the 4.2 is
+the "≈4 bps" measured fee figure then the live floor double-counts fees. **A bar the record cannot
+state is recorded as exactly that**, and any deployment path consuming it must source an authoritative
+schedule or carry the gap explicitly.
+
+### (v) Code homes a later step must update — LISTED, NOT EDITED
+
+Unchanged by this addendum; each needs its own dated pre-registration, and none may be changed by an
+unattended edit (they are pre-registered bars inside live studies, and the current value errs
+conservative on the gross question):
+
+- `test/eval/agentic/playbook-space-replay.ts:47-48` — `REQUIRED_EDGE_BPS = 13.0`, whose doc comment
+  is its entire provenance.
+- `test/backtest/inversion-test.mjs:27` — `const REQUIRED_EDGE_BPS = 13.0;`
+- `scripts/loop-authoring-core.mjs:519-524` — a doc comment asserting a provenance that does not
+  exist, carrying a falsifiable claim that is false.
+
+### (vi) One reproducibility defect found while doing this, recorded so it is not rediscovered
+
+`PromotionStatsRepository.fundingNetForMode` filters funding on `funding_time` (the market instant)
+with **no `created_at` predicate**, while the ingest poller lags ~37 minutes. Three
+`funding_time = 2026-08-03T16:00:00Z` rows (net **−0.03240350**) were written at 16:37Z, so the 16:07Z
+`evaluate()` could not see them — **re-running the gate against history returns a different `netPnl`
+than the gate itself returned.** The recorded tuple reproduces to the cent only under the as-ingested
+reconstruction (`book-truth-2026-08-04.md` § 1). Direction: a live sample reads **less negative** than
+settled truth, i.e. it flatters the book — the wrong direction for a permission gate. Small here
+($0.032 on a $60 loss); recorded as a measurement-reproducibility defect, and **no verdict in this
+addendum turns on it**.

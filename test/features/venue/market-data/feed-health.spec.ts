@@ -100,7 +100,9 @@ describe('FeedHealthService', () => {
 
 describe('FeedHealthServiceWithBackfill.fetchCandles (REST OHLCV warmup)', () => {
   it('normalizes ccxt OHLCV arrays into exact-Decimal CandleEvents', async () => {
-    const { clock } = mutableClock();
+    // Clock set well past both bars' closeTime (openTime + 1m − 1ms): both are genuinely closed,
+    // so this test exercises normalization only, not the closedness-by-clock logic below.
+    const { clock } = mutableClock(200_000);
     const ohlcv: OhlcvSource = {
       fetchOHLCV: () =>
         Promise.resolve([
@@ -113,9 +115,47 @@ describe('FeedHealthServiceWithBackfill.fetchCandles (REST OHLCV warmup)', () =>
     const candles = await svc.fetchCandles(V, S, '1m', 2);
     expect(candles.length).toBe(2);
     expect(candles[0]?.close.toFixed()).toBe('105.5'); // exact string
-    // Backfill marks every historical bar closed (warmup must prime a closed-only strategy), even
-    // the first bar whose raw closed flag was false.
+    // closed is derived from the clock (openTime + interval ≤ ingestTime), never from ccxt's own
+    // (absent) closed flag — both bars enter closed:true here regardless of the raw a[6] value.
     expect(candles.every((c) => c.closed)).toBe(true);
     expect(candles[0]?.interval).toBe('1m');
+  });
+
+  it('drops a still-forming bar (closeTime has not yet passed ingestTime) instead of marking it closed', async () => {
+    const { clock } = mutableClock(200_000);
+    const ohlcv: OhlcvSource = {
+      fetchOHLCV: () =>
+        Promise.resolve([
+          [60_000, '100', '110', '90', '105', '10'], // closeTime 119_999 < 200_000 — closed
+          [120_000, '105', '112', '104', '108', '12'], // closeTime 179_999 < 200_000 — closed
+          [180_000, '108', '109', '107', '108.5', '5'], // closeTime 239_999 ≥ 200_000 — still forming
+        ]),
+    };
+    const cfg: VenueConfig = { id: 'binance', environment: 'paper' };
+    const svc = new FeedHealthServiceWithBackfill(clock, stubStream, ohlcv, cfg);
+    const candles = await svc.fetchCandles(V, S, '1m', 3);
+
+    // The still-forming bar (openTime 180_000) never enters history at all — dropped, not
+    // returned closed:false — so strategy-host.ts's warmup loop (which pushes whatever this
+    // returns, with no closed-filter of its own) never sees a partial bar.
+    expect(candles.map((c) => c.openTime)).toEqual([epochMs(60_000), epochMs(120_000)]);
+    expect(candles.every((c) => c.closed)).toBe(true);
+  });
+
+  it('a backfill whose bars are all genuinely closed enters history in full', async () => {
+    const { clock } = mutableClock(200_000);
+    const ohlcv: OhlcvSource = {
+      fetchOHLCV: () =>
+        Promise.resolve([
+          [60_000, '100', '110', '90', '105', '10'],
+          [120_000, '105', '112', '104', '108', '12'],
+        ]),
+    };
+    const cfg: VenueConfig = { id: 'binance', environment: 'paper' };
+    const svc = new FeedHealthServiceWithBackfill(clock, stubStream, ohlcv, cfg);
+    const candles = await svc.fetchCandles(V, S, '1m', 2);
+
+    expect(candles).toHaveLength(2);
+    expect(candles.every((c) => c.closed)).toBe(true);
   });
 });

@@ -215,13 +215,22 @@ export class FeedHealthServiceWithBackfill extends FeedHealthService {
         raw: bar,
       };
       const ev = normalizeRawEvent(raw, ingestTime, interval);
-      // Backfill is HISTORICAL data: every bar is a closed candle. ccxt OHLCV arrays carry no
-      // closed flag (6 elements), so normalizeCandle would default closed:false — which a
-      // closed-only strategy (EMA cross) discards, leaving warmup inert. Mark them closed here so
-      // warmup actually primes indicator state. (The most recent bar may be the still-forming
-      // candle; the live feed re-emits its close, a negligible one-candle overlap washed out by the
-      // bounded indicator window — warmup signals are discarded regardless.)
-      if (ev.kind === 'CANDLE') results.push({ ...ev, closed: true });
+      if (ev.kind !== 'CANDLE') continue;
+      // ccxt OHLCV arrays carry no closed flag (6 elements), so normalizeCandle's own bar[6] read
+      // always defaults closed:false for a REST-backfilled bar — closedness has to be derived from
+      // the clock instead. A bar is closed iff its closeTime (normalizeCandle already computed this
+      // as openTime + interval − 1ms) has passed ingestTime; fetchOHLCV's most recent element is
+      // very often still forming (ccxt includes the in-progress candle by design), and stamping
+      // that one closed:true plants the WRONG (partial) high/low/close/volume into history at that
+      // bar's own openTime. The live feed redelivers the real close for the same openTime moments
+      // later, so dropping the still-forming bar here (rather than returning it closed:false) costs
+      // nothing — strategy-host.ts's warmup loop pushes whatever this returns without its own
+      // closed-filter, so keeping it out here is the only guard — and the agentic lane (the sole
+      // surviving consumer since the deterministic EMA-cross lane's 2026-07-03 retirement) renders
+      // warmup history verbatim into the LLM prompt, so a mislabeled partial bar is not washed out
+      // by anything downstream.
+      if (ev.closeTime >= ingestTime) continue;
+      results.push({ ...ev, closed: true });
     }
     return results;
   }

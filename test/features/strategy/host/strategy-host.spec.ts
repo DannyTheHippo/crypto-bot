@@ -6,6 +6,7 @@ import {
   type AgenticHostOptions,
 } from '../../../../src/features/strategy/agentic/strategy-host';
 import { StrategyRegistry } from '../../../../src/features/strategy/agentic/strategy-registry';
+import { buildMarketPayload } from '../../../../src/features/strategy/agentic/agent-prompt';
 import type { MarketStreamPort, FeedHealthPort } from '../../../../src/ports/venue/market-data';
 import type { SignalSinkPort } from '../../../../src/ports/strategy/strategy';
 import type {
@@ -264,6 +265,76 @@ describe('StrategyHost (agentic-only)', () => {
     expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(0), epochMs(1), epochMs(2)]);
   });
 
+  it('a warmup backfill batch containing a same-openTime revision yields distinct history with the revision kept (last-write-wins, matching the live-path policy)', async () => {
+    const id = strategyId('warm-dedup');
+    const w0 = candle(0);
+    const w1 = candle(1);
+    // Same bar redelivered within a SINGLE fetchCandles response — the REST response has no
+    // ordering/dedup contract of its own, so a same-openTime entry inside one batch is a revision
+    // (late-trade correction), replaced in place exactly like a redelivered live candle is.
+    const revisedW1 = { ...w1, close: price('999') } as CandleEvent;
+    const w2 = candle(2);
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const fh: FeedHealthPort = {
+      health: () => 'LIVE',
+      getRefPrice: () => undefined,
+      updateRefPrice: () => undefined,
+      fetchCandles: () => Promise.resolve([w0, w1, revisedW1, w2]),
+    };
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      feedHealth: fh,
+    });
+
+    await host.start();
+    stream.close();
+
+    expect(registry.getLifecycle(id)).toBe('ACTIVE');
+    const internals = host as unknown as {
+      runtimes: Map<StrategyId, { candleHistory: Map<string, CandleEvent[]> }>;
+    };
+    const hist = internals.runtimes.get(id)?.candleHistory.get(S);
+    expect(hist?.map((c) => c.openTime)).toEqual([epochMs(0), epochMs(1), epochMs(2)]);
+    expect(hist?.find((c) => c.openTime === epochMs(1))?.close.toFixed()).toBe('999'); // revision kept
+  });
+
+  it('a second initStrategy call for the same id does not double history — each call seeds a fresh runtime rather than accumulating onto the last one', async () => {
+    // Not an observed production path: trading-runtime.module.ts calls registry.enable and
+    // host.start exactly once each, from onApplicationBootstrap (a Nest lifecycle hook fired once
+    // per app instance) — see that module's startTrading/onApplicationBootstrap. This test proves
+    // the STRUCTURAL backstop (initStrategy always starts a brand-new runtime with an empty
+    // candleHistory Map, so a hypothetical re-init could never see a prior call's history) rather
+    // than reproducing something the current wiring can reach.
+    const id = strategyId('warm-reinit');
+    const w0 = candle(0);
+    const w1 = candle(1);
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      feedHealth: defaultFeedHealth([w0, w1]),
+    });
+
+    await host.start();
+    expect(registry.getLifecycle(id)).toBe('ACTIVE');
+
+    registry.enable(id, 'fake', {}); // resets the entry to LOADING — the only way to re-reach initStrategy
+    await host.start(); // re-runs initStrategy for `id`; fetchCandles resolves the SAME [w0, w1] again
+    stream.close();
+
+    expect(registry.getLifecycle(id)).toBe('ACTIVE');
+    const internals = host as unknown as {
+      runtimes: Map<StrategyId, { candleHistory: Map<string, CandleEvent[]> }>;
+    };
+    const hist = internals.runtimes.get(id)?.candleHistory.get(S);
+    expect(hist?.map((c) => c.openTime)).toEqual([epochMs(0), epochMs(1)]); // not [0, 1, 0, 1]
+  });
+
   it('delivers a decided signal via the buffered path (consumer arrives after emission)', async () => {
     const id = strategyId('buf');
     const recorded: Signal[] = [];
@@ -324,6 +395,108 @@ describe('StrategyHost (agentic-only)', () => {
     expect(strat.calls).toBe(1);
     const hist = strat.inputs[0]?.snapshot.candles.get(S);
     expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(2)]);
+  });
+
+  it('a redelivered closed candle for an already-stored bar (same openTime) replaces it — last-write-wins revision, no history growth', async () => {
+    const id = strategyId('dedup-redelivered');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    stream.push(candle(2));
+    await tick();
+
+    // Redelivery: same openTime as the bar just stored, a later eventTime (envelope delivery time,
+    // not bar identity), and a revised close — a late-trade correction of the SAME bar, not a stale
+    // duplicate, so it replaces the stored bar rather than growing history.
+    stream.push({ ...candle(2), eventTime: epochMs(50), close: price('999') });
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(3); // still decides on every candle trigger — only history growth is guarded
+    const hist = strat.inputs[2]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.openTime)).toEqual([epochMs(1), epochMs(2)]);
+    expect(hist?.find((c) => c.openTime === epochMs(2))?.close.toFixed()).toBe('999'); // revision kept
+  });
+
+  it('a genuinely newer closed candle still appends, and the warmup.bars + 1 ring bound still evicts the oldest', async () => {
+    const id = strategyId('dedup-newer');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    stream.push(candle(2));
+    await tick();
+    stream.push(candle(3));
+    await tick();
+    stream.push(candle(4)); // bars=2 → bound is 3; this push evicts openTime(1)
+    await tick();
+    stream.close();
+
+    const hist = strat.inputs[3]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.openTime)).toEqual([epochMs(2), epochMs(3), epochMs(4)]);
+  });
+
+  it('an out-of-order (older) closed candle is refused: history and its stored bars are unchanged', async () => {
+    const id = strategyId('dedup-older');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    stream.push(candle(5));
+    await tick();
+    stream.push(candle(10));
+    await tick();
+
+    // Older than the last stored bar (openTime 10) → refused. Its own eventTime (3) is also behind
+    // the cadence clock (10), so this push produces no decide of its own — proven by the NEXT
+    // candle's snapshot below still showing only [5, 10, 11], never 3.
+    stream.push(candle(3));
+    await tick();
+    stream.push(candle(11)); // fresh trigger to observe the resulting history
+    await tick();
+    stream.close();
+
+    const hist = strat.inputs[2]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.openTime)).toEqual([epochMs(5), epochMs(10), epochMs(11)]);
+  });
+
+  it('a rendered market payload built from the resulting snapshot still carries 30 distinct open_time values when a bar was redelivered mid-window', async () => {
+    const id = strategyId('dedup-payload');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 30 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    for (let t = 1; t <= 31; t++) {
+      stream.push(candle(t));
+      await tick();
+      if (t === 15) {
+        // Redelivery mid-array, exactly the shape that reached the LLM payload before the fix:
+        // same bar (same openTime AND eventTime — the redelivery need not even shift the
+        // envelope clock), revised close.
+        stream.push({ ...candle(15), close: price('999') });
+        await tick();
+      }
+    }
+    stream.close();
+
+    const last = strat.inputs[strat.inputs.length - 1]!;
+    const payload = JSON.parse(buildMarketPayload(last)) as { candles: unknown[][] };
+    expect(payload.candles).toHaveLength(30); // length was never the symptom — distinctness is
+    const openTimes = payload.candles.map((row) => row[0]);
+    expect(new Set(openTimes).size).toBe(30);
   });
 
   it('folds ticker/book state without triggering, then surfaces it on the next candle-triggered snapshot', async () => {

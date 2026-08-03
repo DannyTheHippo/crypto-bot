@@ -258,10 +258,18 @@ export class StrategyHost implements StrategyHostPort {
       } catch {
         // Warmup backfill failure is non-fatal: strategy proceeds with empty history.
       }
+      // Same appendCandle idiom the live path (processItem) uses: fetchCandles is a REST response
+      // with no ordering/dedup contract of its own, so a duplicate or out-of-order bar inside a
+      // single batch must not double up here either. (A SEPARATE hazard — initStrategy re-running
+      // against a runtime that already carries a prior warmup's history — cannot reach this `?? []`
+      // at all: initStrategy always allocates a brand-new runtime with an empty candleHistory Map
+      // at its own top, on every call, so a repeat call never sees an earlier call's history to
+      // accumulate onto. That hazard is also not reachable today regardless — start() runs once per
+      // process, from onApplicationBootstrap, a Nest hook fired once per app instance, and
+      // registry.enable is called exactly once per symbol — see trading-runtime.module.ts.)
       const hist = runtime.candleHistory.get(symbol) ?? [];
       for (const c of candles) {
-        hist.push(c);
-        if (hist.length > bars + 1) hist.shift();
+        StrategyHost.appendCandle(hist, c, bars + 1);
       }
       runtime.candleHistory.set(symbol, hist);
     }
@@ -358,6 +366,39 @@ export class StrategyHost implements StrategyHostPort {
     }
   }
 
+  // Shared idiom for BOTH candleHistory writers — this warmup backfill (initStrategy) and the live
+  // path (processItem's 'candle' case): one dedup rule in this file, not two. Keyed on openTime (the
+  // bar's own identity), not eventTime (the envelope's delivery timestamp, which differs between the
+  // original delivery and a redelivery of the SAME bar) — same ordering key price-history-store.ts
+  // uses for its own, separately-scoped history (that consumer's tie-break is unrelated and untouched
+  // here).
+  //
+  // Equal-openTime policy: LAST-WRITE-WINS, not strictly-monotonic-refuse. With
+  // fetchCandles now dropping still-forming bars at the source (see this class's own
+  // FeedHealthServiceWithBackfill-side fix), a same-openTime redelivery for the bar already at the
+  // END of history is a REVISION — a stream reconnect or a duplicate ccxt emission re-announcing a
+  // bar with corrected high/low/close/volume (late trade inclusion), not a stale duplicate to
+  // discard. Keeping the first-seen copy here would silently pin whichever copy happened to arrive
+  // first, including a wrong one; replacing it is the same-cost, more-correct choice. A bar OLDER
+  // than the last stored openTime (not equal) is still refused outright — history is append-only in
+  // TIME, never spliced mid-array.
+  //
+  // This is a data-hygiene guard on the LLM prompt surface, not a safety gate: it fails OPEN,
+  // silently dropping the stale/out-of-order bar (or replacing the revised one) and leaving the
+  // decide flow untouched, rather than blocking or halting anything the money path depends on.
+  // Mutates `hist` in place; the caller still owns re-`.set()`-ing it into the map.
+  private static appendCandle(hist: CandleEvent[], c: CandleEvent, maxLen: number): void {
+    const last = hist.length > 0 ? hist[hist.length - 1] : undefined;
+    if (last === undefined || c.openTime > last.openTime) {
+      hist.push(c);
+      if (hist.length > maxLen) hist.shift();
+      return;
+    }
+    if (c.openTime === last.openTime) {
+      hist[hist.length - 1] = c;
+    }
+  }
+
   // Folds the event into host state, then — if ACTIVE/DRAINING and not already busy — snapshots
   // state and kicks off a non-blocking decide(). While busy, the trigger is conflated: state is kept,
   // the call is skipped. NEVER awaits — head-of-line blocking of market data is forbidden here.
@@ -377,8 +418,7 @@ export class StrategyHost implements StrategyHostPort {
         // only closed candles.
         if (!e.closed) return;
         const hist = runtime.candleHistory.get(e.symbol) ?? [];
-        hist.push(e);
-        if (hist.length > strategy.warmup.bars + 1) hist.shift();
+        StrategyHost.appendCandle(hist, e, strategy.warmup.bars + 1);
         runtime.candleHistory.set(e.symbol, hist);
         break;
       }

@@ -7098,3 +7098,158 @@ WHOLE repo, so no commit can land while any peer has the tree mid-edit.
 
 _(Pass 53 note: that deploy DID happen at 12:33Z, and the commit count above is off — `b28e54b`…`fd4e389`
 is eight commits, nine counting the `c78d193` docs commit, not seven.)_
+
+## 2026-07-31 — Pass 53 (a position that could not be exited, and the 45 minutes nobody could have seen)
+
+**Window:** 2026-07-31T16:07Z → 17:15Z. Lease `195186b5400588b5`, taken 16:07:30Z, no collision.
+Pass type: **DEFECT INVESTIGATION** — forced by §3, two named alarms. Live build at pass start
+`c78d193` (deployed by Pass 52 at 12:33Z, after that pass wrote its STATUS; the "A DEPLOY IS DUE"
+banner was already stale when it was read).
+
+### Headline
+
+| metric | now | at Pass 52 |
+| --- | --- | --- |
+| closed round trips | **37** | 35 |
+| net-of-cost PnL | **−$40.7534** | −$42.3358 |
+| LLM cost (epoch) | $20.598 | $19.41 |
+| trade-anchored window | 7.891 / 14 days | 7.329 |
+| win rate | 27.03% | — |
+| `agentic_promotion_ready` | 0 | 0 |
+| `equity_usdt` | 4981.69 | 4978.33 |
+| day budget left at 16:07Z | $0.786 of $3 | $0.978 |
+
+**WATCH-V3-1 holds.** RSS 752.4 MiB (788,971,520 B) at 3.6h into the `93e21a99` boot — _below_ Pass
+52's 763 MiB reading, against the ~673 MiB paper reference and the ~900 MiB defect line. Not a climb.
+
+### The alarm that mattered
+
+`loop:sweep` fired `venue_reject_rate_high` on BOTH venues. `binance` 16/20 is the known pre-`f5abf8a`
+window (unchanged, all 20 submits predate the fix; still clears itself). **`binanceusdm` 12/20 = 60%
+was new, and it is a real trading-path defect.** Full forensics:
+`research/loop/incidents/2026-07-31-perp-exit-band-rejects.md`.
+
+Between 13:00:36Z and 13:06:10Z the app made 13 attempts to exit a 70.3 KAITO/USDT:USDT long. Twelve
+were terminal-rejected `BadRequest -4024 "Limit price can't be lower than X"`; the thirteenth
+stranded (`SUBMIT_AMBIGUOUS` → `QUERY_NOT_FOUND` → `STRANDED_NEW_NEVER_LANDED` at 13:11:14).
+
+**The cause is a frame mismatch, not a pricing bug.** `market-streams.module.ts:77-79` builds market
+data against `FEED_ENV=live` while orders execute against `SANDBOX_ENV=demo`. Binance `-4024` is the
+`PERCENT_PRICE` SELL lower bound evaluated against **the venue's own mark**, and the demo perp book
+was stalled 5.7% above the live tape (demo 5m volume 281–300 vs production 223k–644k). Reconstructed
+to six decimals off testnet `markPriceKlines`: mark 1.124900 × `multiplierDown` 0.9500 = 1.068655 —
+the exact floor returned at 13:01:09, 13:01:39 and 13:04:40. **Our reference price was itself below
+the floor on all 12 attempts** (shortfall 10.6–39.4 bps), so `EXIT_CROSS_BUFFER_BPS=25` was 40–70% of
+each shortfall but removing it prevents **zero** rejects. There is no venue price-band clamp anywhere
+on the order path: `SymbolFilters` carries only tick/step/minQty/minNotional, `PERCENT_PRICE` appears
+nowhere in `src/`, and `evaluate.ts:174-194` measures deviation against **our own** `refMid`.
+
+**The cost was not the rejects.** The first attempt was a `plan exit: stop`, so `cancelFirstEligible`
+cancelled the resting `STOP_MARKET` at 13:00:38.029 — two seconds after the signal and _before_ the
+replacement was known to be accepted — and `clearPlan()` dropped the plan stop. The position carried
+no venue stop and no plan stop until 13:45:34: **45 minutes**. A second, independent gap: the stranded
+order held `inFlightSymbols`, which suppressed the 1s protective backstop entirely from 13:06:40 to
+13:11:14. A third: `protective_exits_total` counts FIRES, not fills, so it read a healthy `12` while
+nothing exited, and the retry cooldown stamps on fire — hence 30s forever, no backoff, no cap.
+
+**Mitigating, and it cuts both ways:** the cancelled stop's trigger (1.0797) was priced off the LIVE
+feed and could never have fired against a demo mark of 1.1249. The protection lost was already
+notional on this venue split.
+
+### What shipped
+
+1. **`VenueTerminalRejectBurst`** (`observability/alerts.rules.yml`) — `sum by (code)
+   (increase(orders_rejected_total{stage="exchange"}[15m])) >= 3`, `for: 5m`, **`severity: warning`**.
+   Warning is load-bearing: the sweep promotes only `critical` to a blocking alarm, and a critical here
+   would wedge §3 on a self-resolving condition. Threshold checked against both known reject axes — the
+   13:00Z hour spikes to 12 (fires); the spot `InsufficientFunds` bleed runs a measured 2/hour (does
+   not). Fails OPEN. `WATCH-V4-14`.
+2. **The reconcile guard stopped shouting.** 214 warns/3.6h of "reconcile pass still in flight" is
+   expected behaviour confirmed by three verifiers: one pass costs ~38.6s p50 (binance 22.04 +
+   binanceusdm 16.62, n=479 over 4h) against a 30s timer, so the measured gap between COMPLETED passes
+   is 60.00s p50 / 90.46s max over 239 intervals. Demoted to `debug`; visibility stays in
+   `reconciliation_runs_total{result="skipped"}`, which `ReconcilerStalled` deliberately excludes
+   (`a03b35d`). Also corrected `trading-runtime.module.ts`, which called 30s the cadence — it is the
+   timer period, and mismatch-detection latency is ~60s.
+3. **The sweep can audit its own coverage again.** Pass 52 left no `**Window:**` line (owner-directed
+   session), and ONE unparseable entry blanks the WHOLE verdict by construction. Reconstructed from
+   evidence — first/last digest of that session bracketing its nine commits. Its non-vacuity test then
+   failed honestly, because the reconstruction closed the gap it was exercising; the `4 ×
+   PASS_WINDOW_END_TOLERANCE_MS` bound was arbitrary and its premise ("a 3×/day cadence always leaves
+   hours between passes") is false once passes run back-to-back. Tightened to the **derived** bound: a
+   midpoint orphan escapes iff gap > 2 × tolerance. Still a real guard — it fails if entries ever close
+   to within an hour.
+
+### WATCH-V4-12 — first reading, expected-positive CONFIRMED
+
+The `submit_portfolio` warns are two unrelated failures with opposite verdicts. The "payload failed
+schema validation" class is **output-budget truncation**, correctly re-tagged. Measured:
+
+| tag | rows (boot) | `output_tokens` (boot) | rows (14d) | at exactly 4096 |
+| --- | --- | --- | --- | --- |
+| `truncated_max_tokens:` | 7 | min = max = **4096** | 11 | 7 |
+| `schema_rejected:` | 8 | 168 – **358** | 137 | 12 |
+
+Every measurable `truncated_max_tokens:` row carries exactly 4096; **zero sit "well below 4096", so
+the named defect outcome did not occur.** Disclosed rather than counted: 4 of the 11 carry NULL
+`output_tokens` (usage is recorded on a batch's first symbol only) — unreadable, not contradicted.
+
+**The obvious response was refuted and must not be re-proposed.** Raising `AGENTIC_MAX_TOKENS` to
+12288 is adversarial to the one budget currently ~30% from tripping (the $3/day USD breaker, not the
+token/day cap), and the batch HTTP budget is 75s against a projected ~83–91s at that ceiling — an
+abort THROWS rather than soft-holding, and three strikes auto-DRAIN the lane. The stated fallback
+(`thinking: {budget_tokens}`) is a 400 on this model, and 400 is in `FATAL_STATUSES` — an immediate
+latch. The in-contract lever is `output_config: {effort: …}`, which appears nowhere in
+`anthropic-agent-client.ts`, so the lane pays for default thinking depth. Cost-negative and reversible;
+that is the experiment to run, not the ceiling raise.
+
+### Gates, deploy, soak
+
+`format:check` ✓ · `lint` ✓ · `lint:md` 0 errors ✓ · `typecheck` ✓ · `test` **3384/3384, 183 files** ✓
+· `build` ✓ · `test:livegate` **55/55** ✓. Deployed `35042cc`, `build_info{git_sha}` confirmed,
+new bootId `4753ef53`, `RestartCount` 0, healthy. Prometheus force-recreated (the rules file changed):
+**23 rules loaded**, 0 unhealthy, `VenueTerminalRejectBurst` present, none firing. Kill switch RUNNING.
+
+**A trap worth recording.** `promtool check rules /etc/prometheus/alerts.rules.yml` FAILED mid-pass
+with "line 448: found unexpected end of stream", which reads exactly like a corrupt rules file. It was
+not. A host-side rewrite of a **single-file bind mount** leaves the container's path pointing at a
+dangling inode — the committed bytes parsed cleanly (22 rules) and all 22 running rules were healthy
+throughout. Validate an edit by `docker cp`-ing it in and checking the copy; a check against the
+mounted path after a host edit is VOID.
+
+### Not done, and why — stated as a blocker, not a priority
+
+**The `-4024` repair itself did not ship.** This is a blocked state, not a scheduling choice. The
+leading sub-fix ("retain the plan-stop registry row until the exit is accepted") was **refuted on
+evidence**: `manageVenueStop` is gated on `this.activePlan`, not the registry, so retention re-arms
+nothing, and it would additionally disable the `orphan_readopt` recovery path and make the stand-down
+defer to a stop that does not exist. The two correct seams (defer the algo-stop cancel until the exit
+ACKs; or a plan-independent re-arm) both require first resolving the margin/base-lock rationale at
+`agentic.strategy.ts:1434-1438`, and the root cause sits behind a `FEED_ENV` choice with a very wide
+blast radius. Shipping a half-understood lifecycle change on the protective-exit path is the specific
+thing this repo's rules forbid. The exact proposed diffs, the refutation, and the two corrections
+(`-4023` not `-4025`; prefer a `markPrice × multiplierDown` bound over parsing the venue's error
+string) are in the incident note.
+
+**CANDIDATE was not run and today's authoring slot is still UNSPENT** — the incident gate took the
+pass. Worth flagging loudly: `loop:authoring` has **never minted, 0 `playbook-authoring-attempt` rows
+lifetime**, because the registry gate `633f901` fixed in Pass 52 made it impossible. That fix is
+therefore **unverified**, and `WATCH-DEPLOY-HALVES-1` sits at SAMPLE ZERO for the same reason. The
+first authoring run is the highest-value single action available to the next pass.
+
+**One investigation returned nothing.** The fourth agent (RSS trajectory + menu-composition/pin-leak
+audit) died on its structured-output contract after 52 tool calls. RSS was re-read directly and holds;
+**the pin-leak question — whether any of the 14 active-menu symbols is pinned with no open position
+and no resting order — is UNREAD**, and an unread check is not a passing one.
+
+### Next-pass candidates
+
+1. `loop:authoring` — unspent slot, unverified `633f901`, SAMPLE-ZERO watch. First.
+2. Quantify the demo/live divergence across all 37 closed round trips. The divergence is **episodic,
+   not a standing offset** (3 bps apart at this trip's entry, 21 bps at its partial exit, 572 bps
+   during the stall), so "demo PnL is fictional" is NOT supported by this incident — but how much
+   recorded PnL is attributable to decoupling is unmeasured, and it conditions the whole promotion
+   scoreboard. Worth more than any single fix above.
+3. The `-4024` repair, via one of the two correct seams.
+4. The pin-leak audit the failed agent owed.
+5. `output_config: {effort: …}` as a cost-negative truncation experiment.

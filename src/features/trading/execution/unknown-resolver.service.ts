@@ -218,6 +218,7 @@ export class UnknownResolverService {
     const intent =
       this.portfolio.inFlightIntent(rec.clientOrderId) ??
       (await this.loadDurableIntent(rec.clientOrderId));
+    /* v8 ignore next -- NOT unreachable, and not a code defect: this is an ast-v8-to-istanbul artifact. The implicit-else count is derived as after-block minus consequent and reports a NEGATIVE value (68 taken, -66 else), which istanbul renders as uncovered. The else path demonstrably executes — the `return undefined` and the symbol-only return below are reachable ONLY through it, and both are asserted by tests. Making the counter non-negative would need the else to run 69+ times, which is coverage theatre; the artifact belongs upstream, not here */
     if (intent !== undefined) {
       return { symbol: intent.symbol, since: intent.createdAt, algoRail: isAlgoRailIntent(intent) };
     }

@@ -26,7 +26,11 @@ import {
   type VenueFill,
   type VenuePosition,
 } from '../../../../src/ports/venue/exchange';
-import { AXIS_NOT_RUN, type ReconConfig } from '../../../../src/ports/trading/execution';
+import {
+  AXIS_NOT_RUN,
+  VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS,
+  type ReconConfig,
+} from '../../../../src/ports/trading/execution';
 import type { OpsEvent, OpsEventPort } from '../../../../src/ports/common/observability';
 import type { VenueRuntimeDescriptor } from '../../../../src/ports/venue/venue-registry';
 import { fixedFeed, killSwitchStub, makeFill, makeIntent, SYM, T, V } from './helpers';
@@ -167,6 +171,7 @@ function build(
     recon,
     engages,
     opsEvents,
+    tradeSinceCalls,
     setNow: (t: number) => {
       nowMs = t;
     },
@@ -1313,6 +1318,56 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(false);
   });
 
+  it('a write-ahead intent lookup that THROWS halts exactly as before — "could not confirm foreign" is never "confirmed foreign"', async () => {
+    // The downgrade above rests on a DEFINITE null. An unavailable intent store answers neither
+    // "ours" nor "theirs", and the benign reading is the one that would let a real corruption pass
+    // as a stranger's trade — so the only safe resolution of a throw is the original halt (rule 6).
+    const known = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [venueOrder(known, 'open')],
+      trades: [trade(OTHER_COID, 'orphan-1')],
+    });
+    seedOpenOrder(ctx, known);
+    const lookupSpy = vi
+      .spyOn(ctx.store, 'loadIntentByClientOrderId')
+      .mockRejectedValue(new Error('intent store unreachable'));
+    const logged: string[] = [];
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation((msg: unknown) => void logged.push(String(msg)));
+    try {
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(true);
+      expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
+      // The diagnostic must name the coid and the cause, or the halt is unactionable: this is the
+      // only place the operator learns the verdict came from an unavailable store, not from evidence.
+      expect(
+        logged.some((l) => l.includes(OTHER_COID) && l.includes('intent store unreachable')),
+      ).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+      lookupSpy.mockRestore();
+    }
+  });
+
+  it('a store that never wired the OPTIONAL write-ahead lookup halts too — the downgrade is earned by evidence, never assumed from its absence', async () => {
+    // ExecutionStorePort declares loadIntentByClientOrderId with a `?`, so a conforming
+    // implementation may omit it entirely (the pre-2026-08-03 store shape). Reading an unwired probe
+    // as "no intent row" would turn every cb-shaped orphan into a foreign twin on such a store —
+    // silently disabling the corruption halt rather than a stranger's kill switch.
+    const known = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [venueOrder(known, 'open')],
+      trades: [trade(OTHER_COID, 'orphan-1')],
+    });
+    seedOpenOrder(ctx, known);
+    (ctx.store as unknown as { loadIntentByClientOrderId?: unknown }).loadIntentByClientOrderId =
+      undefined;
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true);
+    expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
+  });
+
   // Cluster-A: on the real venue, VenueFill.clientOrderId carries the numeric venue order id
   // (ccxt myTrades has no clientOrderId field) — normalizeTrade sets it from `t.order`. These three
   // cases exercise the venue-id-first resolution + durable second-tier discrimination that replaces
@@ -1686,6 +1741,93 @@ describe('ReconciliationService (§6.4)', () => {
     expect(first.mismatches).toBe(0);
     expect(second.mismatches).toBe(0);
     expect(ctx.store.fills.size).toBe(1);
+    // Once a checkpoint exists the overlap window is unchanged by the cold-start floor below.
+    expect(ctx.tradeSinceCalls[1]).toBe(T - CFG.overlapMs);
+  });
+
+  // 2026-08-03 census: binanceusdm checked ZERO trades across all 19,587 lifetime passes while its
+  // open-orders axis ran normally. A cold checkpoint asked for `since = 0`, and pinned ccxt 4.5.58
+  // turns that into a 1970-01-01..1970-01-08 window on a linear market (binance.js:8253-8266 derives
+  // endTime = min(since + 7d, now)); the venue answers an EMPTY ARRAY without throwing, so no
+  // sweep_failure is recorded and the checkpoint — which only advances off a returned trade — stays
+  // 0 forever. Probe-verified in-container: HYPE/USDT:USDT since=0 ⇒ 0 trades, since=now−24h ⇒ 9.
+  it('floors a cold checkpoint at a bounded recent lookback, never 0, so the trades axis cannot deadlock on an unanswerable window', async () => {
+    const ctx = build({ trades: [] }, undefined, undefined, undefined, { sweepSymbols: [SYM] });
+    await ctx.recon.reconcile();
+    expect(ctx.tradeSinceCalls).toHaveLength(1);
+    const since = ctx.tradeSinceCalls[0]!;
+    expect(since).not.toBe(0);
+    expect(since).toBe(T - 6 * 86_400_000);
+    // The window must stay strictly inside Binance's 7-day startTime..endTime cap, or ccxt derives
+    // an endTime behind `now` and truncates exactly the newest trades this axis exists to find.
+    expect(T - since).toBeLessThan(7 * 86_400_000);
+  });
+
+  // The floor is a FLOOR, not a replacement: a checkpoint newer than the lookback keeps its own
+  // narrow overlap window, so the fix cannot silently widen every steady-state sweep.
+  it('leaves a fresh checkpoint on its overlap window and re-floors only once the checkpoint goes stale', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build(
+      { openOrders: [venueOrder(coid, 'open')], trades: [trade(coid, 'lb-1')] },
+      undefined,
+      undefined,
+      undefined,
+      // balanceAxis:false isolates this to the trade axis — the backfilled BUY moves quote cash away
+      // from the default venue balance stub, which would add an unrelated BALANCE_DRIFT halt.
+      { sweepSymbols: [SYM], balanceAxis: false },
+    );
+    seedOpenOrder(ctx, coid);
+    await ctx.recon.reconcile(); // cold: floored
+    await ctx.recon.reconcile(); // checkpoint = T ⇒ overlap window
+    ctx.setNow(T + 30 * 86_400_000); // 30 days later: the checkpoint is far outside the venue's cap
+    await ctx.recon.reconcile();
+    expect(ctx.tradeSinceCalls[0]).toBe(T - 6 * 86_400_000);
+    expect(ctx.tradeSinceCalls[1]).toBe(T - CFG.overlapMs);
+    expect(ctx.tradeSinceCalls[2]).toBe(T + 30 * 86_400_000 - 6 * 86_400_000);
+  });
+
+  // The floor's twin at the other end (2026-08-03). The checkpoint is monotone and drives the next
+  // pass's `since`, so ONE trade stamped in an unbounded future would advance it past every real
+  // trade and sweep this symbol's fills out of the window forever — the same permanent blindness the
+  // cold-start floor above exists to prevent, arrived at from the opposite direction.
+  it('reconciles future-stamped trades but refuses to let the checkpoint follow the stamp, and reports the whole sweep in ONE error line', async () => {
+    const coid = makeIntent().clientOrderId; // BUY 1 @ 100, step 0.001
+    // Two HALVES of the same order: a venue emitting the wrong time UNIT stamps the whole batch, and
+    // two full-qty trades would halt on FILL_OVERFLOW instead of exercising the clamp.
+    const future = (tradeId: string): VenueFill => ({
+      ...trade(coid, tradeId),
+      qty: '0.5',
+      venueTimestamp: epochMs(T + 30 * 86_400_000),
+    });
+    const ctx = build(
+      { openOrders: [venueOrder(coid, 'open')], trades: [future('skew-1'), future('skew-2')] },
+      undefined,
+      undefined,
+      undefined,
+      // balanceAxis:false isolates this to the trade axis (see the venueOrderId-backfill test above).
+      { sweepSymbols: [SYM], balanceAxis: false },
+    );
+    seedOpenOrder(ctx, coid);
+    const logged: string[] = [];
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation((msg: unknown) => void logged.push(String(msg)));
+    try {
+      const first = await ctx.recon.reconcile();
+      expect(first.halted).toBe(false);
+      expect(ctx.store.fills.size).toBe(2); // the trades themselves are reconciled regardless
+      const clampLines = logged.filter((l) => l.includes('stamped beyond'));
+      expect(clampLines).toHaveLength(1); // per (venue, symbol) sweep — a per-trade line would bury it
+      expect(clampLines[0]).toContain('returned 2 trade(s)');
+      expect(clampLines[0]).toContain(`clamped to ${T + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}`);
+      await ctx.recon.reconcile();
+    } finally {
+      errorSpy.mockRestore();
+    }
+    // The clamped checkpoint read through its only external view: the `since` the SECOND sweep asked
+    // for. Following the stamp would have asked for T + 30d − overlap, i.e. a window containing no
+    // trade that has actually happened yet.
+    expect(ctx.tradeSinceCalls[1]).toBe(T + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS - CFG.overlapMs);
   });
 
   it('does not re-fold an adopt-terminal the journal already recorded (replay-safe)', async () => {

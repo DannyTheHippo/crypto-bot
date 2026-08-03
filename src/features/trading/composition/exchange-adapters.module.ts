@@ -56,6 +56,8 @@ import { PersistenceModule } from '../../../database/database.module';
 import { DRIZZLE_DB } from '../../../database/database.tokens';
 import type * as dbSchema from '../../../database/schemas/trading';
 import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
+import { feeScheduleForVenue } from '../../../domain/trading/fees';
+import { SPOT_VENUE_ID } from '../../../domain/venue/types/venue-map';
 
 // v3 spec §1.3: ExchangeAdaptersModule replaces PaperExchangeModule. VENUE_EXCHANGE_PORTS (token
 // defined in ports/venue/exchange.ts — see that file for why) holds one concrete ExchangePort per registry
@@ -137,9 +139,14 @@ function buildPaperPerpConfig(
   config: TypedConfigService,
   descriptor: VenueRuntimeDescriptor,
 ): PaperPerpConfig {
+  // Fees come from domain/trading/fees.ts, the same table the take-profit gate and the system
+  // prompt read, so the paper simulator can never charge a schedule the live lane does not quote.
+  // Arithmetically identical today (both venues still carry 10/10 pending a separate enable) — the
+  // point is that the pending perp flip reaches the simulator in the same commit as everything else.
+  const { makerBps, takerBps } = feeScheduleForVenue(descriptor.venue);
   return {
     seed: 1,
-    fees: { makerBps: '10', takerBps: '10' },
+    fees: { makerBps, takerBps },
     latency: { submitMs: [0, 0], eventMs: [0, 0] },
     insufficientDepthPolicy: 'partial_then_reject_rest',
     settlementAsset: 'USDT',
@@ -389,6 +396,11 @@ function isTestEnv(): boolean {
 // design, and a dropped funding-simulation row must never stop the trading loop). Config refuses a
 // non-test boot without DATABASE_URL upstream (§3), so the fallback is reachable only under
 // test/ci/no-DB — exactly where InMemoryExecOutbox backs EXEC_OUTBOX.
+function spotPaperFees(): { makerBps: string; takerBps: string } {
+  const { makerBps, takerBps } = feeScheduleForVenue(SPOT_VENUE_ID);
+  return { makerBps, takerBps };
+}
+
 export function buildFundingSink(db: NodePgDatabase<typeof dbSchema> | null): FundingSinkPort {
   return isTestEnv() || db === null ? new InMemoryFundingSink() : new FundingEventsRepository(db);
 }
@@ -396,7 +408,9 @@ export function buildFundingSink(db: NodePgDatabase<typeof dbSchema> | null): Fu
 const DEFAULT_PAPER_CONFIG: PaperConfig = {
   seed: 1,
   takerBuffer: '0.05',
-  fees: { makerBps: '10', takerBps: '10', feeCurrency: 'quote' },
+  // Spot's own row of the shared fee table (see buildPaperPerpConfig for why this indirection
+  // exists). This is the spot-rail default; the perp rail builds its own config per descriptor.
+  fees: { ...spotPaperFees(), feeCurrency: 'quote' },
   latency: { submitMs: [0, 0], eventMs: [0, 0] },
   insufficientDepthPolicy: 'partial_then_reject_rest',
   startingBalances: { USDT: '100000' }, // overridden per-venue in buildExchangePortFor

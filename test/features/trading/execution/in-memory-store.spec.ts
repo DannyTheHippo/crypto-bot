@@ -4,7 +4,7 @@ import { InMemoryExecutionStore } from '../../../../src/features/trading/executi
 import { initialOrder } from '../../../../src/domain/trading/oms/reducer';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
 import type { ApprovalProof } from '../../../../src/domain/trading/types/risk-decision';
-import { clientOrderId, epochMs, venueId } from '../../../../src/domain/common/types/ids';
+import { clientOrderId, epochMs, symbolId, venueId } from '../../../../src/domain/common/types/ids';
 import { price, qty } from '../../../../src/domain/common/types/money';
 import type { Position } from '../../../../src/domain/trading/types/portfolio';
 
@@ -245,6 +245,32 @@ describe('InMemoryExecutionStore', () => {
     // The key is (venue, venueOrderId): the same id on another venue is a different order.
     expect(await store.loadOrderByVenueOrderId(venueId('binanceusdm'), 'v9')).toBeNull();
     expect(await store.loadOrderByVenueOrderId(V, 'nope')).toBeNull();
+  });
+
+  // DEFAULT_FILTERS is hand-maintained (which is why the boot-time drift check exists), so a venue
+  // can hold an order on a symbol the table does not carry. That must degrade to the conservative
+  // literal step, never to a wider one a lookup miss could imply — a too-LARGE stepSize would let the
+  // reducer's `residual < stepSize ⇒ FILLED` dust rule retire an order that is still genuinely open.
+  it('falls back to the conservative literal stepSize for a symbol the hand-maintained filter table does not carry', async () => {
+    const store = new InMemoryExecutionStore();
+    const untabled = symbolId('ZZZ/USDT');
+    const intent = makeIntent({ symbol: untabled });
+    await store.saveNewOrder(
+      initialOrder(intent.clientOrderId, new Decimal('1'), '0.001', untabled),
+      intent,
+    );
+    await store.appendOrderEvent({
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v7' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v7',
+    });
+
+    const found = await store.loadOrderByVenueOrderId(V, 'v7');
+    expect(found?.symbol).toBe(untabled); // the symbol survived — this is a miss, not a lost symbol
+    expect(found?.stepSize).toBe('0.00000001');
   });
 
   it('hasFill answers on the full (venue, symbol, tradeId) idempotency key', async () => {

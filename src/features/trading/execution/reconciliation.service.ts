@@ -1033,7 +1033,38 @@ export class ReconciliationService {
     }
   }
 
-  // Axis 2 — trades since the per-(venue,symbol) checkpoint minus an overlap window.
+  // Floor under the trade axis's `since`, so a cold or long-stale checkpoint asks the venue a
+  // question it can actually answer (2026-08-03 census: binanceusdm checked ZERO trades across all
+  // 19,587 lifetime passes while its open-orders axis ran normally — the fill backfill AND the
+  // FILL_FOR_UNKNOWN_ORDER detector were inert since inception on the venue holding 89% of the
+  // book's notional).
+  //
+  // CAUSE, probe-verified in-container against the demo venue with the app's own credentials
+  // (2026-08-03, #54 pattern — HYPE/USDT:USDT since=0 ⇒ 0 trades, since=undefined ⇒ 27,
+  // since=now−24h ⇒ 9; the same three on spot BTC/USDT ⇒ 353/353/0): Binance's USDⓈ-M userTrades
+  // endpoint caps startTime..endTime at 7 days, and pinned ccxt 4.5.58 enforces that cap
+  // CLIENT-SIDE for linear markets — js/src/binance.js:8253-8266 derives
+  // `endTime = min(since + 7d, now)` whenever `now - since >= 7d`. A cold checkpoint's `since = 0`
+  // therefore asked for 1970-01-01..1970-01-08 and got an empty array back WITHOUT throwing, so no
+  // sweep_failure was ever recorded and the checkpoint — which only advances off a RETURNED trade —
+  // stayed 0 forever. Spot's /api/v3/myTrades takes no derived endTime, which is why the identical
+  // code swept binance normally.
+  //
+  // 6 days, deliberately INSIDE the 7-day cap rather than at it: below the cap ccxt sets no endTime
+  // at all and the venue's own implicit window runs forward from `since`, so the sweep is guaranteed
+  // to reach the present — at exactly 7d the derived endTime lands on `now` computed from a
+  // different clock a round trip earlier, and any skew truncates the newest trades, i.e. the very
+  // failure this floor exists to remove. Wide enough to cover a multi-day host-sleep/restart gap;
+  // one pass per symbol pays for it, since the checkpoint then advances past the floor.
+  //
+  // FAILURE DIRECTION — this is a detection/measurement sweep, so it fails toward sweeping MORE: a
+  // fresh checkpoint keeps its narrow overlap window unchanged (Math.max below), and the floor only
+  // ever replaces a `since` the venue answers with silence. It can never silence a sweep, and it
+  // never suppresses a halt: every trade it surfaces still runs the full reconcileTrade taxonomy.
+  private static readonly MAX_TRADE_LOOKBACK_MS = 6 * 86_400_000;
+
+  // Axis 2 — trades since the per-(venue,symbol) checkpoint minus an overlap window, floored at
+  // MAX_TRADE_LOOKBACK_MS (see above).
   private async reconcileTrades(
     exchange: ExchangePort,
     cfg: ReconConfig,
@@ -1045,10 +1076,14 @@ export class ReconciliationService {
     // cb-prefix coid lookup below only ever matches an adapter (paper) that echoes our own
     // clientOrderId directly. Built once per pass, not per trade (this.orders.all() is a full scan).
     const byVenueId = this.venueOrderIndex(exchange);
+    const lookbackFloor = Math.max(
+      0,
+      this.clock.now() - ReconciliationService.MAX_TRADE_LOOKBACK_MS,
+    );
     for (const symbol of this.sweepSymbols(exchange, cfg)) {
       const key = `${exchange.venue}|${symbol}`;
       const checkpoint = this.checkpoints.get(key) ?? (0 as EpochMs);
-      const since = Math.max(0, checkpoint - cfg.overlapMs) as EpochMs;
+      const since = Math.max(checkpoint - cfg.overlapMs, lookbackFloor) as EpochMs;
       let trades: readonly VenueFill[];
       try {
         trades = await exchange.fetchMyTrades(symbol, since);
@@ -1076,6 +1111,7 @@ export class ReconciliationService {
       // stamps the whole batch, and a per-trade line would bury the incident in its own noise. Error
       // level, not warn — a future-stamped trade is a venue data-integrity event, never routine.
       if (clamped > 0) {
+        /* v8 ignore next -- the `?? 0` fallback is unreachable here: this line runs only when clamped > 0, which requires a trade stamped beyond the ceiling, so advanceTo === ceiling === clock.now() + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS >= the allowance > 0; the `if (advanceTo > (get(key) ?? 0))` above has therefore always set the key by the time this renders */
         this.log.error(
           `venue ${exchange.venue} returned ${clamped} trade(s) on ${symbol} stamped beyond ` +
             `now+${VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}ms — checkpoint clamped to ${this.checkpoints.get(key) ?? 0}`,

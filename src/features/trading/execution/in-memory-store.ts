@@ -177,6 +177,7 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
       state: o.state,
       qty: new Decimal(o.qty),
       cumQty: new Decimal(o.cumQty),
+      /* v8 ignore next 2 -- the `o.symbol === undefined` branch is TYPE-required but unreachable: both callers of toOrderRecord filter on `o.venue === venue`, and venue/symbol are written together by saveNewOrder and carried together by appendOrderEvent (`prev?.venue` / `prev?.symbol`), so venue !== undefined <=> symbol !== undefined and a symbol-less row can never arrive here. It cannot be deleted — DEFAULT_FILTERS is keyed by a non-optional string while o.symbol is string|undefined */
       stepSize:
         (o.symbol === undefined ? undefined : DEFAULT_FILTERS.get(o.symbol)?.stepSize) ??
         '0.00000001',

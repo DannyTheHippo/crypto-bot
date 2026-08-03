@@ -89,6 +89,7 @@ function build(
   };
 
   const cancels: string[] = [];
+  const tradeSinceCalls: number[] = [];
   const exchange: ExchangePort = {
     venue: V,
     capabilities: {
@@ -109,10 +110,12 @@ function build(
     },
     fetchOpenOrders: () => Promise.resolve([]),
     fetchBalances: () => Promise.resolve(new Map()),
-    fetchMyTrades: () =>
-      opts.tradesThrow
+    fetchMyTrades: (...args: unknown[]) => {
+      tradeSinceCalls.push(args[1] as number); // the backfill floor resolveTracking pinned at registration
+      return opts.tradesThrow
         ? Promise.reject(ambiguous('RequestTimeout'))
-        : Promise.resolve(opts.trades ?? []),
+        : Promise.resolve(opts.trades ?? []);
+    },
     validateCredentials: () => Promise.reject(new Error('unused')),
     ...(opts.fetchOpenAlgoOrders ? { fetchOpenAlgoOrders: opts.fetchOpenAlgoOrders } : {}),
   };
@@ -126,7 +129,7 @@ function build(
     portfolio,
     ingestor,
   );
-  return { clock, setNow, store, orders, portfolio, resolver, kills, cancels };
+  return { clock, setNow, store, orders, portfolio, resolver, kills, cancels, tradeSinceCalls };
 }
 
 type Ctx = ReturnType<typeof build>;
@@ -329,6 +332,39 @@ describe('UnknownResolverService — escalation + cadence', () => {
     ctx.orders.apply(coid, { type: 'SUBMIT_AMBIGUOUS' }); // SUBMIT_UNKNOWN, but never added to in-flight
     await ctx.resolver.tick(epochMs(T));
     expect(ctx.resolver.trackedCount()).toBe(0); // reconciliation owns it, not the resolver
+  });
+
+  // 2026-08-03 liveness fix, and the counterpart to the test above: what disqualifies an order from
+  // tracking is having NO SYMBOL from any source (a poll is then physically impossible), not having
+  // no in-flight intent. Boot recovery is the reproducer — a persisted SUBMITTING row is degraded to
+  // SUBMIT_UNKNOWN AFTER boot-recovery's intent-rehydration loop has run, so it arrives here with a
+  // symbol and no intent. Before the fix sync() dropped it outright, which meant the one invariant
+  // that is supposed to end an unknown state (rule 5: unknown >60s ⇒ kill switch) never applied to it.
+  it('tracks a symbol-carrying unknown with no intent anywhere, so the 60s kill-switch backstop still reaches it', async () => {
+    // 'closed' with a residual and no visible trades never resolves — mapVenueStatus defers rather
+    // than asserting a fill it cannot see, which is exactly the state the backstop exists to end.
+    const ctx = build({
+      fetch: () => venueState({ status: 'closed', cumQty: '1', qty: '2' }),
+      trades: [],
+    });
+    const intent = makeIntent();
+    const coid = intent.clientOrderId;
+    ctx.orders.create(initialOrder(coid, intent.qty, QUOTE, SYM)); // symbol on the record; addInFlight deliberately skipped
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+    ctx.orders.apply(coid, { type: 'SUBMIT_AMBIGUOUS' });
+
+    await register(ctx);
+    expect(ctx.resolver.trackedCount()).toBe(1);
+    await polls(ctx, 1);
+    expect(ctx.orders.get(coid)?.state).toBe('SUBMIT_UNKNOWN'); // nothing fabricated from the absence
+
+    await ctx.resolver.tick(epochMs(T + 61_000));
+    expect(ctx.kills.filter((k) => k.reason === 'UNKNOWN_UNRESOLVED_60S')).toHaveLength(1);
+
+    // The backfill floor is a wide fixed lookback resolved ONCE at registration, never the discovery
+    // tick: a boot-recovered order was placed BEFORE this process started, so a discovery-time floor
+    // would hide its own fills and leave a filled order polling until the backstop above.
+    expect(ctx.tradeSinceCalls).toEqual([T - 86_400_000, T - 86_400_000]);
   });
 
   it('does nothing when no entry is due yet', async () => {

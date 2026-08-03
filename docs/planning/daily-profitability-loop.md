@@ -449,6 +449,84 @@ push to any remote; commit gates-green work to local `main`, one commit per impr
 conventional message. Dirty tree at pass start: note it, stage ONLY files this pass authored
 (`git add <paths>`, never `-A`/`-u`).
 
+### 4.6 Fan-out declaration and lane discipline
+
+A pass MAY fan a §3 investigation or a §4 improvement out to parallel sub-agents. The gap this
+section closes is not detection — both recorded fan-out incidents so far were detected and honestly
+reported. The gap is a **declared denominator**: nothing recorded what lanes were declared before
+dispatch, so a partial fan-out reads identically to a complete one, and no later pass could falsify a
+completion claim. `scripts/loop-fanout.mjs` (`pnpm loop:fanout declare|join`, core in
+`scripts/loop-fanout-core.mjs`) fixes that; this section is the procedure around it.
+
+- **The orchestrating pass exclusively owns the four loop files (`research/loop/STATUS.md`,
+  `LOG.md`, `verdicts.md`, `watches.md`) and `loop:sweep`.** This is currently written down nowhere
+  else. Two concurrent sweeps corrupt the watermark every delta in `loop-sweep-core.mjs` is computed
+  against — a lane never runs `loop:sweep`, and no lane touches a loop file; the orchestrator writes
+  the report and the state at §6, after the join, once.
+- **One lease per pass; lanes never call `loop:lock`.** The pass lease taken at §1 step 3 already
+  covers the whole working tree for the whole pass, fan-out included — a lane taking its own lease
+  would either collide with the pass's own lease or silently expire it early.
+- **Read-only research dispatches to an agent type carrying no write tools — never
+  `general-purpose`.** A §3 investigation lane must not be able to touch the working tree at all.
+  This rail existed only inside `research/loop/archive/LOG-through-pass-47.md` (Pass 48's finding: a
+  research agent dispatched as `general-purpose` wrote to the tree despite a read-only instruction;
+  two out-of-scope files were reverted, copies quarantined) — an archive nothing reads by default.
+  Surfacing it here is half the value of this section.
+- **Declare before dispatch.** Write the lane roster — `[{ "name": "...", "scopes": ["..."] }, ...]`
+  — to a scratch file and run `pnpm loop:fanout declare --file <path>`. A trailing `/` on a scope
+  means "this subtree"; without one the scope names exactly one path, never its children (no globs —
+  see the core's header for why). `declare` **exits non-zero** on any pairwise scope overlap between
+  lanes or any lane claiming an `ORCHESTRATOR_OWNED` path (the four loop files above, `package.json`,
+  `.env.app`, the `observability/` configs, and the toolchain configs — `tsconfig*.json`,
+  `eslint.config.mjs`, `.prettierrc`/`.prettierignore`, `.markdownlint-cli2.jsonc`) and writes
+  nothing on refusal. The toolchain configs are the nastiest race: agent A editing
+  `eslint.config.mjs` mid-flight silently changes what agent B's leaf-scoped `pnpm lint` MEANS, so
+  B's later green is not evidence of anything.
+- **Leaf-scoped validation while peers are in flight.** Each write lane runs only its own spec (and
+  `lint`/`format:check` scoped to the files it touched) before reporting back — a full `pnpm test`
+  or `pnpm checks` mid-fan-out measures the peers' in-flight edits, not the lane's own change, and a
+  red result could belong to anyone.
+- **No commits until the join.** The husky pre-commit hook validates the WHOLE repo, so a hook
+  failure naming a file the current lane never touched is a **straggler** — a peer's file, not a
+  defect in this lane's work — and is never "fixed" by the lane that hit it. Wait for the join, then
+  commit once the roster confirms every lane that needs to land has actually returned. A straggler
+  hook failure does not count toward §5's 3-consecutive-validation-failure cap, which is a
+  count on THIS lane's own work — a peer's mid-edit file failing someone else's hook run is not one
+  of those three.
+- **One re-dispatch per lane.** A lane that dies silently (no report, no error) gets one re-dispatch,
+  decomposed into smaller steps. A lane that returns but breaks its output contract (wrong shape, no
+  evidence, claims without artifacts) gets one re-dispatch, re-issued contract-free (plain
+  instructions, no schema to satisfy). A lane that stalls (no response within the pass's own budget)
+  is **stopped before the join** — never left running past it, and never joined as if it had
+  returned.
+- **§3 investigations fan out read-only; §4 improvements fan out with write lanes.** A single pass
+  never mixes the two in one fan-out: a read-only investigation roster carries no `ORCHESTRATOR_OWNED`
+  conflicts by construction (nothing is being written), while a write roster is exactly what
+  `declare` exists to police.
+- **Join, then disclose.** `pnpm loop:fanout join <lane-name> [<lane-name> ...]` (the names of lanes
+  that actually returned) always exits 0 — it is a reporting step, not a gate — and prints a
+  copy-pasteable line naming any declared lane that did not return. That line goes into the LOG.md
+  entry verbatim; a pass that omits it is not entitled to claim the fan-out complete.
+
+**Two refutations, so no future pass re-derives them:**
+
+1. **Per-agent git worktrees — REFUTED, already tried here.** `.claude/worktrees/` exists and is
+   empty. It left a permanent scar at `vitest.config.ts:8-10` (excluding `**/.claude/**` from the
+   test glob) and three sibling excludes (`.markdownlint-cli2.jsonc`, `.prettierignore`,
+   `eslint.config.mjs`, commit `4ffd668`, 2026-07-10): without them, eslint crashed on project-less
+   files, markdownlint re-linted archived copies, prettier re-checked everything, and vitest
+   positional filters matched the copies too (5× test counts) — the same four tools the pre-commit
+   hook runs on every commit. `node_modules` is 432 MB and is not shared by `git worktree`, so N
+   worktrees pay that cost N times. The disqualifier: there is **one** Postgres for this stack, so N
+   worktrees do not get N databases — they get N resets of the SAME one, which worktrees make *look*
+   isolated while leaving them exactly as shared as a single tree.
+2. **A retry wrapper as code — structurally impossible.** A node script cannot dispatch, observe, or
+   kill a Claude sub-agent; it can only run after the fact on artifacts a lane chose to leave behind.
+   The retry policy above (one re-dispatch, decomposed or contract-free, a stall stopped before the
+   join) is procedure the orchestrating pass follows, not code this repo could ship.
+
+Full lane-template text and worked declare/join examples: `docs/planning/loop-fan-out.md`.
+
 ## 5. Validate, then deploy
 
 1. Gates (all green before commit): `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test` — via

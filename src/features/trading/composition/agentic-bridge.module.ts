@@ -490,15 +490,40 @@ export function buildFundingAccrualMap(
 // could drop off the active menu mid-entry. Closing it here mirrors the resting-order clause
 // (same "don't strand a symbol the book is already committed to" rule) rather than inventing a
 // second convention.
+//
+// Position clause (2026-08-04, closes the dust-pin defect logged in research/loop/LOG.md and
+// re-recorded on the spec below): a position notional is compared against the same dustNotional
+// KNOB round-trip-evidence.reader.ts and portfolio-state.service.ts already gate "closed" on — but
+// not the same FORMULA: those two value the residual at the fill's own price (portfolio-
+// state.service.ts's residualNotional, round-trips.ts's cycle walk), while this uses the
+// position-notional convention at entry price (gross-exposure.ts's venue gross calc,
+// position-sizer.service.ts's venueOpenNotional): |signedQty| × avgEntry, gte — at-the-bar counts
+// as real, matching the dust-close fold's strict lt for "is dust". avgEntry is the ENTRY price, not
+// a live mark, so this notional drifts with price in BOTH directions: a mark that has since FALLEN
+// makes it overstate the position (pin retained, harmless) but a mark that has since RISEN makes it
+// UNDERSTATE — a position genuinely above the bar at the live mark can read as sub-bar at entry
+// price and lose its pin. Accepted: PortfolioSnapshot.Position (domain/trading/types/portfolio.ts)
+// carries no mark price, so this seam cannot do better without threading one through, and the only
+// way to reach a sub-bar entry notional in the first place is a partial fill whose remainder was
+// then cancelled/expired (no resting order, no in-flight intent to catch it below). Protective exits
+// are menu-independent (ProtectiveExitService.tick reads PortfolioViewPort directly on its own 1s
+// tick, never the active-menu gate), so a position that loses its consult here is not left
+// unprotected. A resting order or in-flight intent still pins UNCONDITIONALLY regardless of position
+// size via the clause below, so a position mid unwind (order open, notional already under the bar)
+// never loses its consult either.
 export function buildMenuPinPredicate(
   edgePins: EdgeCohortPinState,
   portfolio: PortfolioViewPort,
+  dustNotional: string,
 ): (symbol: string) => boolean {
+  const dustBar = new Decimal(dustNotional);
   return (symbol) => {
     if (edgePins.has(symbol)) return true;
     const snap = portfolio.snapshot();
     for (const p of snap.positions.values()) {
-      if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
+      if (String(p.symbol) === symbol && p.signedQty.abs().mul(p.avgEntry).gte(dustBar)) {
+        return true;
+      }
     }
     return (
       snap.openOrders.some((o) => String(o.symbol) === symbol) ||
@@ -690,7 +715,11 @@ function isTestEnv(): boolean {
         new UniverseScannerService({
           basket: config.strategy.symbols,
           menuSize: config.agentic.activeMenuSize,
-          isPinned: buildMenuPinPredicate(edgePins, portfolio),
+          isPinned: buildMenuPinPredicate(
+            edgePins,
+            portfolio,
+            config.agentic.promotionDustNotional,
+          ),
           logger: { log: (msg) => Logger.log(msg, 'UniverseScanner') },
           // W1 (Grafana rebuild): adapts the recorder's methods to UniverseScannerMetricsLike —
           // this module never imports features/common/observability's boundaries wall the other

@@ -123,6 +123,126 @@ describe('buildAgentPortfolioBlock — correlation (W3 Part 2)', () => {
     expect(block.positions).toEqual([]);
     expect(block.correlation!.btcBeta).toBe(1);
   });
+
+  it('excludes BOTH the spot and perp listings of BTC from the basket side of the comparison', () => {
+    const BTC_PERP = symbolId('BTC/USDT:USDT');
+    const store = new PriceHistoryStore();
+    store.recordWindow(BTC, [
+      candle('100', 0),
+      candle('110', 1), // +0.10
+      candle('99', 2), // -0.10
+      candle('118.8', 3), // +0.20
+    ]);
+    // BTC's perp listing tracks BTC's OWN spot price path exactly — the worst-case leak: if this
+    // listing survives the exclusion, the basket ends up partly self-correlated with BTC.
+    store.recordWindow(BTC_PERP, [
+      candle('100', 0, BTC_PERP),
+      candle('110', 1, BTC_PERP),
+      candle('99', 2, BTC_PERP),
+      candle('118.8', 3, BTC_PERP),
+    ]);
+    store.recordWindow(ALT, [
+      candle('100', 0, ALT),
+      candle('120', 1, ALT), // +0.20 (2x BTC)
+      candle('96', 2, ALT), // -0.20 (2x BTC)
+      candle('134.4', 3, ALT), // +0.40 (2x BTC)
+    ]);
+
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined, store);
+
+    // True beta of the basket excluding both BTC listings is 2 (ALT alone, tracking BTC at 2x — same
+    // fixture as the "exact btcBeta of 2" test above). An exclusion that only matches the literal
+    // spot string 'BTC/USDT' leaves the perp listing in the basket, averaging it with ALT
+    // (mean(1x, 2x) = 1.5x) — silently pulling the reported beta toward BTC's own self-correlation of 1.
+    expect(block.correlation!.btcBeta).toBe(2);
+  });
+
+  it("omits correlation (never a silently self-correlated beta of 1) when BOTH of BTC's listings are the store's only symbols", () => {
+    const BTC_PERP = symbolId('BTC/USDT:USDT');
+    const store = new PriceHistoryStore();
+    store.recordWindow(BTC, [candle('100', 0), candle('110', 1), candle('99', 2)]);
+    store.recordWindow(BTC_PERP, [
+      candle('100', 0, BTC_PERP),
+      candle('110', 1, BTC_PERP),
+      candle('99', 2, BTC_PERP),
+    ]);
+
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined, store);
+
+    // An exclusion that only matches the spot string leaves the perp listing as the sole basket
+    // member, tracking BTC's own series exactly — cov/var of a series against itself is 1, so a
+    // defect here would render a textbook-perfect but meaningless btcBeta of 1 instead of omitting
+    // the block (mirrors the single-listing "excludes BTC's own series" test above).
+    expect(block.correlation).toBeUndefined();
+  });
+
+  it('contributes a dual-listed NON-BTC asset exactly once to the basket, not once per listing', () => {
+    const ETH_PERP = symbolId('ETH/USDT:USDT');
+    const store = new PriceHistoryStore();
+    store.recordWindow(BTC, [
+      candle('100', 0),
+      candle('110', 1), // +0.10
+      candle('99', 2), // -0.10
+      candle('118.8', 3), // +0.20
+    ]);
+    // ETH tracks BTC at 2x, on BOTH its spot and perp listings (identical price path on each).
+    store.recordWindow(ETH, [
+      candle('100', 0, ETH),
+      candle('120', 1, ETH),
+      candle('96', 2, ETH),
+      candle('134.4', 3, ETH),
+    ]);
+    store.recordWindow(ETH_PERP, [
+      candle('100', 0, ETH_PERP),
+      candle('120', 1, ETH_PERP),
+      candle('96', 2, ETH_PERP),
+      candle('134.4', 3, ETH_PERP),
+    ]);
+    // ALT is flat (0 return every bar), so it pulls a correctly-deduped 2-member basket to exactly
+    // 1x BTC (mean(2x, 0x) = 1x).
+    store.recordWindow(ALT, [
+      candle('100', 0, ALT),
+      candle('100', 1, ALT),
+      candle('100', 2, ALT),
+      candle('100', 3, ALT),
+    ]);
+
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined, store);
+
+    // Deduped basket = mean(ETH's 2x return, ALT's 0x return) = 1x BTC ⇒ beta 1. Counting ETH once
+    // per listing instead skews the mean to mean(2x, 2x, 0x) = 4/3x ⇒ beta 1.3333 — a silent
+    // over-weighting of whichever asset happens to be dual-listed on this venue pair.
+    expect(block.correlation!.btcBeta).toBe(1);
+  });
+
+  it('computes beta unchanged over a basket of multiple single-listing (non-duplicated) symbols — regression guard for the routing change', () => {
+    const store = new PriceHistoryStore();
+    store.recordWindow(BTC, [
+      candle('100', 0),
+      candle('110', 1), // +0.10
+      candle('99', 2), // -0.10
+      candle('118.8', 3), // +0.20
+    ]);
+    store.recordWindow(ALT, [
+      candle('100', 0, ALT),
+      candle('120', 1, ALT), // +0.20 (2x BTC)
+      candle('96', 2, ALT), // -0.20 (2x BTC)
+      candle('134.4', 3, ALT), // +0.40 (2x BTC)
+    ]);
+    store.recordWindow(SHIB, [
+      candle('100', 0, SHIB),
+      candle('110', 1, SHIB), // +0.10 (1x BTC)
+      candle('99', 2, SHIB), // -0.10 (1x BTC)
+      candle('118.8', 3, SHIB), // +0.20 (1x BTC)
+    ]);
+
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined, store);
+
+    // mean(ALT's 2x BTC return, SHIB's 1x BTC return) = 1.5x every bar ⇒ beta 1.5 — unchanged by
+    // routing basket population through distinctBaseAssetRepresentatives, since none of these three
+    // symbols share a base asset (dedup is a no-op here).
+    expect(block.correlation!.btcBeta).toBe(1.5);
+  });
 });
 
 // One counter drives distinct clientOrderIds across in-flight-intent fixtures in this describe block.

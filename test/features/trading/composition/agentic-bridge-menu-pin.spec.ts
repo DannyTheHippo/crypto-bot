@@ -88,31 +88,87 @@ function portfolioOf(snap: PortfolioSnapshot): PortfolioViewPort {
   };
 }
 
-// buildMenuPinPredicate is the ACTIVE_MENU_GATE_OVERRIDE pin precedence (agentic-bridge.module.ts),
-// factored out so it's unit-testable without a Nest bootstrap: edge-cohort pin, then any nonzero
-// position, then resting order / in-flight entry intent. A 2026-08-03 review found (and this repo's
-// research/loop/LOG.md records) a real dust-residual defect — a position reduced to sub-stepSize
-// residue below PROMOTION_DUST_NOTIONAL can never reach exact-zero and holds a menu slot forever —
-// but no sound "was this position ever real, or is it still being opened" signal exists at this
-// seam (PortfolioViewPort exposes only a point-in-time snapshot()), so that fix is NOT shipped here;
-// it is tracked as a blocked defect pending a durable round-trip-cycle reader. This suite only
-// exercises the precedence that IS shipped.
+// Same knob as PROMOTION_DUST_NOTIONAL (.env.app) — a fixed literal here so the "at/above the bar"
+// vs "below the bar" cases are exact, not dependent on env state.
+const DUST_NOTIONAL = '5';
+
+// buildMenuPinPredicate is the ACTIVE_MENU_GATE_OVERRIDE pin precedence (agentic-bridge.module.ts):
+// edge-cohort pin, then position-notional-vs-dust-bar, then resting order / in-flight entry intent.
+//
+// History: a 2026-08-03 review found (research/loop/LOG.md records) that the position clause pinned
+// on ANY nonzero signedQty, so a sub-stepSize residual below PROMOTION_DUST_NOTIONAL could never
+// reach exact-zero and held a menu slot (and LLM spend) forever. That pass recorded the fix as
+// blocked "pending a durable round-trip-cycle reader" to distinguish a genuinely-closed dust residual
+// from a position still being opened. That blocker did not survive inspection on 2026-08-04: the
+// durable reader already existed — round-trip-evidence.reader.ts — but this seam never needed the
+// reader itself, only the SAME dustNotional knob it (and portfolio-state.service.ts's dust-close
+// fold) already use to decide "closed". "Still being opened" is independently covered by the
+// resting-order/in-flight-intent clause below, which pins unconditionally regardless of notional.
 describe('buildMenuPinPredicate', () => {
-  it('pins a symbol carrying a nonzero position', () => {
+  it('pins a symbol carrying a position at or above the dust bar', () => {
     const edgePins = new EdgeCohortPinState();
     const snap = snapshotWith({
       positions: [makePosition({ signedQty: new Decimal('1'), avgEntry: price('100') })],
     });
-    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap));
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(true);
   });
 
-  it('pins a symbol carrying a nonzero position regardless of how small its notional is (no size-based unpin logic exists)', () => {
+  it('pins a symbol whose position notional sits exactly at the dust bar (gte, not gt)', () => {
     const edgePins = new EdgeCohortPinState();
+    // signedQty × avgEntry = 0.05 × 100 = 5 = DUST_NOTIONAL exactly.
+    const snap = snapshotWith({
+      positions: [makePosition({ signedQty: new Decimal('0.05'), avgEntry: price('100') })],
+    });
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
+    expect(isPinned(String(SYM))).toBe(true);
+  });
+
+  it('pins a symbol whose position notional sits just above the dust bar', () => {
+    const edgePins = new EdgeCohortPinState();
+    // signedQty × avgEntry = 0.0501 × 100 = 5.01 > DUST_NOTIONAL.
+    const snap = snapshotWith({
+      positions: [makePosition({ signedQty: new Decimal('0.0501'), avgEntry: price('100') })],
+    });
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
+    expect(isPinned(String(SYM))).toBe(true);
+  });
+
+  it('does NOT pin a below-dust-bar residual with no resting order and no in-flight intent', () => {
+    const edgePins = new EdgeCohortPinState();
+    // signedQty × avgEntry = 0.0006 × 100 = 0.06, well under DUST_NOTIONAL — the SOL/USDT-shaped
+    // residual from the live measurement (research/loop/LOG.md, 2026-08-04).
     const snap = snapshotWith({
       positions: [makePosition({ signedQty: new Decimal('0.0006'), avgEntry: price('100') })],
     });
-    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap));
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
+    expect(isPinned(String(SYM))).toBe(false);
+  });
+
+  it('pins a below-dust-bar residual anyway when a resting order exists (never lose a consult mid-unwind)', () => {
+    const edgePins = new EdgeCohortPinState();
+    const snap = snapshotWith({
+      positions: [makePosition({ signedQty: new Decimal('0.0006'), avgEntry: price('100') })],
+      openOrders: [
+        {
+          clientOrderId: clientOrderId('co1'),
+          symbol: SYM,
+          side: 'SELL',
+          qty: qty('0.0006'),
+        },
+      ],
+    });
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
+    expect(isPinned(String(SYM))).toBe(true);
+  });
+
+  it('pins a below-dust-bar residual anyway when an in-flight entry intent exists (never lose a consult mid-entry)', () => {
+    const edgePins = new EdgeCohortPinState();
+    const snap = snapshotWith({
+      positions: [makePosition({ signedQty: new Decimal('0.0006'), avgEntry: price('100') })],
+      inFlightIntents: [makeIntent({ symbol: SYM })],
+    });
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(true);
   });
 
@@ -121,7 +177,7 @@ describe('buildMenuPinPredicate', () => {
     const snap = snapshotWith({
       inFlightIntents: [makeIntent({ symbol: SYM })],
     });
-    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap));
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(true);
   });
 
@@ -137,18 +193,18 @@ describe('buildMenuPinPredicate', () => {
         },
       ],
     });
-    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap));
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(true);
   });
 
   it('does not pin an unrelated symbol with no position, order, or in-flight intent', () => {
     const edgePins = new EdgeCohortPinState();
     const snap = snapshotWith({});
-    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap));
+    const isPinned = buildMenuPinPredicate(edgePins, portfolioOf(snap), DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(false);
   });
 
-  it('short-circuits on the edge-cohort pin before ever reading the portfolio snapshot', () => {
+  it('short-circuits on the edge-cohort pin before ever reading the portfolio snapshot, independent of position size', () => {
     const edgePins = new EdgeCohortPinState();
     edgePins.set([String(SYM)]);
     const portfolio: PortfolioViewPort = {
@@ -159,7 +215,7 @@ describe('buildMenuPinPredicate', () => {
         throw new Error('not needed by isPinned');
       },
     };
-    const isPinned = buildMenuPinPredicate(edgePins, portfolio);
+    const isPinned = buildMenuPinPredicate(edgePins, portfolio, DUST_NOTIONAL);
     expect(isPinned(String(SYM))).toBe(true);
   });
 });

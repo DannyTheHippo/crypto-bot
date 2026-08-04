@@ -12,6 +12,7 @@ import {
   BTC_BENCHMARK_SYMBOL,
   type BenchmarkCandle,
 } from './benchmark-alpha';
+import { distinctBaseAssetRepresentatives, splitSymbol } from '../../../domain/venue/types/symbol';
 import type { PriceHistoryStore } from './price-history-store';
 
 // DISPLAY-ONLY rendering of the money/quantity strings this block puts in the prompt payload. Nothing
@@ -117,10 +118,17 @@ function buildCorrelation(
 ): Pick<AgentPortfolioBlock, 'correlation'> {
   if (priceHistory === undefined) return {};
   const btcCandles = priceHistory.seriesFor(symbolId(BTC_BENCHMARK_SYMBOL));
+  const btcBase = splitSymbol(symbolId(BTC_BENCHMARK_SYMBOL)).base;
   const perSymbolCandles = new Map<string, readonly BenchmarkCandle[]>();
-  for (const symbol of priceHistory.symbols()) {
-    if (String(symbol) === BTC_BENCHMARK_SYMBOL) continue;
-    perSymbolCandles.set(symbol, priceHistory.seriesFor(symbol));
+  // distinctBaseAssetRepresentatives (the SAME helper PassiveBenchmarkRepository's basket derivation
+  // uses, database/repositories/trading/passive-benchmark.repository.ts) collapses every dual-listed
+  // asset — BTC included — down to one representative BEFORE the exclusion check below. Excluding by
+  // raw string equality (as this used to) only ever catches ONE of BTC's two listings
+  // ('BTC/USDT' spot vs 'BTC/USDT:USDT' perp), folding whichever one survives straight into its own
+  // comparison basket; comparing base assets catches both, whatever venue/product form is live.
+  for (const symbol of distinctBaseAssetRepresentatives(priceHistory.symbols())) {
+    if (splitSymbol(symbolId(symbol)).base === btcBase) continue;
+    perSymbolCandles.set(symbol, priceHistory.seriesFor(symbolId(symbol)));
   }
   const btcBeta = computeBasketBtcBeta(perSymbolCandles, btcCandles);
   if (btcBeta === null) return {};

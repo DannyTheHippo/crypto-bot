@@ -116,6 +116,11 @@ export interface UniverseScannerConfig {
   // caller that has no clean position-query wiring yet can omit this without ever stranding a
   // position from consults incorrectly (it would just also need to fall inside the hysteresis band,
   // same as any other incumbent).
+  // 2026-08-04: the actual predicate wired here (buildMenuPinPredicate, agentic-bridge.module.ts)
+  // qualifies the position clause against the shared dust-notional bar at entry price — a position
+  // whose notional never cleared that bar, or whose live mark has since risen back above it from a
+  // sub-bar entry, can fail this predicate; a resting order or in-flight intent still pins
+  // unconditionally regardless of size.
   readonly isPinned?: (symbol: string) => boolean;
   readonly logger?: UniverseScannerLoggerLike;
   readonly metrics?: UniverseScannerMetricsLike;
@@ -349,6 +354,10 @@ export class UniverseScannerService {
       }
       // Pin: an open-position/resting-order symbol is ALWAYS active, independent of rank or
       // hysteresis — a position must never lose its consult.
+      // 2026-08-04: qualified for the position case only — buildMenuPinPredicate compares position
+      // notional at entry price against the shared dust bar, so a sub-bar position whose mark has
+      // since risen back above the bar can now fail isPinned; resting orders/in-flight intents are
+      // unaffected (unconditional pin, see buildMenuPinPredicate's own comment for the trade-off).
       if (this.isPinned(r.symbol)) {
         candidateActive.add(r.symbol);
       }

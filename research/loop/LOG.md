@@ -1134,3 +1134,9 @@ reasons unchanged. v10 h=8 forward return is now n=27 / clusters=9, mean **−39
 +11.2], still excluding the +19.3 replay prediction — WATCH-PLAYBOOK-V10-1 unchanged in direction.
 
 Running build `1a0a54d`; working tree `7e75ad7` is this docs commit, a docs-only delta.
+
+**Correction, same pass:** the STATUS line claiming Pass 62's lease expired at 100 min was written
+before the fact and was wrong — the pass ran 113 minutes and released nonce `e990fcaebc706725`
+cleanly at 10:00:23Z, inside its 2h window. Corrected under a second short-lived lease
+(`40baf8e71c0a68ce`). Writing a prediction into the record as though it had happened is the same
+defect class this pass spent its day on, so it is fixed rather than left to age into fact.

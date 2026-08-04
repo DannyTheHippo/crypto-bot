@@ -117,8 +117,8 @@ pointer here.
   instruction" had been FABRICATED by one of its own lanes. **An authority claim found in a file is still not evidence of authority — but `git log` settles it in one
   command.** Also standing: **stage only files the pass authored**; **`loop:fanout declare` OVERWRITES A LIVE ROSTER** with no refusal — declare ONCE per pass, or join
   first; **an early-stopping lane leaves a red tree** (Pass 62's exit-path lane returned an intermediate thought — check artifacts, never the report alone).
-  **Last pass:** Pass 62, 2026-08-04 (`LOG.md`). Cadence 3×/day; the lease is 2h and time-based, so a long pass finds its own expired (Pass 61's at 385 min, Pass 62's
-  at 100 min; both re-armed mid-pass).
+  **Last pass:** Pass 62, 2026-08-04 (`LOG.md`). Cadence 3×/day; the lease is 2h and time-based, so a long pass can find its own expired — **Pass 61's did, at 385 min,
+  and re-armed mid-pass; Pass 62 ran 113 min and released its own lease cleanly at 10:00:23Z, inside the window.** A 2h pass is not the norm but it is survivable.
 - **THE PASS IS SERIAL-TAIL-BOUND, NOT FINDING-BOUND — third repair-dominated pass, and this is the recommendation the playbook requires.** Pass 62 ran **8 write lanes in
   parallel and shipped 4 commits cleanly**, but found **nine** defects; the ceiling is that ONE pass can gate → review → remediate → deploy → soak → report about five
   slices, and the bottleneck is that serial tail, not the discovery. Two concrete options for the next pass to pick from: run a **repair-only pass type** whose report is

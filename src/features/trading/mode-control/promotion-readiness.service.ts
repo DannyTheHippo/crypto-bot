@@ -80,6 +80,18 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     // P5b: funding rides the SAME mode + evidence-epoch window as fillsForMode above — a stats port
     // that never implemented fundingNetForMode (older fake/impl) degrades to "no funding data"
     // rather than throwing (measurement gate fails OPEN).
+    // Defect 151 (2026-08-04): the cost read is anchored at the EVIDENCE EPOCH — deliberately, and
+    // NOT at the windowStart computed below. netPnl has FOUR terms and the other three (realizedPnl,
+    // fees, fundingNet) are all epoch-anchored, so re-anchoring this one alone would make the sum
+    // span two different windows: measured 2026-08-04, [epoch, windowStart) still carries
+    // $0.08740698 of fees and the realized PnL of 9 fills, so dropping the $7.1553494 of inference
+    // spent over that same interval (23.35% of the $30.6412913 total) subtracts a cost while keeping
+    // the revenue it bought. FAIL CLOSED: this is an input to a permission gate, so over-counting
+    // cost is the safe direction and the epoch read is the wider one — never narrow it.
+    // What the reported defect ("netPnl unreproducible from the numbers the verdict publishes")
+    // actually needed is in `evidence` below: both bounds of this read are now PUBLISHED
+    // (llmCostSinceMs + llmCostCountedThroughMs). The anchor was never the problem; its invisibility
+    // was.
     const [fills, tokenTotals, funding] = await Promise.all([
       this.stats.fillsForMode(DEMO_MODE, epochMs),
       this.stats.llmTokenTotals(epochMs),
@@ -151,6 +163,14 @@ export class PromotionReadinessService implements PromotionReadinessPort {
       realizedPnl: realizedPnl.toFixed(),
       fees: fees.toFixed(),
       llmCostUsd: llmCostUsd.toFixed(),
+      // Defects 150/151: BOTH bounds of the read llmCostUsd came from, published together — replaying
+      // them as llmTokenTotals(llmCostSinceMs, llmCostCountedThroughMs) reproduces that exact sum.
+      // This pair is the whole repair: the cost interval is deliberately NOT the published window
+      // (see the read's own comment above for why re-anchoring it would break the four-term sum), so
+      // it has to be stated rather than inferred from windowDays. Evidence only — no reason keys off
+      // either. null = all-time (no epoch declared) / no rows counted.
+      llmCostSinceMs: epochMs ?? null,
+      llmCostCountedThroughMs: tokenTotals.countedThroughMs ?? null,
       fundingNet: fundingNet.toFixed(),
       netPnl: netPnl.toFixed(),
       windowDays,
@@ -268,6 +288,8 @@ function zeroEvidence() {
     realizedPnl: '0',
     fees: '0',
     llmCostUsd: '0',
+    llmCostSinceMs: null,
+    llmCostCountedThroughMs: null,
     fundingNet: '0',
     netPnl: '0',
     windowDays: 0,

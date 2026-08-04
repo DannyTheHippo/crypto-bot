@@ -32,6 +32,15 @@ import { REPLAY_STRATEGY_ID_PREFIX } from '../../../ports/strategy/agentic-strat
 // SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — excluded from epoch cost below.
 const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;
 
+// Newest created_at in a materialised rowset, null when it is empty. Reduce, not Math.max(...spread):
+// these folds routinely carry tens of thousands of rows, which is argument-count territory.
+function latestCreatedAt(rows: readonly { readonly createdAt: Date }[]): number | null {
+  return rows.reduce<number | null>((latest, r) => {
+    const ms = r.createdAt.getTime();
+    return latest === null || ms > latest ? ms : latest;
+  }, null);
+}
+
 // PROMOTION_STATS binding (mode-control ↔ persistence boundary crossing — see src/ports/promotion.ts's
 // own header comment). fills carries neither strategyId nor side (see trading.schema.ts), so both are
 // resolved via a LEFT JOIN onto order_intents through fills.intent_id — LEFT, not INNER, so a fill
@@ -87,8 +96,22 @@ export class PromotionStatsRepository implements PromotionStatsPort {
   }
 
   // EVIDENCE fold — replay excluded. Feeds the promotion verdict's llmCostUsd.
-  async llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals> {
-    return this.tokenTotals(sinceMs, false);
+  //
+  // AS-OF CAP (defect 150). This is the promotion gate's LARGEST cost term ($30.62 against a
+  // -$70.24 net on the 2026-08-04 sample) and it had no upper bound at all: the returned set was a
+  // function of WHEN the query ran, so two evaluations seconds apart cover different rows under one
+  // published windowDays and a recorded verdict cannot be re-derived. asOfMs restores that —
+  // agent_decisions.created_at and llm_usage.created_at are immutable under the append-only
+  // hardening, so `created_at <= asOfMs` pins a reproducible row set (with the same defaultNow()
+  // caveat fundingNetForMode documents below: created_at is transaction START time, so a
+  // transaction spanning the read can land a row under the watermark the read never saw).
+  //
+  // THE LIVE GATE MUST NOT PASS asOfMs, for the same reason fundingNetForMode's must not: narrowing
+  // a COST window drops spend and inflates netPnl, the wrong direction for a live-arming gate.
+  // Undefined asOfMs ⇒ every row through read time ⇒ the widest, most conservative read. It exists
+  // for the audit re-derivation path — "what did the gate see at T", never "may this lane arm".
+  async llmTokenTotals(sinceMs?: number, asOfMs?: number): Promise<LlmTokenTotals> {
+    return this.tokenTotals(sinceMs, false, asOfMs);
   }
 
   // SPEND fold — replay INCLUDED. Feeds the daily cost breaker only. A replay run bills the same
@@ -102,26 +125,26 @@ export class PromotionStatsRepository implements PromotionStatsPort {
   private async tokenTotals(
     sinceMs: number | undefined,
     includeReplay: boolean,
+    asOfMs?: number,
   ): Promise<LlmTokenTotals> {
     const db = requireDb(this.db);
     const since = sinceMs === undefined ? undefined : new Date(sinceMs);
+    const asOf = asOfMs === undefined ? undefined : new Date(asOfMs);
     // R1 cost exclusion (BY FILTER): synthetic replay-<runId> decide rows must NEVER enter the lane's
     // epoch token cost — one unfiltered replay run exceeds a lane's 14-day breaker budget and poisons
     // netPnl. The reflection llm_usage side needs no such filter: the R1 engine writes no llm_usage
     // rows at all (replay decides ride agent_decisions only), so that half is excluded by construction.
-    const notReplay = includeReplay
-      ? undefined
-      : notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE);
-    const decideWhere =
-      since === undefined
-        ? notReplay
-        : notReplay === undefined
-          ? gte(schema.agentDecisions.createdAt, since)
-          : and(notReplay, gte(schema.agentDecisions.createdAt, since));
-    const reflectionWhere =
-      since === undefined
-        ? eq(schema.llmUsage.kind, 'reflection')
-        : and(eq(schema.llmUsage.kind, 'reflection'), gte(schema.llmUsage.createdAt, since));
+    // Predicate ARRAYS rather than the previous nested ternaries: the as-of cap (defect 150) makes
+    // three independent optional predicates per side, which a ternary chain cannot express readably.
+    const decidePredicates: SQL[] = [];
+    if (!includeReplay) {
+      decidePredicates.push(notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE));
+    }
+    if (since !== undefined) decidePredicates.push(gte(schema.agentDecisions.createdAt, since));
+    if (asOf !== undefined) decidePredicates.push(lte(schema.agentDecisions.createdAt, asOf));
+    const reflectionPredicates: SQL[] = [eq(schema.llmUsage.kind, 'reflection')];
+    if (since !== undefined) reflectionPredicates.push(gte(schema.llmUsage.createdAt, since));
+    if (asOf !== undefined) reflectionPredicates.push(lte(schema.llmUsage.createdAt, asOf));
 
     const [decideRows, reflectionRows] = await Promise.all([
       db
@@ -131,9 +154,10 @@ export class PromotionStatsRepository implements PromotionStatsPort {
           outputTokens: schema.agentDecisions.outputTokens,
           cacheReadInputTokens: schema.agentDecisions.cacheReadInputTokens,
           cacheCreationInputTokens: schema.agentDecisions.cacheCreationInputTokens,
+          createdAt: schema.agentDecisions.createdAt,
         })
         .from(schema.agentDecisions)
-        .where(decideWhere),
+        .where(and(...decidePredicates)),
       db
         .select({
           model: schema.llmUsage.model,
@@ -141,9 +165,10 @@ export class PromotionStatsRepository implements PromotionStatsPort {
           outputTokens: schema.llmUsage.outputTokens,
           cacheReadInputTokens: schema.llmUsage.cacheReadInputTokens,
           cacheCreationInputTokens: schema.llmUsage.cacheCreationInputTokens,
+          createdAt: schema.llmUsage.createdAt,
         })
         .from(schema.llmUsage)
-        .where(reflectionWhere),
+        .where(and(...reflectionPredicates)),
     ]);
 
     // Accumulate BOTH call sites into one per-model map — a lane running a cheap decide model + a
@@ -190,7 +215,15 @@ export class PromotionStatsRepository implements PromotionStatsPort {
       );
     }
 
-    return { perModel: [...byModel.values()] };
+    // Watermark of the fold (defect 150): folded in JS off the created_at already projected above
+    // rather than by two extra MAX() round trips — the rows are materialised here regardless.
+    const watermarks = [latestCreatedAt(decideRows), latestCreatedAt(reflectionRows)].filter(
+      (ms): ms is number => ms !== null,
+    );
+    return {
+      perModel: [...byModel.values()],
+      countedThroughMs: watermarks.length === 0 ? null : Math.max(...watermarks),
+    };
   }
 
   // P5b: Σ funding_payments.amount_quote for mode (sinceMs-scoped like fillsForMode above).

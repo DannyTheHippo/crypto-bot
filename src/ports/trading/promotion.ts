@@ -82,6 +82,12 @@ export interface PerModelTokenTotals {
 
 export interface LlmTokenTotals {
   readonly perModel: readonly PerModelTokenTotals[];
+  // Defect 150: watermark (max created_at) of the rows this fold covers, null when it covered none.
+  // Replaying it as llmTokenTotals' asOfMs reproduces the exact same totals — without it a recorded
+  // llmCostUsd cannot be re-derived at all, because the read's upper edge is "whenever the query
+  // ran". Optional so the existing `{ perModel }` fakes stay valid — same convention as
+  // fundingNetForMode's ingestedThroughMs below.
+  readonly countedThroughMs?: number | null;
 }
 
 // What PromotionReadinessService's round-trip walk + LLM-cost math need from the DB — nothing more.
@@ -97,7 +103,12 @@ export interface PromotionStatsPort {
   // mode column; see promotion-readiness.service.ts's own comment on why over-counting cost here is
   // the fail-closed direction). sinceMs filters to rows created at/after that instant; absent ⇒
   // all-time.
-  llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals>;
+  //
+  // Defect 150: asOfMs caps the read at created_at <= asOfMs for the audit re-derivation path — same
+  // shape, and the same "no live caller" rule, as fundingNetForMode's asOfMs below: NARROWING a cost
+  // window drops spend and so flatters netPnl, which is the wrong direction for a live-arming gate.
+  // The live gate passes ONE argument (see the service's own call site) and must keep passing one.
+  llmTokenTotals(sinceMs?: number, asOfMs?: number): Promise<LlmTokenTotals>;
   // ↓ see PassiveBenchmarkPort below for the benchmark half of the verdict.
   // Same fold, but WITHOUT the replay exclusion — every token that cost real money, including
   // `replay-<runId>` decide rows. Exists as a separate method rather than a boolean on
@@ -222,6 +233,16 @@ export interface PromotionReadinessEvidence {
   readonly realizedPnl: string;
   readonly fees: string;
   readonly llmCostUsd: string;
+  // Defects 150/151: the two bounds of the read llmCostUsd covers — lower (the evidence epoch this
+  // verdict ran under; null = all-time) and upper (watermark = max created_at of the rows counted;
+  // null = none). Replaying them as llmTokenTotals(llmCostSinceMs, llmCostCountedThroughMs)
+  // reproduces the exact llmCostUsd. Publishing BOTH is deliberate: the cost interval is NOT the
+  // window windowDays measures — it is epoch-anchored like realizedPnl/fees/fundingNet, and cannot
+  // be inferred from the window — so an unpublished lower bound left the largest cost term
+  // unreproducible even after the upper one existed. Optional (existing verdict literals stay valid)
+  // and evidence only: no reason keys off either.
+  readonly llmCostSinceMs?: number | null;
+  readonly llmCostCountedThroughMs?: number | null;
   // P5b: Σ funding_payments.amount_quote over the same mode/window as the fills walk — '0' when no
   // stats-port funding method is bound, no rows are in-window, or funding data was never expected.
   // ALREADY folded into netPnl below (netPnl = realizedPnl − fees − llmCostUsd + fundingNet).

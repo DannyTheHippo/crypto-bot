@@ -707,6 +707,164 @@ describe('PromotionReadinessService', () => {
     });
   });
 
+  // Defects 150 + 151 (2026-08-04). The reported symptom was that llmCostUsd could not be
+  // re-derived from what the verdict published: the read had no upper bound at all (150), and its
+  // lower bound — the evidence epoch — was never published, so readers inferred it from windowDays,
+  // which measures a DIFFERENT interval (151). Re-anchoring the cost to windowStart was tried and
+  // REVERTED: netPnl has four terms and the other three (realizedPnl, fees, fundingNet) are
+  // epoch-anchored, so moving one alone sums over two windows — over [epoch, windowStart) on the
+  // 2026-08-04 book that would drop $7.1553494 of inference (23.35% of $30.6412913) while still
+  // counting $0.08740698 of fees and the realized PnL of 9 fills from the same interval. The repair
+  // is to PUBLISH both bounds, which costs $0.00 and moves no gauge. These tests pin the epoch
+  // anchor, both published bounds, and the replay property they buy.
+  describe('cost read bounds (defects 150 + 151)', () => {
+    // One dated cost row — the shape agent_decisions/llm_usage rows have before LlmTokenTotals
+    // aggregates the instant away. 1M input tokens = $3 under CFG's flat 3/Mtok input rate.
+    interface DatedCostRow {
+      readonly createdAt: number;
+      readonly inputTokens: number;
+    }
+    const MTOK_ROW = 1_000_000;
+
+    // Two closed trips (+1 each), 15 days apart, so neither the round-trip floor nor the window
+    // length is what these tests measure — only which cost rows the sum is allowed to see.
+    const CLOSE_A = 1_000_000;
+    const CLOSE_B = CLOSE_A + 15 * DAY;
+    function twoTrips(): PromotionFillRow[] {
+      return [
+        fill({ executedAt: CLOSE_A - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+        fill({ executedAt: CLOSE_A, side: 'SELL', qty: '0.001', price: '51000' }),
+        fill({ executedAt: CLOSE_B - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+        fill({ executedAt: CLOSE_B, side: 'SELL', qty: '0.001', price: '51000' }),
+      ];
+    }
+
+    // Folds dated rows exactly as PromotionStatsRepository.tokenTotals does (created_at >= sinceMs,
+    // created_at <= asOfMs, watermark = max created_at of what survived) — the aggregate port shape
+    // otherwise hides the very interval these defects are about.
+    function statsWithDatedCost(fills: readonly PromotionFillRow[], rows: readonly DatedCostRow[]) {
+      const costCalls: Array<{ sinceMs: number | undefined; asOfMs: number | undefined }> = [];
+      const base = statsOf(fills);
+      const port: PromotionStatsPort = {
+        ...base.port,
+        llmTokenTotals: (sinceMs, asOfMs) => {
+          costCalls.push({ sinceMs, asOfMs });
+          const counted = rows.filter(
+            (r) =>
+              (sinceMs === undefined || r.createdAt >= sinceMs) &&
+              (asOfMs === undefined || r.createdAt <= asOfMs),
+          );
+          const inputTokens = counted.reduce((s, r) => s + r.inputTokens, 0);
+          return Promise.resolve({
+            perModel: [
+              {
+                model: 'claude-sonnet-5',
+                inputTokens,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+              },
+            ],
+            countedThroughMs:
+              counted.length === 0 ? null : Math.max(...counted.map((r) => r.createdAt)),
+          });
+        },
+      };
+      return { port, costCalls };
+    }
+
+    it('the cost read stays anchored at the EPOCH — spend predating the window still counts, and the anchor is published (defect 151)', async () => {
+      // The guard against re-anchoring this term to windowStart. Every row here sits at or after the
+      // epoch, so every row is charged — including the one written before the first trip closed,
+      // whose realized PnL and fees the same verdict counts. llmCostSinceMs is what makes the
+      // interval legible without inferring it from windowDays, which measures something else.
+      const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: 5_000 };
+      const rows: DatedCostRow[] = [
+        { createdAt: 10_000, inputTokens: MTOK_ROW }, // post-epoch, PRE-window: must still count
+        { createdAt: CLOSE_A, inputTokens: MTOK_ROW },
+        { createdAt: CLOSE_A + DAY, inputTokens: MTOK_ROW },
+      ];
+      const { port, costCalls } = statsWithDatedCost(twoTrips(), rows);
+      const v = await new PromotionReadinessService(port, cfg).evaluate();
+      expect(costCalls[0]?.sinceMs).toBe(5_000);
+      expect(v.evidence.llmCostSinceMs).toBe(5_000);
+      // All three rows × $3. The cost interval [5_000, …] is deliberately WIDER than the published
+      // window, which opens at the first close — both are published, neither is inferred.
+      expect(v.evidence.llmCostUsd).toBe('9');
+      expect(v.evidence.netPnl).toBe('-7'); // realized 2 − cost 9
+      expect(v.evidence.firstClosedAt).toBe(CLOSE_A);
+      expect(v.evidence.windowDays).toBe(15);
+    });
+
+    it('an unset epoch publishes a null lower bound (all-time read)', async () => {
+      const rows: DatedCostRow[] = [{ createdAt: 10_000, inputTokens: MTOK_ROW }];
+      const { port, costCalls } = statsWithDatedCost(twoTrips(), rows);
+      const v = await new PromotionReadinessService(port, CFG).evaluate();
+      expect(costCalls[0]?.sinceMs).toBeUndefined();
+      expect(v.evidence.llmCostSinceMs).toBeNull();
+      expect(v.evidence.llmCostUsd).toBe('3');
+    });
+
+    it('the live gate passes NO as-of cap — narrowing a COST window flatters netPnl (defect 150)', async () => {
+      // The mirror of the funding-side rule below: asOfMs exists for audit re-derivation only. A
+      // future editor passing Date.now() (or anything else) here would drop real spend from a
+      // live-arming verdict, and this is the only thing standing in the way.
+      const { port, costCalls } = statsWithDatedCost(twoTrips(), []);
+      await new PromotionReadinessService(port, CFG).evaluate();
+      expect(costCalls[0]?.asOfMs).toBeUndefined();
+    });
+
+    it('a verdict re-derives its exact llmCostUsd from the two bounds it published, after later spend lands (defects 150 + 151)', async () => {
+      // The whole point of the pair. The lane writes a decide row every few minutes, so an
+      // unbounded read genuinely does return a different sum seconds later; replaying the recorded
+      // bounds — and ONLY them, nothing inferred from windowDays — must return the recorded sum.
+      const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: 5_000 };
+      const rows: DatedCostRow[] = [{ createdAt: CLOSE_A + DAY, inputTokens: MTOK_ROW }];
+      const { port } = statsWithDatedCost(twoTrips(), rows);
+      const svc = new PromotionReadinessService(port, cfg);
+
+      const first = await svc.evaluate();
+      expect(first.evidence.llmCostUsd).toBe('3');
+      expect(first.evidence.llmCostSinceMs).toBe(5_000);
+      expect(first.evidence.llmCostCountedThroughMs).toBe(CLOSE_A + DAY);
+
+      rows.push({ createdAt: CLOSE_A + 2 * DAY, inputTokens: MTOK_ROW });
+      const second = await svc.evaluate();
+      expect(second.evidence.llmCostUsd).toBe('6');
+
+      const replay = await port.llmTokenTotals(
+        first.evidence.llmCostSinceMs ?? undefined,
+        first.evidence.llmCostCountedThroughMs ?? undefined,
+      );
+      expect(replay.perModel[0]?.inputTokens).toBe(MTOK_ROW);
+    });
+
+    it('two evaluations over an unchanged rowset publish an identical cost and watermark', async () => {
+      const rows: DatedCostRow[] = [{ createdAt: CLOSE_A + DAY, inputTokens: MTOK_ROW }];
+      const { port } = statsWithDatedCost(twoTrips(), rows);
+      const svc = new PromotionReadinessService(port, CFG);
+      const a = await svc.evaluate();
+      const b = await svc.evaluate();
+      expect(b.evidence.llmCostUsd).toBe(a.evidence.llmCostUsd);
+      expect(b.evidence.llmCostCountedThroughMs).toBe(a.evidence.llmCostCountedThroughMs);
+    });
+
+    it('a port that reports no watermark (absent field or explicit null) records a null one', async () => {
+      // mode-control is a 100%-branch glob: both arms of `tokenTotals.countedThroughMs ?? null`.
+      // The shared statsOf() fake omits the field entirely (older implementations stay valid).
+      const legacy = await service(twoTrips()).evaluate();
+      expect(legacy.evidence.llmCostCountedThroughMs).toBeNull();
+
+      const base = statsOf(twoTrips());
+      const port: PromotionStatsPort = {
+        ...base.port,
+        llmTokenTotals: () => Promise.resolve({ perModel: [], countedThroughMs: null }),
+      };
+      const explicit = await new PromotionReadinessService(port, CFG).evaluate();
+      expect(explicit.evidence.llmCostCountedThroughMs).toBeNull();
+    });
+  });
+
   describe('evidence epoch (W4+W13)', () => {
     it('threads evidenceEpochMs into BOTH stats reads', async () => {
       const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: 5_000 };

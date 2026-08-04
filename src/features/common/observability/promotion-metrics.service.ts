@@ -32,6 +32,16 @@ export const PROMOTION_LLM_COST_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_llm_cost_usd',
   help: 'LLM spend (decide + reflection tokens, priced) counted against promotion evidence, USD',
 });
+// Defect 150 (2026-08-04): llmCostUsd is the largest cost term in netPnl and its read had no upper
+// bound at all — the top edge was "whenever the query ran" — so a recorded verdict's cost could not
+// be re-derived afterwards even in principle. This publishes the watermark the sum actually covers;
+// replaying it as llmTokenTotals' asOfMs, together with the window the verdict publishes, reproduces
+// the exact llmCostUsd. Same seconds convention and same 0 = no rows sentinel as the funding
+// watermark below (the promotion evidence epoch itself postdates 1970, so 0 is never a real instant).
+export const PROMOTION_LLM_COST_COUNTED_THROUGH_GAUGE = makeGaugeProvider({
+  name: 'agentic_promotion_llm_cost_counted_through_seconds',
+  help: 'Unix time of the newest LLM cost row (created_at) covered by the current promotion verdict llmCostUsd; 0 = no rows',
+});
 export const PROMOTION_WINDOW_DAYS_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_window_days',
   help: 'Span (days) between the first and last closed demo round trip in the evidence set',
@@ -63,6 +73,30 @@ export const PROMOTION_BLOCKED_GAUGE = makeGaugeProvider({
   help: 'Which PromotionReadiness reasons are currently blocking the earned-live gate (1 = blocking, 0 = clear), by reason',
   labelNames: ['reason'],
 });
+// Defect 152 (2026-08-04): the reason label above cannot say WHY it fired. The bound benchmark
+// adapter returns its fail-closed CANNOT_COMPUTE sentinel — the STRING 'Infinity'
+// (passive-benchmark.repository.ts), not null — whenever it cannot price the window, and
+// netPnl.lte(Infinity) is unconditionally true, so a REFUSAL and a genuine lost-to-the-basket
+// comparison publish an identical `BELOW_PASSIVE_BENCHMARK 1`. null is a THIRD state (no port bound,
+// or no window to price), where the clause is dropped and can never block. Computability is
+// therefore NOT `passivePnlQuote === null`: that predicate reports a refusal as a successful
+// comparison, i.e. the exact confusion this gauge exists to remove.
+export const PROMOTION_PASSIVE_BENCHMARK_STATE_GAUGE = makeGaugeProvider({
+  name: 'agentic_promotion_passive_benchmark_state',
+  help: 'Passive-benchmark measurement state behind the current promotion verdict: COMPUTED, REFUSED (fail-closed CANNOT_COMPUTE sentinel) or UNAVAILABLE (no port bound / no window) — 1 = current state',
+  labelNames: ['state'],
+});
+// The bar netPnl had to clear, published so the reason series is DERIVABLE from outside:
+// agentic_promotion_net_pnl_usd <= this ⟺ BELOW_PASSIVE_BENCHMARK is blocking, in every state the
+// bound port can produce. +Inf (REFUSED) is an unbeatable bar and -Inf (UNAVAILABLE) is no bar at
+// all, which is exactly what the readiness service's own `passivePnlQuote !== null &&
+// netPnl.lte(...)` computes; both render as valid Prometheus. Meaningful as a QUANTITY only while
+// state="COMPUTED" is 1 — before the first tick this reads its unlabeled-gauge default 0, which the
+// state gauge (all three labels still 0) is what distinguishes from a genuine benchmark of zero.
+export const PROMOTION_PASSIVE_BENCHMARK_PNL_GAUGE = makeGaugeProvider({
+  name: 'agentic_promotion_passive_benchmark_pnl_usd',
+  help: 'Passive equal-weight basket PnL over the promotion evidence window, USD — the bar netPnl must exceed; +Inf = benchmark refused (fail-closed), -Inf = no benchmark clause applied',
+});
 
 // Exhaustive over PromotionBlockedReason (ports/trading/promotion.ts) via `satisfies Record<...,
 // true>` — same convention as agent-metrics-recorder.service.ts's AGENT_VENUE_STOP_EVENT_KEYS. A
@@ -81,6 +115,30 @@ const PROMOTION_BLOCKED_REASON_KEYS = {
 const ALL_PROMOTION_BLOCKED_REASONS = Object.keys(
   PROMOTION_BLOCKED_REASON_KEYS,
 ) as readonly PromotionBlockedReason[];
+
+// Closed set, same discipline as the reason keys above: the constructor seed below iterates it, so a
+// fourth state cannot be added without also being seeded.
+const PASSIVE_BENCHMARK_STATE_KEYS = { COMPUTED: true, REFUSED: true, UNAVAILABLE: true } as const;
+type PassiveBenchmarkState = keyof typeof PASSIVE_BENCHMARK_STATE_KEYS;
+const ALL_PASSIVE_BENCHMARK_STATES = Object.keys(
+  PASSIVE_BENCHMARK_STATE_KEYS,
+) as readonly PassiveBenchmarkState[];
+
+// Pure so the mapping is testable without DI. Reads the verdict's own passivePnlQuote exactly as
+// PromotionReadinessService.evaluate does — see PROMOTION_PASSIVE_BENCHMARK_STATE_GAUGE above for why
+// null means "no clause applied", not "could not compute".
+export function passiveBenchmarkReading(passivePnlQuote: string | null): {
+  readonly state: PassiveBenchmarkState;
+  readonly bar: number;
+} {
+  if (passivePnlQuote === null) return { state: 'UNAVAILABLE', bar: Number.NEGATIVE_INFINITY };
+  const bar = new Decimal(passivePnlQuote).toNumber();
+  // Non-finite is the 'Infinity' sentinel, plus — defensively — a NaN some future port could return:
+  // prom-client renders NaN as the literal `Nan`, which is INVALID exposition and would break the
+  // whole /metrics scrape, so it is normalised onto the fail-closed +Inf instead of published raw.
+  if (!Number.isFinite(bar)) return { state: 'REFUSED', bar: Number.POSITIVE_INFINITY };
+  return { state: 'COMPUTED', bar };
+}
 
 // Its own slower interval: evaluate() runs full-table DB scans over fills/agent_decisions/
 // llm_usage — sampling it in MetricsService's 5s loop would hammer the DB for no benefit (the
@@ -102,8 +160,22 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly llmCostGauge: Gauge<string>,
     @InjectMetric('agentic_promotion_window_days')
     private readonly windowDaysGauge: Gauge<string>,
+    // @Optional for the same reason as the funding watermark below: these are measurement surfaces
+    // and MUST fail OPEN — an unresolved metrics provider degrades to a no-op set(), never a DI
+    // failure that would block the boot of the very thing it measures. Registration in
+    // observability.module.ts is what makes them actually emit; the spec asserts that separately,
+    // because an UNREGISTERED gauge publishes nothing and says nothing about it.
+    @Optional()
+    @InjectMetric('agentic_promotion_llm_cost_counted_through_seconds')
+    private readonly llmCostCountedThroughGauge: Gauge<string> | undefined,
+    @Optional()
+    @InjectMetric('agentic_promotion_passive_benchmark_state')
+    private readonly passiveBenchmarkStateGauge: Gauge<string> | undefined,
+    @Optional()
+    @InjectMetric('agentic_promotion_passive_benchmark_pnl_usd')
+    private readonly passiveBenchmarkPnlGauge: Gauge<string> | undefined,
     // @Optional: the provider (PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE) is registered by the
-    // composition root alongside the other seven promotion gauges (observability.module.ts); optional
+    // composition root alongside the other ten promotion gauges (observability.module.ts); optional
     // here so a caller that has not yet wired the provider degrades to a no-op set() rather than a
     // DI resolution failure at boot (same defensive shape as the readiness port below).
     @Optional()
@@ -128,6 +200,13 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
     try {
       for (const reason of ALL_PROMOTION_BLOCKED_REASONS) {
         this.blockedGauge.labels({ reason }).set(0);
+      }
+      // Defect 152: same seed for the same reason — a labelled gauge emits NO child series until one
+      // is set, so without this the benchmark state would be invisible rather than "not yet sampled"
+      // until the first tick. All three at 0 is the honest reading of "no verdict sampled yet", and
+      // is distinguishable from every post-tick state (which always has exactly one child at 1).
+      for (const state of ALL_PASSIVE_BENCHMARK_STATES) {
+        this.passiveBenchmarkStateGauge?.labels({ state }).set(0);
       }
     } catch {
       /* metrics must never throw into a trading path */
@@ -155,6 +234,13 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
       this.winRateGauge.set(evidence.winRate);
       this.netPnlGauge.set(new Decimal(evidence.netPnl).toNumber());
       this.llmCostGauge.set(new Decimal(evidence.llmCostUsd).toNumber());
+      // Defect 150: published in the same synchronous burst as the cost it bounds — a watermark from
+      // a different sample than its own cost figure would not re-derive that figure.
+      this.llmCostCountedThroughGauge?.set(
+        evidence.llmCostCountedThroughMs === null || evidence.llmCostCountedThroughMs === undefined
+          ? 0
+          : evidence.llmCostCountedThroughMs / 1000,
+      );
       this.windowDaysGauge.set(evidence.windowDays);
       // Defect 143: same synchronous tick as every other gauge here (loop-sweep-core.mjs depends on
       // the same-sample invariant across this burst) — publishes the truncation instead of leaving
@@ -165,6 +251,13 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
           ? 0
           : evidence.fundingIngestedThroughMs / 1000,
       );
+      // Defect 152: state and bar set together in the same burst, so one scrape can never pair a
+      // COMPUTED state with a refusal's bar — the pair is only readable as a pair.
+      const benchmark = passiveBenchmarkReading(evidence.passivePnlQuote);
+      this.passiveBenchmarkPnlGauge?.set(benchmark.bar);
+      for (const state of ALL_PASSIVE_BENCHMARK_STATES) {
+        this.passiveBenchmarkStateGauge?.labels({ state }).set(state === benchmark.state ? 1 : 0);
+      }
       this.readyGauge.set(permitted ? 1 : 0);
       // G5: explicit 1/0 over the WHOLE closed set every tick (not just the reasons that fired) —
       // a reason that cleared since the last tick must drop to 0, not linger absent-from-this-tick

@@ -67,8 +67,11 @@ import { OpsEventLogger } from './ops-event-logger';
 import {
   PROMOTION_BLOCKED_GAUGE,
   PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
+  PROMOTION_LLM_COST_COUNTED_THROUGH_GAUGE,
   PROMOTION_LLM_COST_GAUGE,
   PROMOTION_NET_PNL_GAUGE,
+  PROMOTION_PASSIVE_BENCHMARK_PNL_GAUGE,
+  PROMOTION_PASSIVE_BENCHMARK_STATE_GAUGE,
   PROMOTION_READY_GAUGE,
   PROMOTION_ROUND_TRIPS_GAUGE,
   PROMOTION_WIN_RATE_GAUGE,
@@ -175,6 +178,13 @@ import {
     // PromotionMetricsService.tick() calls .set() on this gauge every sample rather than leaving it
     // untouched on a skip.
     PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
+    // Same rule as the line above, and the reason all three are @Optional at the injection site: the
+    // gauge is DECLARED in promotion-metrics.service.ts but only emits because it is listed HERE.
+    // Declaring without registering is silent — the service would set() a no-op forever and /metrics
+    // would carry no series at all, which is precisely the defect (#150, #152) these publish to fix.
+    PROMOTION_LLM_COST_COUNTED_THROUGH_GAUGE,
+    PROMOTION_PASSIVE_BENCHMARK_STATE_GAUGE,
+    PROMOTION_PASSIVE_BENCHMARK_PNL_GAUGE,
     PromotionMetricsService,
     VERSION_NET_PNL_GAUGE,
     VERSION_ROUND_TRIPS_GAUGE,

@@ -1121,3 +1121,56 @@ Amended the same day after soak defect #2:
   **Resolution:** the pass following the first non-dry `pnpm loop:authoring` run. Until such a run
   exists the sample is zero, and **no pass may report this WATCH as holding** — an unrun check is not
   a passing one.
+
+## Open defects #147–#152 (found Pass 62, evidenced, NOT shipped)
+
+STATUS.md carries the one-line facts and points here. Full evidence, queries and proposed fixes:
+`LOG.md` § Pass 62. The reverted 576-line exit-path diff is quarantined at
+`scratchpad/exit-path-quarantine/exit-path-incomplete.patch`.
+
+**#147 LIVE — four orphaned reduce-only STOP_MARKETs from 2026-07-31, still `state='ACKED'`,
+`terminal_at IS NULL`.** Two on `UNI/USDT:USDT` qty 13 at trigger **4.177** while UNI is LONG 15 @
+avg_entry 3.888 with its own take-profit resting at 3.966 — a rally to 4.177 (**+7.4%, above its own
+TP, i.e. a WINNING move**) fires 26 units of reduce-only market SELL against a 15-unit long. Two on
+`KAITO/USDT:USDT` qty 35.2, and KAITO has **no position row at all**. Mechanism:
+`reconcileOrphanedAlgoStop` early-returns when a plan is active (UNI has one) and `break`s after the
+first `vsl` match, so a second orphan on the same symbol is structurally unreachable;
+`AlgoStopRecoveryService.sweep` is boot-only. **NOT self-correcting** — the reconciler's open-orders
+axis reads `fetchOpenOrders`, which never sees the perp algo/conditional rail (its own counter reports
+`open_orders_checked=4`, exactly the four non-algo LIMIT orders).
+Named fix: run the sweep every managed bar, collect ALL `vsl`-role orders, match on algoId, and
+cancel only what is positively identified as not-the-current-plan's — on ambiguity LEAVE IT, because
+cancelling a stop the position still needs is strictly worse than a stale one resting.
+
+**#148 LIVE (bounded, recurring) — a take-profit drift-cancel strands the position with no venue stop
+until the next bar.** `manageVenueTp`'s drift branch emits a bare cancel and defers re-placement.
+Observed 2026-08-04T08:30:35–08:44Z: HYPE, BTC and UNI — **$195.59 of a $434 perp book, 45%** — held
+no protective stop for ~15 minutes, with `PLAN_STOP_WATCH_ENABLED=false` so the 1s watcher backstop
+is off. **It self-healed at the 08:45 bar** (verified 08:59Z: all six positions carry stop + TP), so
+this is a recurring bounded window, not an outage — but it recurs on the first managed bar after every
+restart, and there have been 37 boots since the epoch. Named fix: replace-before-cancel in the same
+signal batch (the `cancelBeforeSubmit` primitive already exists on the exit path).
+
+**#149 LIVE — every restart replaces the model's declared exit geometry with a synthetic 5% stop /
+2% take-profit it never authored**, a 2.5:1 adverse risk/reward. `ActivePlanState` is in-memory; the
+re-arm fallback hardcodes `barsElapsed: 0`, `maxHoldBars: 96`. ETH and SOL are on that geometry now —
+their resting orders sit at exactly 1.05000 and 0.98000 of avg entry, and the model's own take-profit
+distribution over 166 plans is 0.012–0.04, concentrated at 0.02/0.025/0.03/0.035. With 96 bars = 24h
+against a ~9h restart cadence the declared time-stop can never mature: only **3 of 43** closed trips
+ever exited via `max_hold`, and those cost −$2.62 — the LEAST damaging non-TP path, so "max_hold is
+bleeding the book" is refuted; the defect is the inverse. This also MANUFACTURES #148: the resting TP
+was priced off the model's 0.035, the re-armed plan wants 0.02, so the correctly-priced order is
+cancelled as "drifted". Named fix (minimal): derive `barsElapsed` from the open position's actual
+entry time, and re-derive the pcts from the resting venue orders' own prices — the same
+"re-adopt off the venue's own price" rule `reconcileOrphanedAlgoStop` already applies.
+
+**#150–#152 promotion-gate MEASUREMENT defects.** The gate's thresholds, `MIN_WINDOW_DAYS`, the four
+live gates and the arming interlock are OUT OF SCOPE and untouched; how the gate MEASURES is in scope.
+(150) `llmCostUsd` — the gate's largest cost term — still has **no `asOfMs`/watermark bound** after
+`4ef4153`, which fixed re-derivability only for the **37× smaller** funding term; an uncapped read is
+unreproducible by construction. (151) `netPnlUsd` sums LLM cost over a **different interval** than
+`windowDays` measures, so **25.2% of the published cost falls outside the published window**.
+(152) `BELOW_PASSIVE_BENCHMARK` is currently firing on a **REFUSAL (`CANNOT_COMPUTE`)**, not on a
+comparison, and no published series distinguishes the two. The other six published gauges
+**reproduce BYTE-EXACTLY** from raw fills/orders/agent_decisions/llm_usage/funding_payments — I3 was
+performed by hand Pass 62, which is what makes these three legible as defects rather than noise.

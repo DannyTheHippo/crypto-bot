@@ -7,7 +7,9 @@ import {
   desc,
   and,
   gte,
+  lte,
   isNotNull,
+  max,
   not,
   notLike,
   sql,
@@ -195,21 +197,60 @@ export class PromotionStatsRepository implements PromotionStatsPort {
   // hasRows distinguishes "ingested rows that happen to net to zero" from "nothing ingested" —
   // PromotionReadinessService's fail-open missing-data flag depends on that distinction, not the
   // netQuote value alone (SUM() over zero matching rows is SQL NULL, not '0').
+  //
+  // AS-OF CAP. funding_time is the venue's MARKET instant; created_at is when the hourly poller
+  // wrote the row. Measured on the live journal 2026-08-04 (n=54): median ingest lag 48 min, p95
+  // 30.7 h, max 4.81 days (first-ever backfill and host-sleep catch-up bursts are the tail). With
+  // no created_at bound the returned set is a function of WHEN the query runs, not of its
+  // arguments: the 2026-08-03T16:07Z gate sample read -0.74678358 over 50 rows and the identical
+  // query re-read -0.77918708 over 53 rows eight hours later. asOfMs restores re-derivation —
+  // created_at is immutable (0001_v3_append_only_hardening.sql funding_payments_immutable) and a
+  // batch INSERT shares one transaction timestamp, so `created_at <= asOfMs` pins an exactly
+  // reproducible row set — with one caveat: created_at is defaultNow() (transaction START time, not
+  // commit time), so a transaction that begins before a read and commits after can land a row whose
+  // created_at <= watermark the read never actually saw. Theoretical against the current single
+  // short batched-insert writer, but not a hard guarantee.
+  //
+  // THE LIVE GATE MUST NOT PASS asOfMs. This book PAYS funding net (-0.78038125 over 54 rows: 36
+  // payments totalling -1.18451127 against 18 receipts totalling +0.40413002), so NARROWING the
+  // window drops a COST and inflates netPnl. Undefined asOfMs ⇒ every ingested row ⇒ the widest and
+  // therefore most conservative read. asOfMs has no caller yet — it exists for the audit
+  // re-derivation path, so a future caller passing it is asking "what did the gate see at T", never
+  // "may this lane arm". promotion-readiness.service.ts:79 passes two arguments and must keep
+  // passing two.
+  //
+  // ingestedThroughMs is the watermark of the returned set (max created_at, null when empty) so a
+  // recorded verdict is self-describing: replaying it as asOfMs reproduces this exact sum.
   async fundingNetForMode(
     mode: TradingMode,
     sinceMs?: number,
-  ): Promise<{ readonly netQuote: string; readonly hasRows: boolean }> {
-    const modePredicate = eq(schema.fundingPayments.mode, mode);
-    const where: SQL | undefined =
-      sinceMs === undefined
-        ? modePredicate
-        : and(modePredicate, gte(schema.fundingPayments.fundingTime, sinceMs));
+    asOfMs?: number,
+  ): Promise<{
+    readonly netQuote: string;
+    readonly hasRows: boolean;
+    readonly ingestedThroughMs: number | null;
+  }> {
+    const predicates: SQL[] = [eq(schema.fundingPayments.mode, mode)];
+    if (sinceMs !== undefined) {
+      predicates.push(gte(schema.fundingPayments.fundingTime, sinceMs));
+    }
+    if (asOfMs !== undefined) {
+      predicates.push(lte(schema.fundingPayments.createdAt, new Date(asOfMs)));
+    }
     const rows = await requireDb(this.db)
-      .select({ net: sum(schema.fundingPayments.amountQuote) })
+      .select({
+        net: sum(schema.fundingPayments.amountQuote),
+        ingestedThrough: max(schema.fundingPayments.createdAt),
+      })
       .from(schema.fundingPayments)
-      .where(where);
+      .where(and(...predicates));
     const net = rows[0]?.net;
-    return { netQuote: net ?? '0', hasRows: net !== null && net !== undefined };
+    const ingestedThrough = rows[0]?.ingestedThrough ?? null;
+    return {
+      netQuote: net ?? '0',
+      hasRows: net !== null && net !== undefined,
+      ingestedThroughMs: ingestedThrough === null ? null : ingestedThrough.getTime(),
+    };
   }
 
   // Newest reflection-path usage row = the last reflection attempt that actually reached the API

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { PromotionReadinessService } from '../../../../src/features/trading/mode-control/promotion-readiness.service';
 import type {
   LlmTokenTotals,
@@ -444,6 +445,36 @@ describe('PromotionReadinessService', () => {
       expect(v.evidence.llmCostUsd).toBe('5');
     });
 
+    // Defect 142 (2026-08-04): the fail-closed fallback above previously left no trace of which
+    // model triggered it — a config drift (e.g. the claude-opus-4-8 → claude-opus-5 rename that left
+    // 58 historical DB rows unpriced) was invisible outside a manual evidence read. This does not
+    // weaken the fail-closed-rate assertion above (llmCostUsd still prices at the max-of-configured
+    // rate) — it only pins that the warning names the model.
+    it('an UNKNOWN model logs a warning naming the model id (observability, defect 142)', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        const tokens: LlmTokenTotals = {
+          perModel: [
+            {
+              model: 'claude-opus-4-8',
+              inputTokens: 1_000_000,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+          ],
+        };
+        const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+        await svc.evaluate();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('claude-opus-4-8'));
+      } finally {
+        // A failed expect above must still restore Logger.prototype.warn — vitest.config.ts sets no
+        // restoreMocks, so an unrestored spy here would leak into every later test in this file and
+        // turn one real failure into a cascade of misleading ones.
+        warnSpy.mockRestore();
+      }
+    });
+
     it('with no tokenPrices map, cache rates fall back to the flat cache knobs (or 0 when absent)', async () => {
       // CFG has no cache knobs → cache priced at 0; only input/output count.
       const tokens: LlmTokenTotals = {
@@ -459,6 +490,99 @@ describe('PromotionReadinessService', () => {
       };
       const v = await service([], tokens).evaluate();
       expect(v.evidence.llmCostUsd).toBe('3');
+    });
+
+    // hasTokens (`||` chain, llmCostUsd) short-circuits on the FIRST truthy operand — every test
+    // above puts a positive inputTokens first, so operands 2-4 are never even reached. Three rows,
+    // each zeroing every operand before the one under test, force each later operand to be the one
+    // that decides (and, for cacheCreationTokens, the one reached last with nothing left to check).
+    it('each hasTokens operand (output/cacheRead/cacheCreation) is independently reached, not just input (branch coverage)', async () => {
+      const tokens: LlmTokenTotals = {
+        perModel: [
+          // operand 2 decides: output only.
+          {
+            model: 'claude-sonnet-5',
+            inputTokens: 0,
+            outputTokens: 1_000_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          },
+          // operand 3 decides: cacheRead only.
+          {
+            model: 'claude-sonnet-5',
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 1_000_000,
+            cacheCreationTokens: 0,
+          },
+          // operand 4 decides: cacheCreation only.
+          {
+            model: 'claude-sonnet-5',
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 1_000_000,
+          },
+        ],
+      };
+      const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+      const v = await svc.evaluate();
+      // sonnet rates (PRICED): output 15, cacheRead 0.3, cacheWrite 6 → 15 + 0.3 + 6 = 21.3.
+      expect(v.evidence.llmCostUsd).toBe('21.3');
+    });
+
+    // Defect 142's own warn (line ~249) is `if (hasTokens && !this.warnedModels.has(model))` — the
+    // suite above only ever takes the TRUE path. These pin both ways it goes FALSE, since they are
+    // different facts: no tokens at all (the real 'prescreen'/'plan-executor' case) vs. a real model
+    // already latched from an earlier evaluate() on the same instance. Nested here (not a sibling
+    // describe) to reuse PRICED — an unpriced-model warn is unreachable under CFG, whose tokenPrices
+    // map is absent (ratesFor returns the flat defaults before ever reaching the warn branch).
+    describe('unpriced-model warn — both FALSE paths (branch coverage)', () => {
+      it('an unpriced ALL-ZERO-token row (internal journal tag) never warns — hasTokens=false skips the branch entirely', async () => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        try {
+          const tokens: LlmTokenTotals = {
+            perModel: [
+              {
+                model: 'prescreen',
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+              },
+            ],
+          };
+          const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+          await svc.evaluate();
+          expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+          // Same leak hazard as the defect-142 test above: vitest.config.ts sets no restoreMocks.
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('the same unpriced model warns exactly once across two evaluate() calls on one instance (per-process latch)', async () => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        try {
+          const tokens: LlmTokenTotals = {
+            perModel: [
+              {
+                model: 'claude-opus-9',
+                inputTokens: 1_000_000,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+              },
+            ],
+          };
+          const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+          await svc.evaluate();
+          await svc.evaluate();
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
     });
   });
 
@@ -534,6 +658,52 @@ describe('PromotionReadinessService', () => {
       expect(v.evidence.fundingNet).toBe('0');
       expect(v.evidence.fundingDataMissing).toBe(false);
       expect(v.evidence.netPnl).toBe('30');
+    });
+
+    // Defect 143 (2026-08-04): fundingNetForMode gained an optional third `asOfMs` parameter so
+    // AUDIT/re-derivation callers (test/backtest/book-truth.spec.ts) can pin a past funding read to
+    // its ingest watermark. This book PAYS funding net, so narrowing the window on a live evaluation
+    // would FLATTER netPnl — the exact defect the asOfMs cap exists to enable only for audits, never
+    // for the live gate. This test is the only thing standing between the codebase and a future
+    // editor "helpfully" passing Date.now() as a third argument here.
+    it('the live gate calls fundingNetForMode with NO as-of cap — a narrowed funding window flatters a book that pays funding (defect 143)', async () => {
+      const calls: unknown[][] = [];
+      const base = statsOf(profitableFills());
+      const port: PromotionStatsPort = {
+        ...base.port,
+        fundingNetForMode: (...args: unknown[]) => {
+          calls.push(args);
+          return Promise.resolve({
+            netQuote: '-4.5',
+            hasRows: true,
+            ingestedThroughMs: 1_700_000_000_000,
+          });
+        },
+      };
+      const v = await new PromotionReadinessService(port, CFG).evaluate();
+      // Exactly two arguments: mode + evidence epoch. A third would silently narrow the window.
+      expect(calls[0]).toEqual(['testnet', undefined]);
+      expect(calls[0]!.length).toBe(2);
+      // Verdict is unchanged by the fix — same exact string as the funding-inclusion test above.
+      expect(v.evidence.netPnl).toBe('25.5');
+      expect(v.evidence.fundingIngestedThroughMs).toBe(1_700_000_000_000);
+    });
+
+    // mode-control is a 100%-branch coverage glob (vitest.config.ts) — the new
+    // `funding.ingestedThroughMs ?? null` needs both arms covered; the fakes above (which return a
+    // numeric watermark or omit the field entirely, i.e. undefined) already cover the
+    // truthy/undefined arms — this exercises the explicit `null` arm a port CAN return (e.g. no
+    // funding rows ingested yet), which `?? null` must also fold to null.
+    it('a stats port returning a null funding watermark records a null evidence watermark', async () => {
+      const base = statsOf(profitableFills());
+      const port: PromotionStatsPort = {
+        ...base.port,
+        fundingNetForMode: () =>
+          Promise.resolve({ netQuote: '-4.5', hasRows: true, ingestedThroughMs: null }),
+      };
+      const v = await new PromotionReadinessService(port, CFG).evaluate();
+      expect(v.evidence.fundingIngestedThroughMs).toBeNull();
+      expect(v.evidence.netPnl).toBe('25.5');
     });
   });
 

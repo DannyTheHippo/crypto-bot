@@ -133,7 +133,19 @@ export interface PromotionStatsPort {
   fundingNetForMode?(
     mode: TradingMode,
     sinceMs?: number,
-  ): Promise<{ readonly netQuote: string; readonly hasRows: boolean }>;
+    // Defect 143: caps the read at created_at <= asOfMs for the audit re-derivation path — no caller
+    // yet in the tree; the live gate must never pass this. See the repository's own comment for why
+    // narrowing the window flatters a book that pays funding.
+    asOfMs?: number,
+  ): Promise<{
+    readonly netQuote: string;
+    readonly hasRows: boolean;
+    // Watermark (max created_at) of the rows this sum covers; optional so the existing
+    // netQuote+hasRows fakes stay valid — same convention as llmSpendTotalsAllSources /
+    // latestReflectionAt / lastSuccessfulDecideAt above. asOfMs is for AUDIT re-derivation only:
+    // the live gate must never narrow the funding window on a book that pays funding.
+    readonly ingestedThroughMs?: number | null;
+  }>;
 }
 
 // ── Realized round-trip evidence (reflection lane) ──────────────────────────
@@ -222,6 +234,11 @@ export interface PromotionReadinessEvidence {
   // exist in-window — a visible measurement-gap signal, deliberately OUTSIDE `reasons` so it never
   // blocks promotion (fail-open; see PromotionReadinessConfig.fundingDataExpected's own comment).
   readonly fundingDataMissing: boolean;
+  // Defect 143: watermark (max created_at) of the funding rows this verdict's fundingNet covers.
+  // Replaying it as fundingNetForMode's asOfMs reproduces the exact sum. Optional so the existing
+  // verdict literals (livegate + metrics + routing specs) stay valid — same convention as
+  // PromotionFillRow.refPrice above. Evidence only; no reason keys off it.
+  readonly fundingIngestedThroughMs?: number | null;
   // What the passive equal-weight basket would have earned, in quote units, on the SAME capital over
   // the SAME window — or null when no benchmark port is bound or it could not be computed. Compared
   // against netPnl above to produce BELOW_PASSIVE_BENCHMARK. Null is not a failure: the gate simply

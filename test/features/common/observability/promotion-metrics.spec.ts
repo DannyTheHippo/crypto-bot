@@ -4,6 +4,7 @@ import { register } from 'prom-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   PROMOTION_BLOCKED_GAUGE,
+  PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
   PROMOTION_LLM_COST_GAUGE,
   PROMOTION_NET_PNL_GAUGE,
   PROMOTION_READY_GAUGE,
@@ -44,6 +45,7 @@ const FAKE_EVIDENCE = {
   firstClosedAt: 1,
   lastClosedAt: 2,
   fundingDataMissing: false,
+  fundingIngestedThroughMs: 1_700_000_000_000,
   passivePnlQuote: null,
   reasons: [] as PromotionBlockedReason[],
 };
@@ -57,6 +59,7 @@ async function buildModule(readiness?: PromotionReadinessPort): Promise<TestingM
       PROMOTION_NET_PNL_GAUGE,
       PROMOTION_LLM_COST_GAUGE,
       PROMOTION_WINDOW_DAYS_GAUGE,
+      PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
       PROMOTION_READY_GAUGE,
       PROMOTION_BLOCKED_GAUGE,
       PromotionMetricsService,
@@ -73,7 +76,7 @@ describe('PromotionMetricsService', () => {
     register.clear();
   });
 
-  it('registers all seven promotion gauges', async () => {
+  it('registers all eight promotion gauges', async () => {
     moduleRef = await buildModule();
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
@@ -82,6 +85,7 @@ describe('PromotionMetricsService', () => {
       'agentic_promotion_net_pnl_usd',
       'agentic_promotion_llm_cost_usd',
       'agentic_promotion_window_days',
+      'agentic_promotion_funding_ingested_through_seconds',
       'agentic_promotion_ready',
       'agentic_promotion_blocked',
     ]) {
@@ -124,9 +128,32 @@ describe('PromotionMetricsService', () => {
     expect(await register.getSingleMetricAsString('agentic_promotion_window_days')).toContain(
       'agentic_promotion_window_days 16.5',
     );
+    expect(
+      await register.getSingleMetricAsString('agentic_promotion_funding_ingested_through_seconds'),
+    ).toContain('agentic_promotion_funding_ingested_through_seconds 1700000000');
     expect(await register.getSingleMetricAsString('agentic_promotion_ready')).toContain(
       'agentic_promotion_ready 1',
     );
+  });
+
+  // Defect 143: the watermark gauge's `?? 0` branch — a verdict with no funding rows ingested must
+  // read 0, never a stale prior value or an absent series (100%-branch glob, vitest.config.ts).
+  it('tick() sets the funding-ingested-through gauge to 0 when the verdict carries no watermark', async () => {
+    const readiness: PromotionReadinessPort = {
+      evaluate: () =>
+        Promise.resolve({
+          permitted: true,
+          evidence: { ...FAKE_EVIDENCE, fundingIngestedThroughMs: null },
+        }),
+    };
+    moduleRef = await buildModule(readiness);
+    const service = moduleRef.get(PromotionMetricsService);
+
+    await service.tick();
+
+    expect(
+      await register.getSingleMetricAsString('agentic_promotion_funding_ingested_through_seconds'),
+    ).toContain('agentic_promotion_funding_ingested_through_seconds 0');
   });
 
   it('tick() sets agentic_promotion_ready=0 for a not-permitted verdict', async () => {

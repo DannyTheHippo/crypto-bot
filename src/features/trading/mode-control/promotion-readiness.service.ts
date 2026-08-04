@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { sumFeesQuote, walkRoundTrips } from '../../../domain/trading/risk/round-trips';
 import {
@@ -30,6 +30,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // exercised by promotion-readiness.service.spec.ts's fake-stats-port branch matrix.
 @Injectable()
 export class PromotionReadinessService implements PromotionReadinessPort {
+  private readonly log = new Logger(PromotionReadinessService.name);
+  // Per-process latch (defect 142 follow-up): evaluate() runs every 5 min (PromotionMetricsService)
+  // and 'prescreen'/'plan-executor' are internal row tags, not model ids — permanently unpriceable,
+  // ~3 warns/tick without this, 2:1 noise over the one signal (a real rename drift like
+  // claude-opus-4-8) the warning exists to surface.
+  private readonly warnedModels = new Set<string>();
+
   constructor(
     @Optional() @Inject(PROMOTION_STATS) private readonly stats: PromotionStatsPort | undefined,
     @Inject(PROMOTION_READINESS_CONFIG) private readonly cfg: PromotionReadinessConfig,
@@ -77,7 +84,7 @@ export class PromotionReadinessService implements PromotionReadinessPort {
       this.stats.fillsForMode(DEMO_MODE, epochMs),
       this.stats.llmTokenTotals(epochMs),
       this.stats.fundingNetForMode?.(DEMO_MODE, epochMs) ??
-        Promise.resolve({ netQuote: '0', hasRows: false }),
+        Promise.resolve({ netQuote: '0', hasRows: false, ingestedThroughMs: null }),
     ]);
 
     const dustNotional = new Decimal(this.cfg.dustNotional);
@@ -150,6 +157,10 @@ export class PromotionReadinessService implements PromotionReadinessPort {
       firstClosedAt,
       lastClosedAt,
       fundingDataMissing,
+      // Defect 143: the funding sum is only re-derivable if the recorded verdict says which ingest
+      // watermark it covers. Replaying this instant as fundingNetForMode's asOfMs reproduces the
+      // exact netQuote this verdict used. Evidence only — no reason keys off it.
+      fundingIngestedThroughMs: funding.ingestedThroughMs ?? null,
       passivePnlQuote,
       reasons,
     };
@@ -162,7 +173,15 @@ export class PromotionReadinessService implements PromotionReadinessPort {
   // strings from config). An empty perModel list yields 0 (no LLM calls in the window).
   private llmCostUsd(tokenTotals: { perModel: readonly PerModelTokenTotals[] }): Decimal {
     return tokenTotals.perModel.reduce((sum, m) => {
-      const r = this.ratesFor(m.model);
+      // All-zero rows (e.g. 'prescreen'/'plan-executor' journal tags) cost 0 x any rate = 0
+      // regardless of which rate resolves, so the unpriced-model warn below is skippable here
+      // without touching netPnl either way.
+      const hasTokens =
+        m.inputTokens > 0 ||
+        m.outputTokens > 0 ||
+        m.cacheReadTokens > 0 ||
+        m.cacheCreationTokens > 0;
+      const r = this.ratesFor(m.model, hasTokens);
       const cost = new Decimal(m.inputTokens)
         .div(MTOK)
         .mul(r.input)
@@ -179,7 +198,10 @@ export class PromotionReadinessService implements PromotionReadinessPort {
   // tokenPrices map IS configured, the MOST EXPENSIVE rate per component across every configured
   // rate set (defaults + all mapped models). Fail-closed: a cost row naming a model the operator
   // never priced can only ever OVER-count, never silently under-count, inside a live-arming gate.
-  private ratesFor(model: string): {
+  private ratesFor(
+    model: string,
+    hasTokens: boolean,
+  ): {
     input: Decimal;
     output: Decimal;
     cacheRead: Decimal;
@@ -211,6 +233,25 @@ export class PromotionReadinessService implements PromotionReadinessPort {
         cacheWrite: new Decimal(e.cacheWritePerMtok),
       })),
     ];
+    // Unknown model with a map configured: fail-closed to the most expensive rate per component
+    // (see this method's own header comment for the direction). Defect 142 (2026-08-04): this
+    // fallback previously left no trace of WHICH model triggered it — a config drift (e.g. a rename
+    // that drops an old model id, as happened to claude-opus-4-8) is otherwise invisible outside a
+    // manual evidence read. Pure side-effect: never alters the returned rates, so it cannot change
+    // the arming verdict or netPnl.
+    //
+    // Skip entirely when the row carries no tokens (internal journal tags like 'prescreen' /
+    // 'plan-executor', never a real model id): 0 x any rate = 0, so netPnl is provably unaffected
+    // either way, and this service ticks every 5 min (PromotionMetricsService) — warning on those
+    // permanently-unpriceable tags buried the one signal this warn exists for 2:1 in its own noise.
+    // Latched per (model) for the process lifetime once a warn does fire, so a real drift logs once,
+    // not every tick.
+    if (hasTokens && !this.warnedModels.has(model)) {
+      this.warnedModels.add(model);
+      this.log.warn(
+        `promotion cost model "${model}" has no AGENTIC_TOKEN_PRICES_JSON entry — pricing at the fail-closed max-of-configured rate; add an entry to price it exactly.`,
+      );
+    }
     return {
       input: Decimal.max(...pools.map((p) => p.input)),
       output: Decimal.max(...pools.map((p) => p.output)),
@@ -233,6 +274,7 @@ function zeroEvidence() {
     firstClosedAt: null,
     lastClosedAt: null,
     fundingDataMissing: false,
+    fundingIngestedThroughMs: null,
     // No stats source ⇒ no window ⇒ nothing to benchmark against. Null, never '0': a zero here
     // would read as "passive earned nothing", which the NON_POSITIVE_NET_PNL clause would then
     // silently double-count against a break-even strategy.

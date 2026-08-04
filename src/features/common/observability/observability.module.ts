@@ -62,6 +62,7 @@ import {
 import { OpsEventLogger } from './ops-event-logger';
 import {
   PROMOTION_BLOCKED_GAUGE,
+  PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
   PROMOTION_LLM_COST_GAUGE,
   PROMOTION_NET_PNL_GAUGE,
   PROMOTION_READY_GAUGE,
@@ -159,6 +160,13 @@ import {
     PROMOTION_WINDOW_DAYS_GAUGE,
     PROMOTION_READY_GAUGE,
     PROMOTION_BLOCKED_GAUGE,
+    // Registered here rather than left @Optional-and-absent: an UNREGISTERED gauge emits no series
+    // at all on /metrics, so the series must exist to be read. The hazard this avoids is on the
+    // REGISTERED side instead — a registered-but-never-.set() unlabeled gauge reads as a quiet 0
+    // (see scripts/loop-sweep-core.mjs's own comment on that shape) — which is why
+    // PromotionMetricsService.tick() calls .set() on this gauge every sample rather than leaving it
+    // untouched on a skip.
+    PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE,
     PromotionMetricsService,
     VERSION_NET_PNL_GAUGE,
     VERSION_ROUND_TRIPS_GAUGE,

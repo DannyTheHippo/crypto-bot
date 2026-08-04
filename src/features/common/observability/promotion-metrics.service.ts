@@ -36,6 +36,15 @@ export const PROMOTION_WINDOW_DAYS_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_window_days',
   help: 'Span (days) between the first and last closed demo round trip in the evidence set',
 });
+// Defect 143 (2026-08-04): fundingNet is truncated at whatever the hourly poller had written by
+// read time (see PromotionStatsRepository.fundingNetForMode's own comment) — this gauge publishes
+// the watermark so the truncation is visible instead of silent; its distance from now() is the
+// ingest lag the last verdict could not see. 0 = no funding rows ingested yet (never conflated with
+// a real epoch — the promotion evidence epoch itself postdates 1970).
+export const PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE = makeGaugeProvider({
+  name: 'agentic_promotion_funding_ingested_through_seconds',
+  help: 'Unix time of the newest funding_payments row (created_at) covered by the current promotion verdict fundingNet; 0 = no rows',
+});
 export const PROMOTION_READY_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_ready',
   help: 'Earned-live promotion verdict (1 = permitted, 0 = not permitted)',
@@ -93,6 +102,13 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly llmCostGauge: Gauge<string>,
     @InjectMetric('agentic_promotion_window_days')
     private readonly windowDaysGauge: Gauge<string>,
+    // @Optional: the provider (PROMOTION_FUNDING_INGESTED_THROUGH_GAUGE) is registered by the
+    // composition root alongside the other seven promotion gauges (observability.module.ts); optional
+    // here so a caller that has not yet wired the provider degrades to a no-op set() rather than a
+    // DI resolution failure at boot (same defensive shape as the readiness port below).
+    @Optional()
+    @InjectMetric('agentic_promotion_funding_ingested_through_seconds')
+    private readonly fundingIngestedThroughGauge: Gauge<string> | undefined,
     @InjectMetric('agentic_promotion_ready')
     private readonly readyGauge: Gauge<string>,
     @InjectMetric('agentic_promotion_blocked')
@@ -140,6 +156,15 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
       this.netPnlGauge.set(new Decimal(evidence.netPnl).toNumber());
       this.llmCostGauge.set(new Decimal(evidence.llmCostUsd).toNumber());
       this.windowDaysGauge.set(evidence.windowDays);
+      // Defect 143: same synchronous tick as every other gauge here (loop-sweep-core.mjs depends on
+      // the same-sample invariant across this burst) — publishes the truncation instead of leaving
+      // it silent.
+      this.fundingIngestedThroughGauge?.set(
+        evidence.fundingIngestedThroughMs === null ||
+          evidence.fundingIngestedThroughMs === undefined
+          ? 0
+          : evidence.fundingIngestedThroughMs / 1000,
+      );
       this.readyGauge.set(permitted ? 1 : 0);
       // G5: explicit 1/0 over the WHOLE closed set every tick (not just the reasons that fired) —
       // a reason that cleared since the last tick must drop to 0, not linger absent-from-this-tick

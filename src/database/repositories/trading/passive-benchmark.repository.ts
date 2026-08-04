@@ -34,6 +34,27 @@ const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;
 // that tried and could not compute.
 const CANNOT_COMPUTE = 'Infinity';
 
+// STALENESS BOUND (defect 141, 2026-08-04). closeAtOrAfter/closeAtOrBefore below return the NEAREST
+// qualifying bar in the requested direction however far away it is, and a far-away bar yields a
+// finite return rather than CANNOT_COMPUTE. The journal grid is not gapless: the deployed
+// agent_decisions grid carries a 46.75h hole (2026-07-25T10:45Z -> 2026-07-27T09:30Z; all 40
+// configured symbols carry a >=43h hole ending at that same instant, verified by direct SQL
+// 2026-08-04) INSIDE the very window this gate evaluates, and a real testnet fill sits in it. The
+// 40 journaled symbols moved +4.66% equal-weight across that hole (worst -1.446%, best +21.277%,
+// verified by direct SQL 2026-08-04); the basket itself prices the 28 distinct base-asset
+// representatives drawn from them. That is 2x to 5x the whole-window basket return, and the
+// mis-anchoring UNDERSTATES basketReturn from either endpoint, which lowers passivePnlQuote and so
+// lowers the bar netPnl must clear. That is a live-arming permission gate loosened by a data gap, so
+// an endpoint no bar can price within this bound is CANNOT_COMPUTE, not a stale price.
+// 2h admits every non-outage hole the deployed grid has ever shown (routine grid holes are 30
+// minutes; the worst endpoint lag the deployment has ever produced across all 295 testnet fills is
+// 29.42 min forward / 0.68 min backward, ~4x headroom over that history, ~8x over the current
+// window's own endpoints of 14.56 min / 0.57 min) while capping the anchoring error at 2h of drift.
+// A CODE constant, not an .env.app knob, for the same reason MIN_ROUND_TRIPS / MIN_WINDOW_DAYS are
+// (promotion-readiness.service.ts:18-19): a safety bound on a permission gate must not be loosenable
+// from deploy config.
+const MAX_ENDPOINT_STALENESS_MS = 2 * 60 * 60 * 1000;
+
 // PASSIVE_BENCHMARK binding — the benchmark half of the earned-live promotion verdict (see the
 // port's own header comment, ports/trading/promotion.ts). Crosses the features/trading/mode-control
 // ↔ database boundary the same way PromotionStatsRepository does; only the composition root may
@@ -90,10 +111,12 @@ export class PassiveBenchmarkRepository implements PassiveBenchmarkPort {
   // First closed 15m bar at-or-after `atMs` — see scripts/loop-forward-return-core.mjs's header for
   // the verified close-at-event_time convention this table-wide read relies on. trigger_kind =
   // 'candle' excludes exec-triggered rows (a fill time is not bar-aligned); strategy_id NOT LIKE
-  // 'replay-%' excludes R1 synthetic backfill rows from live price evidence.
+  // 'replay-%' excludes R1 synthetic backfill rows from live price evidence. Bounded by
+  // MAX_ENDPOINT_STALENESS_MS above -- an endpoint no bar can price within that bound is a refusal,
+  // not a far-away price.
   private async closeAtOrAfter(symbol: string, atMs: number): Promise<Decimal | null> {
     const rows = await requireDb(this.db)
-      .select({ close: schema.agentDecisions.close })
+      .select({ close: schema.agentDecisions.close, eventTime: schema.agentDecisions.eventTime })
       .from(schema.agentDecisions)
       .where(
         and(
@@ -106,14 +129,19 @@ export class PassiveBenchmarkRepository implements PassiveBenchmarkPort {
       )
       .orderBy(asc(schema.agentDecisions.eventTime))
       .limit(1);
-    const close = rows[0]?.close;
-    return close === undefined || close === null ? null : new Decimal(close);
+    const row = rows[0];
+    if (row === undefined || row.close === null) return null;
+    // Bound direction mirrors the query's own: this bar is at-or-AFTER atMs, so staleness is forward.
+    if (row.eventTime - atMs > MAX_ENDPOINT_STALENESS_MS) return null;
+    return new Decimal(row.close);
   }
 
   // Last closed 15m bar at-or-before `atMs` — same predicate as closeAtOrAfter, opposite bound.
+  // Bounded by MAX_ENDPOINT_STALENESS_MS above -- an endpoint no bar can price within that bound is a
+  // refusal, not a far-away price.
   private async closeAtOrBefore(symbol: string, atMs: number): Promise<Decimal | null> {
     const rows = await requireDb(this.db)
-      .select({ close: schema.agentDecisions.close })
+      .select({ close: schema.agentDecisions.close, eventTime: schema.agentDecisions.eventTime })
       .from(schema.agentDecisions)
       .where(
         and(
@@ -126,8 +154,11 @@ export class PassiveBenchmarkRepository implements PassiveBenchmarkPort {
       )
       .orderBy(desc(schema.agentDecisions.eventTime))
       .limit(1);
-    const close = rows[0]?.close;
-    return close === undefined || close === null ? null : new Decimal(close);
+    const row = rows[0];
+    if (row === undefined || row.close === null) return null;
+    // At-or-BEFORE atMs, so staleness is backward — same bound, opposite sign.
+    if (atMs - row.eventTime > MAX_ENDPOINT_STALENESS_MS) return null;
+    return new Decimal(row.close);
   }
 
   // Every demo-mode fill from the start of the book through `toMs`, oldest→newest — the exposure

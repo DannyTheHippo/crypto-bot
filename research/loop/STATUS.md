@@ -80,9 +80,10 @@ pointer here.
   bps**; the `×2` leg conversion is **NOT an aggregation error** — the finding is dispersion (1 of 49 trips within 1 bps of the blend).
   `studies/exit-attribution-restated-2026-08-03.md`, `census-2026-08-03.md`, `entry-rate-denominator-2026-08-03.md`.
 - **THE FILTER-DRIFT GUARD FIRED ON ITS FIRST LIVE BOOT AND CAUGHT A REAL 10× ERROR** — `FIL/USDT tickSize table=0.001 venue=0.0001`; **that symbol is refused until the
-  table is fixed** (defect #146). A guard firing on its first boot is the guard working, not a regression. **A $0.61/day TRUNCATION LEAK IS WIRED FLAG-OFF** (`ea68379`,
-  `AGENTIC_OUTPUT_EFFORT`, optional enum, NO default ⇒ request byte-identical until enabled); **the enable is a SEPARATE commit + $0 offline review** (`charter.md`),
-  detail in **WATCH-V4-12** below. **THE PIN-SET LEAK IS STILL OPEN AND WAS NOT REACHED** for a second pass — ≈$0.33/day; repair withdrawn; **sound route = a durable
+  table is fixed** (defect #146). A guard firing on its first boot is the guard working, not a regression. **THE TWO SURVIVING LEVERS ARE ENABLED 2026-08-04 on owner
+  instruction** — `AGENTIC_OUTPUT_EFFORT=medium` (L1, the $0.61/day truncation leak; the "$0 offline review" precondition was REPLACED with reasons, not waived —
+  `redesign-scoreboard-2026-08-04.md` § Amendment: a $0 review of an API request param is vacuous by construction) and `AGENTIC_WAKE_MOVE_PCT=0.012` (L4). Both watches
+  run per § 3.1/§ 3.4; first read after TWO full UTC days (~2026-08-06); detail in **WATCH-V4-12** below. **THE PIN-SET LEAK IS STILL OPEN AND WAS NOT REACHED** for a second pass — ≈$0.33/day; repair withdrawn; **sound route = a durable
   round-trip-cycle reader** (`LOG.md` § Pass 58).
 - **THE SPOT LANE IS SEVERELY SUPPRESSED, AND THE OBVIOUS EXPLANATION IS HALF WRONG.** `sideEligibility` is **prompt payload, not a code gate**. Spot has **14 lifetime
   `open_long` and zero `open_short`, ever**; under v10 it is 0 entries on 191 consults, P(0) ≈ 3.8e-4 — **confounded with v10**. `verdicts.md`'s _"Do not propose cost
@@ -168,9 +169,11 @@ Rows **54/55** moved in full to `charter.md` § Backlog closed ledger; rows **18
 - **THE OWNER DECISION THIS PROGRAM TURNS ON** — the gate CANNOT be passed, by arithmetic: an arm must post +20.9/+26.4/+33.8/+81.4 bps, the bar is
   **CLUSTER-limited**, unreachable at h=1/4 at ANY cluster count, universe **28 BASES not 40 strings**. `success-exit-2026-07-31.md` — "STOP with extra
   steps" unrebutted. **And the bar those figures are scored against was itself never derived** — see the top banner.
-- **GO/NO-GO OWED: the ~$22 Family B paid edge run** — blocker refuted 08-03, the paid block is atomic. **Not run unilaterally**; the deployment's own
-  falsification test. **THE OOS SESSION ARM HAS NEVER RUN, and is now BLOCKED ON ITS OWN PREREG** (defect #140) as well as on the owner-side hourly
-  trigger its § Cadence names. `studies/oos-session-arm-2026-08-03.md`.
+- **FAMILY B: DECIDED NO RUN 2026-08-04** (owner delegated the go/no-go; `studies/family-b-disposition-2026-08-04.md`) — the live forward-return watch,
+  POWERED on v10, superseded it as the deployment's falsification instrument, and no branch of the $22 outcome could change a decision this program can
+  still take. #50 closed SUPERSEDED, #64 MOOT; § 5 of the record preserves the run procedure. **THE OOS SESSION ARM HAS NEVER RUN — prereg REPAIRED by
+  amendment 08-04** (was defect #140: stale p0, a VOID band above the incumbent's own rate); still awaits the owner-side hourly trigger its § Cadence
+  names. `studies/oos-session-arm-2026-08-03.md`.
 - **ONE `.env.app` edit hook-blocked** — `:153` spot/`STOP_LOSS_LIMIT` FALSE since `f5abf8a`. **`:159` `AGENTIC_PLAYBOOK_AB_PCT=40` must NOT be
   zeroed** — that cancels the owner's daily-minting override. **The daily mint has produced ZERO candidates in 3 days** (one row, id 16, 08-01).
   **Both provider accounts** — Anthropic funded 07-30 (re-verified 08-03), Moonshot presumed suspended.

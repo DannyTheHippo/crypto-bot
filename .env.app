@@ -88,6 +88,7 @@ AGENTIC_TIMEOUT_MS=90000 # per-call DECIDE request timeout. v3 soak defect #3 (2
 # attempts as transport-RETRYABLE. 90s = ~3x the measured shape, still <=10% of a 15m bar so a
 # wedged call cannot eat the retry window — the fail-fast intent survives at batched scale.
 AGENTIC_MAX_TOKENS=4096 # max output tokens per LLM call (schema default; v2 rich decision contract — directives, thesis, portfolio scheduling — needs headroom)
+AGENTIC_OUTPUT_EFFORT=medium # L1 enable 2026-08-04 (redesign-scoreboard-2026-08-04.md §3.1 + its Amendment): WATCH-V4-12 truncation leak, $0.6148/day paid-and-discarded; rollback = unset (requests byte-identical by construction, +eff tag partitions rows)
 AGENTIC_MIN_DECISION_INTERVAL_MS=0 # floor between agent decisions; 0 = every closed candle
 AGENTIC_WARMUP_BARS=340 # closed candles retained; ≥336 keeps h4 (and h1) HTF indicators non-null at 15m
 # v3 §3.3: the two lane-split budgets (spot 1100/1.50/2M + perp 1100/1.50/2M) merge into ONE
@@ -107,7 +108,7 @@ AGENTIC_MAX_POSITION_FRACTION_PERP=0.35 # X2 2026-07-20: multi-position perp boo
 AGENTIC_FALLBACK_CONSULT_BARS=8 # XA1 2026-07-20: 16 (4h) starved evidence pace — 2h floor (schema default)
 # v2 consult scheduler (B2): wake-on-move — a bar close whose move vs lastConsultPrice clears this
 # fraction forces an immediate re-consult regardless of schedule.
-AGENTIC_WAKE_MOVE_PCT=0.008 # XA1 2026-07-20: 1.5% never fires in the dominant sub-0.5% chop regime (schema default)
+AGENTIC_WAKE_MOVE_PCT=0.012 # L4 enable 2026-08-04 (redesign-scoreboard-2026-08-04.md §3.4): wake-on-move is the DOMINANT consult trigger (57.7%/24h); 1.2% is XA1's untested midpoint — 0.8% fires constantly, 1.5% never fires in sub-0.5% chop. Declared saving $0.15-0.60/day; rollback to 0.008 if notional/day falls as fast as spend or forced_fallback absorbs the wakes
 AGENTIC_PLAN_EXIT_TTL_BARS=2 # TTL (bars) on plan-executor exit signals; 1-bar TTL races its own age (a max_hold exit expired live 2026-07-07 at 902.2s vs 900s)
 AGENTIC_DRAIN_COOLDOWN_BASE_MS=30000 # first AUTO-drain cooldown backoff
 AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff

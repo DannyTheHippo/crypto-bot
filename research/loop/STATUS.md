@@ -3,7 +3,7 @@
 # Loop STATUS — what is true right now
 
 **Read this file at the start of every pass. It is the only loop file a pass MUST read.** Everything else is looked up on demand; § Index says which
-file answers which question. Last updated **Pass 60, 2026-08-04**. Hard cap 200 lines — anything longer belongs in the file that owns it, with a
+file answers which question. Last updated **Pass 61, 2026-08-04**. Hard cap 200 lines — anything longer belongs in the file that owns it, with a
 pointer here.
 
 ## ⛔ THE BAR EVERY STUDY IS SCORED AGAINST WAS NEVER DERIVED — AND IT IS WRONG IN BOTH DIRECTIONS
@@ -25,14 +25,14 @@ pointer here.
 > **518 cadence-only consults spent $17.81, 61.9% of the bill, with no trade attached.** Only **per-trip notional and the timing knobs** move the
 > ratio; a cost argument against trading MORE is wrong. `studies/llm-cost-attribution-2026-08-04.md`.
 
-## ⚠ `loop:sweep` REPORTS 2 alarms post-deploy — one frozen, one NEW
+## ⚠ `loop:sweep` REPORTS 1 alarm — frozen, and its recorded age-out date was WRONG
 
 > **`venue_reject_rate_high [binance]` — 16/20 = 80.0%. Do not investigate, do not tune.** All 20 submits predate `f5abf8a`; all 16 rejects are one
-> `reduce_only SELL ZEC/USDT` retried half-hourly. **Do not lower the threshold** (binanceusdm 4/186, Wilson 99.9% UB 8.45%, spec-pinned). **Its
-> recorded clearing path is UNREACHABLE** — it will not clear on a spot entry, it **ages out ~2026-08-07T01:45Z** into
-> `venue_reject_rate_undetermined`, which is silence, not health. Newest binance submit **2026-07-31T01:45:02Z**. **`cost_breaker_proximity` is NEW
-> Pass 60** — spend **$2.72 against the $3.00/day breaker (~90%)**; the lane self-paces to almost exactly the cap, so this is the recorded cost shape
-> becoming an alarm every pass must triage, not a new leak.
+> `reduce_only SELL ZEC/USDT` retried half-hourly; newest binance submit **2026-07-31T01:45:02Z**. **Do not lower the threshold** (binanceusdm 4/186,
+> Wilson 99.9% UB 8.45%, spec-pinned). The window is most-recent-N with a 7-day recency bound, so it **cannot clear by dilution** — it breaches the
+> 6-submit floor at **2026-08-06T23:15Z** (re-derived Pass 61; the recorded `~2026-08-07T01:45Z` was wrong) and becomes
+> `venue_reject_rate_undetermined`, which is **silence, not health**. **`cost_breaker_proximity` CLEARED at the UTC day roll** — it read $2.72/$3.00
+> at Pass 60. The lane self-paces to almost exactly the cap, so expect it to re-fire late each UTC day: recorded cost shape, not a leak.
 
 ## ⚠ Standing cautions — bodies live elsewhere; these are the facts, follow the pointer
 
@@ -53,16 +53,22 @@ pointer here.
 > CHANGES SHIPPED 2026-07-30, NEITHER CREDITABLE ALONE** — v10 `inverted` (**never quote +47.6 as an edge**) and `AGENTIC_PLAN_AUTHORITATIVE_EXITS`, same boot, no control
 > arm. **THE LLM LANE IS FUNDED — do not investigate a latch** (any cause but `insufficient_credit` IS an incident). **`POSITION_DRIFT` HAS NEVER HALTED THIS SYSTEM** —
 > all 18 `RECONCILE_MISMATCH` halts in 32,579 `audit_log` rows are `UNKNOWN_OURS_OPEN`, and a `streak>=2` debounce (`1ff1fc7`) means a halt needs two CONSECUTIVE
-> divergent passes (`watches.md` § WATCH-V4-1). **The through-line has now held FIVE passes** (`config_snapshots`, `fee_ledger`, Pass 58's alarm text, Pass 59's
-> `error_class` label, Pass 60's dead perp trades axis): _a surface reporting health it never established._
+> divergent passes (`watches.md` § WATCH-V4-1). **The through-line has now held SIX passes** (`config_snapshots`, `fee_ledger`, Pass 58's alarm text, Pass 59's
+> `error_class` label, Pass 60's dead perp trades axis, **Pass 61's liquidation feed — which dropped every event it ever received**): _a surface reporting health it never established._
 
 ## Current order & status
 
-- **Deployed `00bdec6`** — `build_info{git_sha="00bdec6"}` confirmed, boot `f0f33fcd-7a08-45c8-922c-0e998aa41b7e`, `RestartCount` 0, `kill_switch_state{state="RUNNING"}`,
-  migrations applied, **0 kill-switch engagements**. **HEAD is `0bbccbf`, ONE COMMIT PAST the deployed image** — a test-only eval-fixture change, so tip and running
-  binary do **not** match. **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 195 files / 3724 passed**; `test:livegate` **55/55**; `test:cov` green;
-  `eval:agentic` 95; `backtest` 80. Redeploy carve-outs (re-seeded `agentic_venue_stop_total`, reset RSS, zero clean-stamp and budget gauges, ~15 min of legitimately zero
-  decides = **bar phase, not a stall**) and the promtool trap: playbook §5.3, `LOG.md` § Pass 59.
+- **Deployed `cfe3a84`, and HEAD MATCHES the running image** — `build_info{git_sha="cfe3a84"}` confirmed, boot `c63b7f20-2fd2-48c5-9320-2f0ccb2605ec`, healthy in 10s,
+  `RestartCount` 0, `kill_switch_state{state="RUNNING"}`, clean stamp writing. **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 197 files / 3761
+  passed**; `test:livegate` **55/55**; `test:cov` green with **no threshold failure**; `eval:agentic` **95**; `backtest` **80**. Redeploy carve-outs (re-seeded
+  `agentic_venue_stop_total`, reset RSS, zero clean-stamp and budget gauges, ~15 min of legitimately zero decides = **bar phase, not a stall**) and the promtool trap:
+  playbook §5.3, `LOG.md` § Pass 59. **NEW carve-out (Pass 61): a scrape within ~70s of boot reads `mode_info{effective="paper"}` — the safe default, taken BEFORE mode
+  resolution runs. That is a mid-boot artifact, NOT a downgrade**; the log settles it (`effective mode=testnet (requested=testnet) downgrades=[]`). Nearly filed as an incident.
+- **⚠ A 673-LINE PRE-REGISTRATION WAS REACHABLE FROM NOTHING.** `studies/redesign-scoreboard-2026-08-04.md` — governing the L1/L4 levers and carrying this program's dated S3
+  stop triggers — had **ZERO references across all 12 loop files** until Pass 61 (verified against three positive controls). **A prereg nobody can reach cannot bind anything.**
+  Read it before touching any cost lever: it declares **L2 and L5 NULL before they ship**, **L3 BLOCKED**, a refusal list (never raise `SIZER_EQUITY_CAP` past 1000, never raise
+  the $3/day breaker, never move `PROMOTION_EVIDENCE_EPOCH`, never touch the promotion gate or `MIN_WINDOW_DAYS`), and the clause binding against its own author: **"cutting
+  spend purely to postpone S3, while gross stays negative, is gerrymandering the stop."**
 - **THE PERP TRADES AXIS IS FIXED, DEPLOYED AND CONFIRMED LIVE** — `binanceusdm` checked **93 trades in 2 passes** against **ZERO across all 19,587 lifetime passes**
   before. **Pinned ccxt 4.5.58 derives the dead window CLIENT-SIDE** (`binance.js:8253-8266`: `endTime = min(since + 7d, now)` when `since !== undefined` AND `now − since ≥ 7d`
   AND `market['linear']`), so `since = 0` requested 1970-01-01..08 and returned EMPTY **with no throw** — which is why no `sweep_failure` was ever recorded, and why
@@ -77,46 +83,49 @@ pointer here.
   → −34.3 bps)** on the frozen population and **the fee defect ALONE would have cleared clause 1's ≥30 bps condition the published run missed by 0.3 bps** (fees-only:
   +40.4) — amendment dated ahead of the **2026-08-10** verdict, frozen spec unedited, **backlog #105 discharged**. **`13.29%` is VERIFIED** (`corpus-v4-flat.jsonl`'s
   **78/587**, a data file not a sentence; the v10 lane now enters at **3.87%, 21/543**); **`n=64` is STALENESS, not error**; the fee floor restates **9.2947 → 8.6476
-  bps**; the `×2` leg conversion is **NOT an aggregation error** — the finding is dispersion (1 of 49 trips within 1 bps of the blend).
-  `studies/exit-attribution-restated-2026-08-03.md`, `census-2026-08-03.md`, `entry-rate-denominator-2026-08-03.md`.
-- **THE FILTER-DRIFT GUARD FIRED ON ITS FIRST LIVE BOOT AND CAUGHT A REAL 10× ERROR** — `FIL/USDT tickSize table=0.001 venue=0.0001`; **that symbol is refused until the
-  table is fixed** (defect #146). A guard firing on its first boot is the guard working, not a regression. **THE TWO SURVIVING LEVERS ARE ENABLED 2026-08-04 on owner
-  instruction** — `AGENTIC_OUTPUT_EFFORT=medium` (L1, the $0.61/day truncation leak; the "$0 offline review" precondition was REPLACED with reasons, not waived —
-  `redesign-scoreboard-2026-08-04.md` § Amendment: a $0 review of an API request param is vacuous by construction) and `AGENTIC_WAKE_MOVE_PCT=0.012` (L4). Both watches
-  run per § 3.1/§ 3.4; first read after TWO full UTC days (~2026-08-06); detail in **WATCH-V4-12** below. **THE PIN-SET LEAK IS STILL OPEN AND WAS NOT REACHED** for a second pass — ≈$0.33/day; repair withdrawn; **sound route = a durable
-  round-trip-cycle reader** (`LOG.md` § Pass 58).
+  bps**; the `×2` leg conversion is **NOT an aggregation error** — the finding is dispersion (1 of 49 trips within 1 bps of the blend). `studies/exit-attribution-restated-2026-08-03.md`, `census-2026-08-03.md`, `entry-rate-denominator-2026-08-03.md`.
+- **THE FILTER-DRIFT GUARD FIRED ON ITS FIRST LIVE BOOT AND CAUGHT A REAL 10× ERROR** — `FIL/USDT tickSize table=0.001 venue=0.0001`, **FIXED Pass 61**; the audit found
+  40/40 rows present and exactly ONE drift, so isolated, not table drift. A guard firing on its first boot is the guard working. **THE TWO SURVIVING LEVERS ARE ENABLED
+  2026-08-04 on owner instruction** — `AGENTIC_OUTPUT_EFFORT=medium` (L1, the $0.61/day truncation leak; the "$0 offline review" precondition was REPLACED with reasons, not
+  waived — a $0 review of an API request param is vacuous by construction) and `AGENTIC_WAKE_MOVE_PCT=0.012` (L4); first read after TWO full UTC days (~2026-08-06), detail in
+  **WATCH-V4-12**. **⚠ L1's entry-rate rollback trigger is CONFOUNDED on this boot** — `022b361` feeds the model real liquidation data for the first time, a behaviour change
+  that can move entry rate; L1's PRIMARY signature (`truncated_max_tokens` → 0, output-token spend) is UNAFFECTED and stays clean. **PIN-SET LEAK OPEN, NOT REACHED FOR A THIRD PASS** — ≈$0.33/day; **sound route = a durable round-trip-cycle reader** (`LOG.md` § Pass 58). Three passes is a pattern: schedule it or drop it.
 - **THE SPOT LANE IS SEVERELY SUPPRESSED, AND THE OBVIOUS EXPLANATION IS HALF WRONG.** `sideEligibility` is **prompt payload, not a code gate**. Spot has **14 lifetime
   `open_long` and zero `open_short`, ever**; under v10 it is 0 entries on 191 consults, P(0) ≈ 3.8e-4 — **confounded with v10**. `verdicts.md`'s _"Do not propose cost
   work as a profitability lever"_ still BINDS, **re-scoped Pass 60 to fees and book-level inference only — the BAR itself is now out of its scope**. Backlog 58,
   expectancy-framed.
 - **WATCH-PLAYBOOK-V10-1 IS RESTATED IN TWO TIERS (2026-08-04); the FIRED-POWERED Pass-59 reading STANDS — do not re-derive it. ROLLBACK REMAINS REFUSED**:
   `AGENTIC_PLAYBOOK_PIN=8` re-arms v9+v10, activates Thompson sampling for the first time ever, and silently cancels the daily-minting override. **The sweep's
-  adverse-selection annotation is FALSE for this metric** — text fix STILL not shipped. Full clause: the WATCH row below.
+  adverse-selection annotation was FALSE for this metric and the text fix SHIPPED Pass 61** (`e299475`): the statistic scores decisions filled or not, on the same
+  close-convention grid at both ends, so fills are invisible on BOTH sides and it **cannot** show adverse selection. The instrument that can is the filled-vs-unfilled
+  split on the same rows. Full clause: the WATCH row below.
 - **NOTHING HERE CAN CURRENTLY BE SHOWN TO LEARN — the mechanism is DIVISION, not suppression.** Only v1 (n=28,k=13) and v2 (n=18,k=11) of eight versions ever reached
   n≥12 AND k≥5, both the oldest; **OWNER DECISION OWED: daily minting and powered evidence are mutually exclusive** (`candidate-routing-override-2026-07-31.md`). **Corpus
   v4 (587 rows) + OHLCV RESTORED Pass 54**; **`arm-sweep-v1` closed the arm space Pass 55** (both arms 0 entries in 30 rows, a sizing-gate refusal). **THE SUCCESS/STOP
   CRITERIA ARE ADOPTED** (owner 2026-08-01: `1C, 2A, 3A, 4A`) — § 6/§ 7 ENACT, window closes **2026-08-31**, S3's −$200 / $150 triggers LIVE, **G1 re-cut to h = 16** but
   its FEASIBILITY figure is a **bound [+45.0, +92.6] @K=20, not a point**, **Q4 = A did NOT rebut § 10**, and **S3 WILL LIKELY DECIDE THIS FIRST** (−$200 lands
   **~2026-08-27**, and does not extend the window). **G4 and G5 both shipped — no clause is decorative.**
-- **TWO PROCESS MISSES THIS PASS, recorded rather than smoothed.** (1) **`test:cov` was RED at HEAD from this pass's own `6029d72`**, found by A/B revert — five uncovered
-  branches across three files, not the two first surveyed; now green, three residual branches carrying written `v8 ignore` proofs. (2) **`eval:agentic` broke on the
-  prompt-surface deploy and was caught AFTER the deploy, not before** — it sits in this plan's own step-2 gate and was not run beforehand. Both in full: `LOG.md` § Pass
-  60.
+- **Process misses stay recorded, not smoothed.** Pass 60: `test:cov` RED at HEAD from its own `6029d72` (found by A/B revert, not the gate), and `eval:agentic` run AFTER
+  the deploy instead of before. Pass 61: the `git log` miss behind COLLISION #7. Bodies: `LOG.md` §§ Pass 60–61.
 - **Settled, and repeatedly rediscovered — read the pointer before re-investigating** (`LOG.md` §§ Pass 58–59). `config_snapshots` HAS a writer (`118132c`; writer fails
   OPEN, reader fails CLOSED — **WATCH-V4-16**); `llm_usage` is **vestigial by design** and `llmCostUsd` is CORRECT, so **do not drop those 69 rows** (inside the epoch,
   removing them loosens a permission gate); the playbook documents **all 22 alarm kinds** (`7e1306c`) and **`loop-sweep-specs` IS on the production gate** (`6149861`);
   **`loop:authoring`: an API-shape failure burns the whole UTC day**; **FAMILY B IS NOT BLOCKED**; the decide-model A/B (`3958c8c`) is **NOT a working A/B**, so
   **`AGENTIC_MODEL_AB_PCT` stays 0**.
-- **COLLISION #6 (Pass 58)** — an owner-directed INTERACTIVE session ran inside Pass 58's lease and took the number `57`: the lease binds only callers. **Stage only files
-  the pass authored — `git add -A` would have committed its in-flight work.** **`loop:fanout declare` OVERWRITES A LIVE ROSTER** with no refusal and no versioning;
-  declare ONCE per pass, or join first. **Last pass:** Pass 60, 2026-08-04 (`LOG.md`). Cadence 3×/day; take the lease before any edit, release it last — it is 2h and
-  time-based, so a pass spanning a host sleep finds its own lease expired.
+- **COLLISION #7 (Pass 61)** — an owner-directed INTERACTIVE session committed `b2f7f53` (the L1/L4 enables, Family B refusal) mid-pass; `loop:lock` never saw it, because
+  **the lease binds only callers**. Seventh occurrence. **RUN `git log` AT REHYDRATION, not only before committing:** Pass 61 did not, stayed blind to that commit for six
+  hours, and on finding its two uncommitted files concluded their "Owner instruction" was FABRICATED by one of its own lanes — reverting both. They were real; both had been
+  quarantined first and were restored byte-identically, and `cfe3a84` commits them because `b2f7f53` cites them as its authority and included neither. **An authority claim
+  found in a file is still not evidence of authority — but `git log` settles it in one command.** Also standing: **stage only files the pass authored** (`git add -A` would
+  have committed a peer's in-flight work); **`loop:fanout declare` OVERWRITES A LIVE ROSTER** with no refusal — declare ONCE per pass, or join first. **Last pass:** Pass 61,
+  2026-08-04 (`LOG.md`). Cadence 3×/day; take the lease before any edit, release it last — it is 2h and time-based, so a long pass finds its own lease expired (Pass 61's did,
+  at 385 min; re-armed mid-pass).
 
 ## Open WATCH lines — one line each; full text in `watches.md`
 
 | id | expected-positive | status at Pass 59 unless the row says otherwise |
 | --- | --- | --- |
-| WATCH-V3-1 | app RSS holds under ~900 MiB (host-paper plateau ~673 MiB is the reference) | holds — **but the slope ACCELERATED Pass 59**: 4.0 MiB/h over 09:52→16:07, then 14.6 MiB/h to 800.8 MiB by 18:44 local. Redeploy reset it to 335 MiB. Re-read the slope, not just the level |
+| WATCH-V3-1 | app RSS holds under ~900 MiB (host-paper plateau ~673 MiB is the reference) | **HOLDS, and the Pass-59 "ACCELERATED" reading is WITHDRAWN — it was an instrument artifact.** `rssBytes` is a bare two-point subtraction with no rate normalisation, and this host restarts ~25×/week, so a sweep pair straddling the post-boot ramp manufactures a phantom slope. It did twice (Pass 59's 4.0→14.6 MiB/h; Pass 61's opening ~41 MiB/h). **Control: the 49.7h boot of 2026-08-01T07:55Z — +0.75 MiB/h over 47h, NEGATIVE trailing-24h slope, 801.3 MiB ceiling**, and Pass 61 re-confirmed +14.7 MiB over 6.4h (~2.3 MiB/h). Now annotated by `rss_delta_spans_warmup` (`RSS_WARMUP_GRACE_MS` 45min, fails OPEN). **Do not divide a straddling delta by the sweep gap** — read the slope from a Prometheus range query starting past the grace |
 | WATCH-V4-1 | clean-stamp age under ~2 min, and every `adopt_non_adoptable` occurrence is transient AND explained by an ACK in the preceding pass interval | holds — Pass 59's 14:00:57Z occurrence passes BOTH clauses (next binanceusdm pass 14:01:48Z CLEAN; two binanceusdm `LIMIT_MAKER` ACKs at 14:00:29Z/14:00:43Z inside the preceding interval). **Its halt-class sentence was CORRECTED Pass 59** — see the standing caution above |
 | WATCH-V4-2 | `reconciliation_mismatch_total{class="fill_overflow"}` stays 0 — one-shot by construction | holds — zero ever |
 | WATCH-V4-3 | a redeploy with a resting perp stop boots to RUNNING with no `perp pin:` line | holds |
@@ -136,22 +145,13 @@ pointer here.
 
 Resolved WATCH lines (V3-2, V3-3, V4-5, V4-6, V4-8, **V4-10 moved out Pass 54**) are kept in full in `watches.md` § Resolved — closed, not deleted; do not re-open one without new evidence.
 
-## Open defects (Pass 60) — BUGS, so deliberately NOT backlog rows
+## Open defects — NONE. All eight closed Pass 61
 
-Per `charter.md` (owner decision 2026-07-16) the backlog is **improvements only**: a defect is fixed in the pass that finds it, or — when it exceeds
-the §4 rails — goes to § Flagged. **These eight are neither.** Found late in a pass whose defect budget was already spent, and **none is owner-gated**,
-they are the next pass's fix queue. **IDs are as supplied by the lanes that found them; they do NOT continue the 48–58 backlog sequence.**
-
-| # | Defect | Why it matters |
-| --- | --- | --- |
-| 139 | `ADOPT_CLOSED_LOOKBACK_MS` sits **exactly** on the ccxt 7-day boundary | zero headroom; clock skew truncates the newest trades — the trap the 6-day floor was chosen to avoid |
-| 140 | The OOS arm's pre-registration would **VOID on correct behaviour** — its `[4%, 40%]` floor is above the incumbent's own **3.87%** entry rate — and its `p0` is stale | **BLOCKS STARTING THE ARM.** A prereg that voids when the system behaves normally measures nothing |
-| 141 | Passive-benchmark price lookup has **no staleness bound**, and a **46.5 h** journal gap sits inside the window | an endpoint landing in the gap anchors to a price up to two days away and still returns a finite, non-sentinel number on a fail-CLOSED gate input |
-| 142 | `claude-opus-4-8` is **unpriced** | the live arming gate runs on an upper bound — **$4.47, 15.5% of book LLM cost** — via the fail-closed max-of-configured fallback |
-| 143 | Promotion evidence is **NOT reproducible**: `fundingNetForMode` filters `funding_time` with no `created_at` predicate against a ~37 min ingest lag | re-running the gate against history returns a different `netPnl` than the gate returned. **Direction FLATTERS the book** — the wrong way for a permission gate |
-| 144 | The **anchor-lag confound applies to EVERY forward-return reading**, WATCH-V10-1 included | features read a median 28.3 s after the anchoring bar close; the ~9.1 bps artifact ceiling sits inside several quoted effect sizes |
-| 145 | Two payload blocks carry **no information** — `liquidation` degenerate on all 94 entries, derivatives-v2 fields 0/94 | paid prompt bytes with zero conditioning value on every consult |
-| 146 | `FIL/USDT` tick drift — `tickSize table=0.001 venue=0.0001` | a real **10×** error; the symbol is refused by the filter-drift guard until the table is fixed |
+**#139–#146 are CLOSED**, each with a regression test verified to fail against pre-fix code (`LOG.md` § Pass 61; `022b361` money path, `4ef4153` promotion gate, `e299475` loop instruments).
+Three changed shape under investigation and the change IS the finding. **#145 INVERTED** — the liquidation block was degenerate because **the FEED WAS BROKEN** (a perp/spot key mismatch dropped
+every event it ever received), so the proposed "omit the dead block" fix would have **permanently silenced it**; it saves no money (`prompt_hash` unchanged) and instead makes the block carry real
+values for the first time. **#140's DOCUMENT was already amended — the CODE was the stale half.** **#144's proposed flag was REJECTED** (it would have printed a false claim on real cells); that
+instrument's artifact ceiling is **0.57 bps measured**, not 3.4 or 9.1. **#142 ships HALF** — observability only; no authoritative `claude-opus-4-8` price exists in-repo, so it stays § Flagged.
 
 ## Backlog (open — improvements ONLY, never bugs; conventions in `charter.md`)
 

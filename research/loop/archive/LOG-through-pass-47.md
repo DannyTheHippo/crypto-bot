@@ -7484,3 +7484,138 @@ direction: both say the entries are not merely unprofitable but actively value-d
 format/lint/lint:md/typecheck green · **3433 tests / 185 files** · livegate **55/55** · build clean.
 No deploy: nothing shipped changes runtime behaviour (the benchmark only adds a blocking reason to a
 gate already returning `permitted: false`).
+
+## 2026-08-01 — Pass 56 (the reconciler halted the book over an order it had cancelled itself)
+
+**Window:** 2026-08-01T00:07Z → 08:05Z. Lease `744d853ec7a088c4` taken 00:07:22Z — **it EXPIRED
+mid-pass** (2h, time-based) across a ~5h host sleep; re-taken as `3869d9bfd9feb8a2` at 07:04:37Z.
+**COLLISION #5:** Pass 55 ran 06:15–07:01Z inside that gap and landed four commits on `main`. Zero
+file overlap with this pass's ten (verified `git diff --name-only 01f207c..HEAD` against my set), so
+nothing was clobbered in either direction — but Pass 55 also took the number 55, which is why this
+entry is 56. Pass 55 saw the uncommitted tree and logged it as COLLISION #5 from its side.
+
+**Pass type:** DEFECT INVESTIGATION, forced by §3. The sweep's _alarm_ list was clean of it; the
+incident arrived as two `prometheus_alert_resolved_critical` **annotations** — `KillSwitchEngaged` and
+`ReconciliationHalt`, both fired and resolved inside the 12h lookback. That annotation kind (added
+Pass 45) is the only reason this was seen at all.
+
+**Book at 08:00Z:** 40 closed round trips, net-of-cost **−$48.60**, LLM $22.096, window 8.47/14 days,
+win rate 25.0%, `promotion_ready` 0, `equity_usdt` 4974.96, kill switch RUNNING, budget $2.258/$3.
+Four mandatory checks green all pass. WATCH-V3-1: RSS well under the ~900 MiB bound.
+
+### The headline — a 65-second halt nobody would have seen
+
+At **17:30:59.911Z** on 2026-07-31 the kill switch engaged on
+`RECONCILE_MISMATCH:UNKNOWN_OURS_OPEN`, drained open orders, and auto-resumed 65s later. The
+offending order was a BTC LIMIT **the strategy itself had cancelled at 17:30:32.611 — terminal at the
+venue 27.3 seconds before the halt fired.**
+
+`reconcileOpenOrders` accumulates venue truth incrementally inside a per-symbol `await` loop but reads
+its local comparand **once, after** the loop. An order resting at the venue when its symbol was
+fetched that goes terminal locally before the loop ends reads as "our prefix, present at venue, absent
+locally" ⇒ unconditional HALT. That window was **44,940 ms** here against **15,769–16,365 ms** on every
+neighbouring pass, because the strategy was concurrently cancelling on the shared rate-limited client.
+binanceusdm sweeps `BTC/USDT:USDT` first, so the widest window landed on the cancelled order.
+
+The KAITO cancel is a **consequence**, not the cause: `order_events` payload reason `HALT`, ts
+17:31:00.246 > engage 17:30:59.911, and the drain iterates exactly the set the offending order was
+defined by being absent from.
+
+**It was also unreconstructible.** `UNKNOWN_OURS_OPEN` was the only halting class in the file pushing
+no discriminator into `acc.halts`, so `reconciliations.detail` recorded the bare string with no order
+id. A whole-boot grep for `UNKNOWN_OURS` returns five lines, none naming the coid (positive control:
+1302 `reconcile.pass` matches in the same file).
+
+**Nothing was lost.** No money moved wrongly, no position went naked, venue state matched the local
+book byte-for-byte, and both BTC orders carry complete terminal event chains.
+
+### Shipped — three commits, gates green, deployed
+
+`13407c4` **`loop:authoring` could never read the key it required.** It loaded only `.env.app`, which
+by the standing config rule holds no secrets; `ANTHROPIC_API_KEY` is in the gitignored `.env`. That is
+why `playbook-authoring-attempt` had **zero rows lifetime** — the cause STATUS attributed to the
+`633f901` registry gate. Verified empirically on node v24.4.1 that a later `--env-file-if-exists`
+overrides an earlier one and a real env var still overrides both.
+
+`b54aae7` **the drafting call sent a parameter the model no longer accepts.** Both calls returned
+HTTP 400 `"temperature is deprecated for this model"` — sampling params are removed on
+claude-sonnet-5. Isolated with a positive control (same request minus `temperature` ⇒ 200), so the
+account/key/model were never the problem. The 0.2/0.8 spread moved into the prompt as an explicit
+per-variant stance; **verified live** against the real 15.8k-char prompt: both stances return 200,
+`stop_reason=tool_use`, complete blocks (2904 and 3232 chars), materially different drafts. Failed
+calls now log the response BODY — discarding it is what made this cost a day's slot to diagnose.
+
+`62f9738` **the reconciler fix.** A second resolution tier before halting (order book, then a
+venue-scoped durable read), mirroring the fill axis's existing precedent. Durably terminal ⇒ new
+`stale_venue_open`, no halt; durably NON-terminal ⇒ still halts (the genuine-corruption shape).
+Miss / wrong-venue / throw all fall through to the halt. `stale_venue_open` is deliberately NOT
+non-actionable, so it still withholds the clean stamp, and it **escalates per-coid** — streak keyed
+`venue|coid`, reset when the coid leaves that venue's open list, halt past `driftPasses`. A race
+cannot survive a second independent venue read; a genuine orphan always will. Halt string now carries
+the coid.
+
+**The review earned its place.** It found three real defects in the first implementation: the class
+had no escalation at all (turning a permanent orphan into a permanently _silent_ one); the declared
+FAIL CLOSED did not match the code (`venueForSymbol` outside the `try` — one unparseable symbol would
+have killed the whole pass with the kill switch never engaged, i.e. fail OPEN); and `test:cov` was red
+on the durable tier's own branch, the single reason that tier exists.
+
+**Gates (run by the orchestrator, not self-reported):** format ✓ lint ✓ lint:md ✓ typecheck ✓ build ✓
+`test` **185 files / 3444 tests** incl. sacred `test:livegate` ✓. `test:cov`: execution glob 100% on
+all four metrics. **Deploy:** `62f9738`, `build_info{git_sha}` confirmed, bootId `3f93c971`,
+StartedAt 07:54:53Z, RestartCount 0, healthy, 23 rules loaded / 0 firing, fatal=0 error=0 this boot.
+Prometheus force-recreated (alerts.rules.yml changed); rules validated by copy-in first, per the §5.3
+dangling-inode trap. **Soak: clean, no new alarm.**
+
+### The authoring slot — the gate fired correctly for the first time in program history
+
+`ONCE-PER-UTC-DAY: SLOT_OPEN` → claimed `public.experiments` **id=16**
+(`family=playbook-authoring-attempt`), the **first such row ever written**. So Pass 52's registry gate
+`633f901` is now **VERIFIED**. The run then died on the 400 above, so **today's slot is SPENT with
+zero variants** — the env check correctly sits _before_ the day gate, but the drafting call does not,
+so an API-shape failure burns the day. `WATCH-DEPLOY-HALVES-1` stays at SAMPLE ZERO until 2026-08-02.
+
+### Four more findings, root-caused and NOT shipped — each names its blocker
+
+Full text, evidence and proposed diffs: `incidents/2026-08-01-spurious-unknown-ours-halt.md`.
+
+1. **The clean stamp credits zero observation as "clean."** The auto-resume gate itself is _correct_
+   (nine conditions, no timer; the 17:32:04 resume was genuinely earned). One layer down,
+   `sweep_failure` sits in `NON_ACTIONABLE_CLASSES`, so a pass where _every_ symbol's fetch throws
+   stamps CLEAN off zero observation — 93,738 such increments over 39h on 2026-07-27, so this is a
+   demonstrated shape. **Blocker:** the pre-Task-C3 rule that this would partially restore left the
+   bot wedged 39h; needs its own pass and soak.
+2. **A frozen order leaves every escalation surface, permanently.** Two brief premises were wrong and
+   the investigation corrected them: `order_events` has **five** rows, so the order was
+   `CANCEL_UNKNOWN` for only **6.26 s** and the 60 s watchdog was never _eligible_ (it did not fail);
+   and the stuck order is the **take-profit**, not the stop — the algo-rail stop is present, so hard
+   rule 5 was not violated and the position was never unprotected. **Blocker:** the escalation shipped
+   alone would permanently wedge auto-resume, because `RECONCILE_REQUIRED` is in the unresolved set
+   and the state has no exit arm. Must ship with the state-model fix.
+3. **The algo/stop rail has no reconciliation consumer at all** (defect class 4). The DB→venue leg
+   exists but sources `portfolio.snapshot().openOrders`, which algo orders are never registered into.
+   **And there is NO stop stacking** — a keyed live probe returns exactly two open algo orders, both
+   `reduceOnly`; the other four are `TRIGGERING` with empty `actualOrderId`, and venue positions match
+   the local book exactly. The "39 units of stop on a 13-unit position" was a stale-row artifact, not
+   exposure. `TRIGGERING` is unmapped in `ccxt-normalize.ts` (#54 pattern). **Blocker:** the safe part
+   retires nothing; the part that clears the rows can book a phantom position.
+4. **`balances_checked = -1` means the axis never ran** — so `balance_drift`/`balance_leak` zeros are
+   meaningless zeros, seeded by the 2026-07-29 void-read fix and unreachable since. **Blocker:** none;
+   measurement-only, deferred so the availability predicate is derived from the same source
+   `reconcileOnce` uses rather than a second one.
+
+### The through-line worth carrying forward
+
+Three of the five are the same shape: **a surface reporting health it never established** — a clean
+stamp written off an unobserved axis, a zeroed counter for an axis that never ran, an order rail with
+no consumer. The 2026-07-29 fix taught the _sweep_ to distrust an empty read; the _reconciler_ has not
+learned it about its own axes. That is a bigger lever than any single one of the four repairs.
+
+### Flagged
+
+- **A fifth concurrent-pass collision**, first one where both passes did substantive work in the same
+  tree. The 2h time-based lease cannot survive this host's sleep cycle; a pass that sleeps loses its
+  lease and its number. Scheduler co-firing is owner-owned.
+- **Pre-existing coverage red, NOT this pass's:** `src/domain/trading/risk/gross-exposure.ts:74-80`,
+  branches 85.71% against a 100% threshold — arrived with Pass 55's `682b6f6`/`6dcb45f`. `pnpm test`
+  is green (it omits `--coverage`; backlog 56), so no gate blocks, but `test:cov` is red on `main`.

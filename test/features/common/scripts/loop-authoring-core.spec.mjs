@@ -11,11 +11,13 @@ import {
   assertNoRetiredObjective,
   buildEvidenceDigest,
   buildPerHorizonNetTable,
+  buildScorecard,
   classifyEntryRateFloor,
   classifyMintGate,
   classifyRegistrySplitBrain,
   classifySameDayGate,
   corpusAttemptKey,
+  describeRunTruncation,
   parseArgs,
   parsePlaybookInfoVersion,
   renderPriorAttempts,
@@ -353,6 +355,104 @@ describe('loop-authoring mint gate', () => {
     expect(gate.blockers.join(' ')).toContain(fragment);
   });
 
+  // ── the deployment-absent blocker: "no candidate selected" vs "never scored" (2026-08-04) ──────
+  //
+  // Before this fix both causes produced ONE sentence — "the incumbent was never scored on the same
+  // rows" — written for the case where no comparison was ever attempted. loop-authoring.mjs's actual
+  // call passes `deployment: winner`, the best of the SHIPPING candidates, which is `undefined`
+  // whenever every candidate lost even though every candidate WAS compared (stage 5 prints each one).
+  // That is the real run this suite reproduces: two variants scored and printed in full, neither
+  // shipped, and the refusal claimed a fact (never scored) contradicted by the run's own output.
+
+  it('REFUSES with "no candidate selected", never "never scored", when N candidates were compared and none shipped', () => {
+    const losingComparisons = [
+      deployment({ arm: 'draft_conservative', ships: false, horizonsWon: 3 }),
+      deployment({
+        arm: 'draft_exploratory',
+        ships: false,
+        horizonsWon: 1,
+        horizonDependent: true,
+      }),
+    ];
+    const gate = classifyMintGate({
+      deployment: undefined, // no winner — mirrors loop-authoring.mjs's `winner` when shipping.length === 0
+      deploymentComparisons: losingComparisons,
+      research: RESEARCH_FAIL,
+      floor: undefined,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    expect(gate.mint).toBe(false);
+    const blockers = gate.blockers.join(' ');
+    expect(blockers).toContain('2 candidate(s) were compared against the incumbent');
+    expect(blockers).toContain('no candidate was SELECTED');
+    // The falsified claim this fix removes: the run demonstrably DID score the incumbent (stage 5
+    // prints it for every comparison), so the refusal must never say otherwise.
+    expect(blockers).not.toContain('the incumbent was never scored on the same rows');
+  });
+
+  it('REFUSES with "never scored" only when NO comparison was attempted at all — the genuinely-unmeasured path', () => {
+    const gate = classifyMintGate({
+      deployment: undefined,
+      deploymentComparisons: undefined, // stage 4/5 never ran — a distinct cause from "compared but not selected"
+      research: RESEARCH_FAIL,
+      floor: undefined,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    expect(gate.mint).toBe(false);
+    const blockers = gate.blockers.join(' ');
+    expect(blockers).toContain('the incumbent was never scored on the same rows');
+    // Distinct from, and must not be confused with, the "no candidate selected" wording above.
+    expect(blockers).not.toContain('no candidate was SELECTED');
+  });
+
+  it('the same disambiguation applies to the entry-rate floor, whose absence today shares the deployment cause', () => {
+    const withSelection = classifyMintGate({
+      deployment: undefined,
+      deploymentComparisons: [deployment({ ships: false })],
+      floor: undefined,
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    expect(withSelection.mint).toBe(false);
+    expect(withSelection.blockers.join(' ')).toContain('no candidate was SELECTED to evaluate it');
+    expect(withSelection.blockers.join(' ')).not.toContain(
+      'the entry-rate floor was never measured',
+    );
+
+    const withoutAnyRun = classifyMintGate({
+      deployment: undefined,
+      deploymentComparisons: undefined,
+      floor: undefined,
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    expect(withoutAnyRun.mint).toBe(false);
+    expect(withoutAnyRun.blockers.join(' ')).toContain('the entry-rate floor was never measured');
+  });
+
+  it('REGRESSION: the deployment- and floor-absent refusal still fires when compared candidates are also aborted', () => {
+    // A/B evidence for the actual defect run: the scoring run ABORTED on budget AND no candidate
+    // shipped. Every blocker that fired before this fix must still fire — the wording changed, the
+    // decision did not.
+    const gate = classifyMintGate({
+      deployment: undefined,
+      deploymentComparisons: [deployment({ ships: false }), deployment({ ships: false })],
+      floor: undefined,
+      research: RESEARCH_FAIL,
+      run: { voided: false, aborted: true, unfaithfulCapsRows: 0 },
+      experimentsLogged: true,
+    });
+    expect(gate.mint).toBe(false);
+    const blockers = gate.blockers.join(' ');
+    expect(blockers).toContain('ABORTED on budget'); // the run blocker — untouched by this fix
+    expect(blockers).toContain('no candidate was SELECTED'); // the deployment blocker — reworded, still blocks
+    expect(blockers).toContain('no candidate was SELECTED to evaluate it'); // the floor blocker — reworded, still blocks
+  });
+
   it('fails CLOSED when the losers were not logged — that is how a selection effect launders', () => {
     const gate = classifyMintGate({
       deployment: deployment(),
@@ -499,6 +599,104 @@ describe('loop-authoring mint gate', () => {
   });
 });
 
+// 6. THE REGISTRY SCORECARD. public.experiments is append-only — a row logged with no truncation
+//    marker off an ABORTED or VOID run cannot ever be corrected. buildScorecard used to live
+//    UN-exported in loop-authoring.mjs and was called with the raw `score` rather than the run-status
+//    wrapper every other renderer receives; that wiring gap logged three real rows (id=18/19/20) with
+//    no marker at all before this suite existed. Moved here specifically so the wiring is a tested
+//    contract, not a call site nobody checked.
+describe('loop-authoring registry scorecard', () => {
+  function scoreFixture(overrides = {}) {
+    return {
+      corpus: { payloadSha256: 'corpus-sha', firstEventTime: 100, lastEventTime: 200, rows: 67 },
+      rowsCovered: 67,
+      model: 'claude-sonnet-5',
+      incumbentArm: 'incumbent_v10',
+      dryRun: false,
+      costPerDecideUsd: 0.0021,
+      ...overrides,
+    };
+  }
+
+  function reportFixture(overrides = {}) {
+    return {
+      arm: 'draft_conservative',
+      role: 'candidate',
+      rowsReplayed: 67,
+      schemaValidRate: 1,
+      entries: 1,
+      entryRate: 0.015,
+      actionHistogram: { hold: 66, open_long: 1 },
+      decisionsChangedVsIncumbent: 12,
+      cells: [{ h: 24, mean: 47.6, ciLo: -12.2 }],
+      ...overrides,
+    };
+  }
+
+  it('carries an EMPTY runTruncation on a healthy run — the row is a plain, uncaveated measurement', () => {
+    const card = buildScorecard(scoreFixture(), reportFixture(), null, HEALTHY_RUN);
+    expect(card.candidates[0].runTruncation).toEqual([]);
+  });
+
+  it('carries the truncation reasons INSIDE candidates[0], where log-eval-experiment.mjs’s spread keeps them', () => {
+    // log-eval-experiment.mjs builds `metrics` as `{...candidate, corpusFingerprint, championReference,
+    // window, priorAttemptsOnCorpus, …}` — an explicit, short list of TOP-LEVEL scorecard fields plus
+    // whatever `candidates[0]` itself carries. A field placed at the scorecard's own top level and not
+    // on that list would be silently dropped before it reached the row; this assertion is what makes
+    // that placement a checked contract rather than a fact only a reader of the other script would know.
+    const abortedRun = { voided: false, aborted: true, unfaithfulCapsRows: 0 };
+    const card = buildScorecard(scoreFixture(), reportFixture(), null, abortedRun);
+    expect(card.runTruncation).toBeUndefined(); // NOT at the top level — it would be dropped there
+    expect(card.candidates[0].runTruncation).toHaveLength(1);
+    expect(card.candidates[0].runTruncation[0]).toContain('ABORTED on budget');
+  });
+
+  it('the unfaithful-capabilities defect reaches the registry row too — the gate refusal this used to miss', () => {
+    const unfaithfulRun = { voided: false, aborted: false, unfaithfulCapsRows: 4 };
+    const card = buildScorecard(scoreFixture(), reportFixture(), null, unfaithfulRun);
+    expect(card.candidates[0].runTruncation[0]).toContain('measured a different account');
+  });
+
+  it('A/B: the raw score object (the pre-fix call shape) carries NO run-usability information at all', () => {
+    // This IS the actual defect that logged id=18/19/20: loop-authoring.mjs used to call
+    // `buildScorecard(score, report, priorAttemptsOnCorpus)` — no fourth argument — so an ABORTED run
+    // produced a row indistinguishable from a clean one. Passing `score` itself in the run slot (as
+    // the old call site effectively did, by omitting it) demonstrates the row is UNLABELLED even
+    // though the run that produced it aborted, because `score` alone carries no `aborted`/`voided`
+    // status until the shell wraps it into `scoringRun`.
+    const score = scoreFixture(); // note: NOT wrapped with { aborted: true } — this is `score`, not `run`
+    const cardWithRawScore = buildScorecard(score, reportFixture(), null, undefined);
+    // Even with nothing indicating the run's status, this function now REFUSES to render a bare "[]" —
+    // a missing run argument is itself uncertified (describeRunTruncation's own contract).
+    expect(cardWithRawScore.candidates[0].runTruncation).toHaveLength(1);
+    expect(cardWithRawScore.candidates[0].runTruncation[0]).toContain('no run object was supplied');
+
+    // The fixed call shape: the SAME aborted run threaded through explicitly labels the row.
+    const cardWithScoringRun = buildScorecard(score, reportFixture(), null, {
+      ...score,
+      voided: false,
+      aborted: true,
+    });
+    expect(cardWithScoringRun.candidates[0].runTruncation[0]).toContain('ABORTED on budget');
+  });
+
+  it('does not otherwise disturb the scorecard shape log-eval-experiment.mjs requires', () => {
+    const card = buildScorecard(scoreFixture(), reportFixture(), null, HEALTHY_RUN);
+    expect(card).toMatchObject({
+      criteriaVersion: 'loop-authoring-v1',
+      corpusFingerprint: 'corpus-sha',
+      capabilities: 'recorded (per-row, from the live payload)',
+      championReference: 'incumbent_v10',
+    });
+    expect(card.candidates[0]).toMatchObject({
+      model: 'claude-sonnet-5',
+      arm: 'draft_conservative',
+      proposeCount: 1,
+      directionalForwardProxyBps: 47.6,
+    });
+  });
+});
+
 describe('loop-authoring reporting', () => {
   it('renders both bars with their own labels and never merges them', () => {
     const out = renderTwoBars({
@@ -517,6 +715,138 @@ describe('loop-authoring reporting', () => {
     const out = renderTwoBars({ arm: 'x', deployment: null, research: null });
     expect(out).toContain('NOT COMPARED');
     expect(out).toContain('NOT SCORED');
+  });
+
+  // ── the truncation banner (2026-08-04) ────────────────────────────────────────────────────────
+  //
+  // The defect this reproduces: an ABORTED run's stage-5 table printed full bps deltas with no label
+  // anywhere near them, so a reader (or a future automated pass reading research/loop/LOG.md) could
+  // copy a number out of the table without also copying the words that void it.
+
+  describe('describeRunTruncation', () => {
+    it('returns no reasons for a healthy run — the only case with an empty result', () => {
+      expect(describeRunTruncation(HEALTHY_RUN)).toEqual([]);
+    });
+
+    it.each([
+      ['undefined', undefined],
+      ['null', null],
+    ])(
+      'treats a MISSING run (%s) as UNCERTIFIED, not as "nothing to report" — a misquotation guard must not fail open',
+      (_label, run) => {
+        const reasons = describeRunTruncation(run);
+        expect(reasons).toHaveLength(1);
+        expect(reasons[0]).toContain('no run object was supplied');
+      },
+    );
+
+    it('names a VOID run', () => {
+      const reasons = describeRunTruncation({ voided: true, aborted: false });
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain('VOID');
+    });
+
+    it('names an ABORTED run', () => {
+      const reasons = describeRunTruncation({ voided: false, aborted: true });
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain('ABORTED on budget');
+    });
+
+    // REGRESSION for the must-fix: classifyMintGate refuses on unfaithfulCapsRows > 0 ("the replay
+    // measured a different account") and, before this fix, describeRunTruncation had no idea that
+    // blocker existed — a run with unfaithful capabilities and NEITHER voided NOR aborted rendered as
+    // fully usable everywhere except the gate itself.
+    it('names the unfaithful-capabilities defect — the gate refusal this function used to miss entirely', () => {
+      const reasons = describeRunTruncation({
+        voided: false,
+        aborted: false,
+        unfaithfulCapsRows: 3,
+      });
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain('3 row(s)');
+      expect(reasons[0]).toContain('measured a different account');
+    });
+
+    it('names ALL THREE when they all fire — same independence as classifyMintGate’s own run block', () => {
+      const reasons = describeRunTruncation({ voided: true, aborted: true, unfaithfulCapsRows: 5 });
+      expect(reasons).toHaveLength(3);
+    });
+  });
+
+  it('defaults to an UNCERTIFIED banner when the run is not passed at all — the misquotation guard fails CLOSED, not open', () => {
+    const out = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+    });
+    expect(out).toContain('TRUNCATED');
+    expect(out).toContain('no run object was supplied');
+  });
+
+  it('renders NO banner only for an explicitly healthy run — the one case that is genuinely certified', () => {
+    const out = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+    });
+    expect(out).not.toContain('TRUNCATED');
+    expect(out).not.toContain('VOID');
+  });
+
+  it('A/B: an ABORTED run carries the truncation label on the SAME table that prints its bps deltas', () => {
+    // "A" — the baseline: an explicitly healthy run renders the table with no banner at all.
+    const before = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+    });
+    expect(before).not.toContain('TRUNCATED');
+    expect(before).toContain('h=24'); // the bps deltas render, unlabelled, because nothing voids them here
+
+    // "B" — post-fix shape for an ABORTED run: the SAME table now carries the label inline, adjacent
+    // to the numbers it voids, not as a footnote elsewhere. This is the actual production defect: the
+    // real 2026-08-04 run aborted on budget and stage 5 printed this exact table with no such banner.
+    const after = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: { voided: false, aborted: true, unfaithfulCapsRows: 0 },
+    });
+    expect(after).toContain('TRUNCATED');
+    expect(after).toContain('MAY NOT BE QUOTED');
+    expect(after).toContain('ABORTED on budget');
+    // The label sits ABOVE the per-horizon deltas in the same block, not merely somewhere in the file.
+    const bannerLine = after.split('\n').findIndex((l) => l.includes('TRUNCATED'));
+    const firstDeltaLine = after.split('\n').findIndex((l) => l.includes('h='));
+    expect(bannerLine).toBeGreaterThanOrEqual(0);
+    expect(bannerLine).toBeLessThan(firstDeltaLine);
+    // Nothing else about the table was weakened — every field from the healthy render still appears.
+    expect(after).toContain('h=24');
+    expect(after).toContain('SHIPS');
+    expect(after).toContain('NEVER the same bar');
+  });
+
+  // A/B for the must-fix: unfaithful capabilities used to be invisible to every renderer even though
+  // the gate itself refuses on it.
+  it('A/B: unfaithful-capabilities rows also carry the banner — the gate refusal this function used to miss', () => {
+    const healthy = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+    });
+    expect(healthy).not.toContain('TRUNCATED');
+
+    const unfaithful = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: { voided: false, aborted: false, unfaithfulCapsRows: 3 },
+    });
+    expect(unfaithful).toContain('TRUNCATED');
+    expect(unfaithful).toContain('measured a different account');
   });
 
   it('digests the whole-database read, naming the running version', () => {

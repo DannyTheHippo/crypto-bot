@@ -437,10 +437,21 @@ export function renderPriorAttempts(a) {
  * — `ships` already carries the halves clause's CLOSED direction — it is a caller-specific
  * restriction on a clause whose OPEN direction is deliberate everywhere else. The reason is authority
  * rather than evidence, and it is spelled out at the branch.
+ *
+ * `deployment` is the WINNER only — the best-ranked candidate among those whose own `ships` was true,
+ * or `undefined` when none shipped (loop-authoring.mjs's `winner`). `deploymentComparisons` is the
+ * FULL set scored this run (`score.deployment`, one entry per candidate, win or lose) and exists
+ * SOLELY so the `deployment`-absent blocker below can tell two different facts apart: "N candidates
+ * were compared and none was selected" is not "the incumbent was never scored". 2026-08-04: before
+ * this parameter existed, both facts produced the same sentence — a run that printed a full stage-5
+ * comparison table for two candidates against the incumbent still refused with "the incumbent was
+ * never scored on the same rows", which was false as written even though the refusal itself was
+ * correct. The refusal is UNCHANGED here; only the sentence naming its cause is.
  * @returns {{mint:boolean,reason:string,deploymentVerdict:string,researchVerdict:string,blockers:string[],priorAttemptsOnCorpus:object|null}}
  */
 export function classifyMintGate({
   deployment,
+  deploymentComparisons,
   research,
   floor,
   run,
@@ -448,6 +459,11 @@ export function classifyMintGate({
   priorAttemptsOnCorpus,
 }) {
   const blockers = [];
+  // See the deploymentComparisons paragraph above. Used by both the deployment- and floor-absent
+  // blockers below, since a floor never evaluated has the identical root cause when a candidate was
+  // scored but not selected — there is no separate "floor genuinely unmeasured despite a selection"
+  // path in the caller today.
+  const attempted = Array.isArray(deploymentComparisons) ? deploymentComparisons.length : 0;
 
   if (run === undefined || run === null) {
     blockers.push('no scoring run result — nothing was measured');
@@ -467,7 +483,13 @@ export function classifyMintGate({
   }
 
   if (deployment === undefined || deployment === null) {
-    blockers.push('no deployment comparison — the incumbent was never scored on the same rows');
+    blockers.push(
+      attempted > 0
+        ? `${attempted} candidate(s) were compared against the incumbent this run and NONE cleared ` +
+            'the deployment bar — no candidate was SELECTED, so there is no single winning comparison ' +
+            'for this row to gate on (each candidate’s own verdict is printed in full at stage 5, above).'
+        : 'no deployment comparison was attempted — the incumbent was never scored on the same rows.',
+    );
   } else {
     if (deployment.ships !== true) {
       blockers.push(
@@ -502,7 +524,17 @@ export function classifyMintGate({
   }
 
   if (floor === undefined || floor === null) {
-    blockers.push('the entry-rate floor was never measured');
+    // Same disambiguation as the deployment blocker above, and the same reason: loop-authoring.mjs
+    // only ever computes `floor` off the WINNER's report, so an absent floor and an absent `deployment`
+    // share one root cause today — there is no code path where a candidate is selected but its floor
+    // is separately unmeasured. Stated as its own sentence anyway, because a reader should not have to
+    // infer that a floor's fate follows the deployment blocker's.
+    blockers.push(
+      attempted > 0
+        ? 'the entry-rate floor was never evaluated — no candidate was SELECTED to evaluate it ' +
+            'against (see the deployment blocker above; this is the same cause, not a second failure).'
+        : 'the entry-rate floor was never measured',
+    );
   } else if (floor.pass !== true) {
     blockers.push(`entry-rate floor VETO — ${floor.reason}`);
   }
@@ -553,14 +585,72 @@ export function classifyMintGate({
 }
 
 /**
+ * Every reason a scoring run's own numbers may not be read as measurements. NEVER empty for an
+ * uncertified run — a MISSING run object is itself a reason, not "nothing to report" (see the
+ * paragraph below on why the opposite default was itself an instance of this same defect).
+ *
+ * Mirrors classifyMintGate's run-block checks — VOID, ABORTED, and the unfaithful-capabilities
+ * (venueFreeCash) defect — rather than sharing code with it: those are independent `if`s there (more
+ * than one CAN fire on one run) and this returns every reason that applies, not the first, so a reader
+ * of a rendered table sees the identical set of reasons the gate itself would refuse on for the SAME
+ * run object — never a subset.
+ *
+ * Added 2026-08-04, after a run whose stage-5 comparison table and stage-7 entry-rate line both
+ * printed an ABORTED run's numbers with no truncation label anywhere near them, while the mint gate fed
+ * the same run and correctly refused (research/loop/LOG.md, authoring-2026-08-04). A reader — including
+ * a future automated pass reading that LOG entry — could copy a bps delta out of stage 5 without also
+ * copying the words that void it. This is the shared single source for those words.
+ *
+ * WIDENED same day, on adversarial review: the first version checked only VOID/ABORTED and returned `[]` for a missing run,
+ * on the reasoning "no run passed ⇒ no rendering input ⇒ no banner". Both were the SAME defect one
+ * level up: `unfaithfulCapsRows > 0` is a real, distinct gate refusal ("the replay measured a
+ * different account") that produced no banner at all, and a caller that forgot to pass `run` produced
+ * a silently unlabelled table rather than an explicit "uncertified" — a label whose entire purpose is
+ * preventing misquotation must not itself fail open.
+ * @returns {string[]}
+ */
+export function describeRunTruncation(run) {
+  if (run === undefined || run === null) {
+    return [
+      'no run object was supplied to this render — the numbers cannot be certified against a scoring run at all',
+    ];
+  }
+  const reasons = [];
+  if (run.voided === true) {
+    reasons.push('the scoring run is VOID (transport floor) — no verdict may be published from it');
+  }
+  if (run.aborted === true) {
+    reasons.push('the scoring run ABORTED on budget — arms are truncated, not comparable');
+  }
+  if ((run.unfaithfulCapsRows ?? 0) > 0) {
+    reasons.push(
+      `${run.unfaithfulCapsRows} row(s) replayed with capabilities the live system never recorded — ` +
+        'the replay measured a different account (the 2026-07-30 venueFreeCash defect)',
+    );
+  }
+  return reasons;
+}
+
+/**
  * The two verdicts side by side, never merged. verdicts.md's first standing verdict exists because
  * they were being conflated, so this renders both with their own labels even when they agree.
+ *
+ * `run` defaults to an UNCERTIFIED banner when omitted (see describeRunTruncation) rather than to no
+ * banner at all — the one production call site always passes it, so this only matters for a future
+ * caller, and a fail-open default on a misquotation guard is exactly the shape this whole fix removes
+ * everywhere else.
  */
-export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus }) {
-  const lines = [
-    `  variant:          ${arm}`,
+export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus, run }) {
+  const truncation = describeRunTruncation(run);
+  const lines = [`  variant:          ${arm}`];
+  if (truncation.length > 0) {
+    lines.push(
+      `  *** THESE NUMBERS ARE TRUNCATED / VOID AND MAY NOT BE QUOTED: ${truncation.join('; ')} ***`,
+    );
+  }
+  lines.push(
     `  DEPLOYMENT bar    (beats the RUNNING playbook on the same corpus/metric/horizons):`,
-  ];
+  );
   if (deployment === undefined || deployment === null) {
     lines.push('    NOT COMPARED');
   } else {
@@ -607,6 +697,95 @@ export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus
   );
   lines.push('  owner ruling 2026-07-30); a deployment win is not an edge claim.');
   return lines.join('\n');
+}
+
+// ── the registry scorecard ───────────────────────────────────────────────────────────────────────
+
+/**
+ * One scorecard per SCORED VARIANT, in log-eval-experiment.mjs's own required shape — winners and
+ * losers alike, and the incumbent too.
+ *
+ * Built per-variant rather than as one multi-candidate scorecard because that script derives each
+ * row's label from `candidate.model`, so several variants on one model would collide into
+ * indistinguishable labels — and an evidence row nobody can attribute is not evidence.
+ *
+ * `runTruncation` is placed INSIDE `candidates[0]` rather than at the scorecard's own top level,
+ * because that is where it survives the trip into the registry row: log-eval-experiment.mjs builds its
+ * `metrics` column by spreading `candidates[0]` (`{...candidate, corpusFingerprint, championReference,
+ * window, priorAttemptsOnCorpus, …}`, its own source) and copying a short, explicit list of top-level
+ * scorecard fields — anything added at the top level and not on that list is silently dropped before
+ * it reaches the row. Inside `candidates[0]`, the `...candidate` spread carries it automatically.
+ *
+ * PURE data shaping off already-fetched values — no fs, no pg, no network — which is why it lives
+ * here rather than in the IO shell, and it is the reason this defect was reachable at all.
+ * 2026-08-04: this function used to live in loop-authoring.mjs, un-exported and untested, called with
+ * the raw `score` object rather than the run-status wrapper every OTHER consumer of run usability
+ * already received (`renderTwoBars`'s `run`, `classifyMintGate`'s `run`). The result was three real
+ * registry rows — public.experiments id=18, 19, 20 — logged from a run that had ABORTED on budget,
+ * with no truncation marker anywhere on them. Append-only means those three cannot be amended; moving
+ * this function here and exporting it is what makes the wiring a tested contract from now on, not a
+ * call site nobody was checking.
+ *
+ * `run` takes the SAME run-status object `classifyMintGate` and `renderTwoBars` take (see
+ * `describeRunTruncation`) — not the raw scoring result, which alone carries no VOID/exit-status
+ * information. The caller resolves that once (`scoringRun` in loop-authoring.mjs) and must thread the
+ * identical object everywhere; passing `score` here again would silently reopen this exact gap.
+ * @returns {object} the scorecard `log-eval-experiment.mjs --scorecard <file>` expects.
+ */
+export function buildScorecard(score, report, priorAttemptsOnCorpus, run) {
+  const primary = report.cells.find((c) => c.h === 24) ?? report.cells[0];
+  return {
+    criteriaVersion: 'loop-authoring-v1',
+    corpusFingerprint: score.corpus.payloadSha256,
+    // The count at THIS row's own decision moment, frozen into an append-only row. Recorded per-row
+    // rather than derived later because the registry only ever grows: a count re-derived afterwards
+    // answers "how many attempts exist now", and the question that matters is "how many had already
+    // been made when this decision was taken".
+    priorAttemptsOnCorpus: priorAttemptsOnCorpus?.count ?? null,
+    priorAttemptsKey: priorAttemptsOnCorpus?.key ?? null,
+    priorAttemptsOnCorpusFingerprint: priorAttemptsOnCorpus?.byFingerprint ?? null,
+    corpusSource: 'agent_decisions.input_payload (corpus-v3-flat.jsonl)',
+    templateVersion: 'v3',
+    window: {
+      rowSince: score.corpus.firstEventTime,
+      rowUntil: score.corpus.lastEventTime,
+      firstEventTime: score.corpus.firstEventTime,
+      lastEventTime: score.corpus.lastEventTime,
+      rowsLoaded: score.corpus.rows,
+      rowsReplayed: score.rowsCovered,
+    },
+    capabilities: 'recorded (per-row, from the live payload)',
+    thinking: 'disabled',
+    maxTokens: 512,
+    tokenPrices: { [score.model]: null },
+    championReference: score.incumbentArm,
+    candidates: [
+      {
+        model: score.model,
+        rowsReplayed: report.rowsReplayed,
+        schemaValidRate: report.schemaValidRate,
+        // The replay contract has no separate sanity layer beyond the schema, so this mirrors it
+        // rather than inventing a second number that would read as an independent check.
+        tradeSanityRate: report.schemaValidRate,
+        proposeCount: report.entries,
+        proposeRate: report.entryRate,
+        actionHistogram: report.actionHistogram,
+        directionalForwardProxyBps: primary?.mean ?? null,
+        costPerDecideUsd: score.costPerDecideUsd,
+        arm: report.arm,
+        role: report.role,
+        decisionsChangedVsIncumbent: report.decisionsChangedVsIncumbent,
+        cells: report.cells,
+        dryRun: score.dryRun,
+        // Empty ⇒ the run this row was scored under was usable when the row was written. Non-empty ⇒
+        // every reason it was not, in describeRunTruncation's own words — a reader of THIS row alone
+        // (an append-only registry row, possibly read years from now with no other context) needs no
+        // other document to know it is untrustworthy. See the header note on id=18/19/20, the three
+        // rows that predate this field and carry no such marker.
+        runTruncation: describeRunTruncation(run),
+      },
+    ],
+  };
 }
 
 // ── the registry split-brain guard ───────────────────────────────────────────────────────────────

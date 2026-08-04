@@ -41,11 +41,13 @@ import {
   AUTHORING_ATTEMPT_FAMILY,
   assertNoRetiredObjective,
   buildEvidenceDigest,
+  buildScorecard,
   classifyEntryRateFloor,
   classifyMintGate,
   classifyRegistrySplitBrain,
   classifySameDayGate,
   corpusAttemptKey,
+  describeRunTruncation,
   parseArgs,
   parsePlaybookInfoVersion,
   renderTwoBars,
@@ -504,14 +506,6 @@ function syntheticVariants(incumbent) {
 // ── stage 6: the experiments registry ────────────────────────────────────────────────────────────
 
 /**
- * One scorecard per SCORED VARIANT, in log-eval-experiment.mjs's own required shape — winners and
- * losers alike, and the incumbent too.
- *
- * Built per-variant rather than as one multi-candidate scorecard because that script derives each
- * row's label from `candidate.model`, so several variants on one model would collide into
- * indistinguishable labels — and an evidence row nobody can attribute is not evidence.
- */
-/**
  * How many registry rows have ALREADY been scored against this corpus, before this pass adds its own.
  *
  * FAILS OPEN, and the direction is not negotiable: this is a measurement, and a measurement that
@@ -557,56 +551,6 @@ async function readPriorAttemptsOnCorpus(pool, corpus) {
     );
     return null;
   }
-}
-
-function buildScorecard(score, report, priorAttemptsOnCorpus) {
-  const primary = report.cells.find((c) => c.h === 24) ?? report.cells[0];
-  return {
-    criteriaVersion: 'loop-authoring-v1',
-    corpusFingerprint: score.corpus.payloadSha256,
-    // The count at THIS row's own decision moment, frozen into an append-only row. Recorded per-row
-    // rather than derived later because the registry only ever grows: a count re-derived afterwards
-    // answers "how many attempts exist now", and the question that matters is "how many had already
-    // been made when this decision was taken".
-    priorAttemptsOnCorpus: priorAttemptsOnCorpus?.count ?? null,
-    priorAttemptsKey: priorAttemptsOnCorpus?.key ?? null,
-    priorAttemptsOnCorpusFingerprint: priorAttemptsOnCorpus?.byFingerprint ?? null,
-    corpusSource: 'agent_decisions.input_payload (corpus-v3-flat.jsonl)',
-    templateVersion: 'v3',
-    window: {
-      rowSince: score.corpus.firstEventTime,
-      rowUntil: score.corpus.lastEventTime,
-      firstEventTime: score.corpus.firstEventTime,
-      lastEventTime: score.corpus.lastEventTime,
-      rowsLoaded: score.corpus.rows,
-      rowsReplayed: score.rowsCovered,
-    },
-    capabilities: 'recorded (per-row, from the live payload)',
-    thinking: 'disabled',
-    maxTokens: 512,
-    tokenPrices: { [score.model]: null },
-    championReference: score.incumbentArm,
-    candidates: [
-      {
-        model: score.model,
-        rowsReplayed: report.rowsReplayed,
-        schemaValidRate: report.schemaValidRate,
-        // The replay contract has no separate sanity layer beyond the schema, so this mirrors it
-        // rather than inventing a second number that would read as an independent check.
-        tradeSanityRate: report.schemaValidRate,
-        proposeCount: report.entries,
-        proposeRate: report.entryRate,
-        actionHistogram: report.actionHistogram,
-        directionalForwardProxyBps: primary?.mean ?? null,
-        costPerDecideUsd: score.costPerDecideUsd,
-        arm: report.arm,
-        role: report.role,
-        decisionsChangedVsIncumbent: report.decisionsChangedVsIncumbent,
-        cells: report.cells,
-        dryRun: score.dryRun,
-      },
-    ],
-  };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────────────────────────
@@ -930,6 +874,13 @@ async function main() {
     // decision" rather than a count that includes it.
     const priorAttemptsOnCorpus = await readPriorAttemptsOnCorpus(pool, score.corpus);
 
+    // Computed ONCE, here, and reused at stage 5 (the comparison table's truncation banner), stage 7
+    // (the incumbent entry-rate line) and stage 7's gate call — a run that aborted or failed to exit
+    // cleanly must render identically wherever its numbers are printed. Same shape classifyMintGate's
+    // own `run` argument takes (2026-08-04: previously only stage 7's gate call saw this; stage 5's
+    // table and stage 7's entry-rate line printed the run's numbers as if unqualified).
+    const scoringRun = scoringExitOk ? score : { ...score, voided: true };
+
     // ── stage 5 ────────────────────────────────────────────────────────────────────────────────
     console.log('\nstage 5 — the two bars, side by side (they are NEVER the same bar)');
     for (const d of score.deployment) {
@@ -939,6 +890,7 @@ async function main() {
           deployment: d,
           research: score.research,
           priorAttemptsOnCorpus,
+          run: scoringRun,
         }),
       );
       console.log('');
@@ -962,7 +914,11 @@ async function main() {
     const scorecards = score.arms.map((report) => ({
       report,
       file: join(outDir, `scorecard-${report.arm}.json`),
-      card: buildScorecard(score, report, priorAttemptsOnCorpus),
+      // scoringRun, not score: the run-status wrapper is what carries VOID/ABORTED/unfaithful-caps, and
+      // every OTHER consumer of that state (stage 5's tables, stage 7's gate call) already receives it.
+      // Passing the raw `score` here is exactly the wiring gap that logged id=18/19/20 with no
+      // truncation marker at all — see buildScorecard's own header in loop-authoring-core.mjs.
+      card: buildScorecard(score, report, priorAttemptsOnCorpus, scoringRun),
     }));
     for (const s of scorecards) writeFileSync(s.file, JSON.stringify(s.card, null, 2), 'utf8');
     let experimentsLogged = false;
@@ -1015,18 +971,27 @@ async function main() {
     const incumbentReport = score.arms.find((a) => a.role === 'incumbent');
     if (incumbentReport) {
       // Measured here rather than quoted from a constant: the deleted floor's own feedback text
-      // asserted "champion enters ~28% of such consults" against a live rate of 16.1%.
+      // asserted "champion enters ~28% of such consults" against a live rate of 16.1%. "(measured this
+      // run)" is only true when the run that produced this number is itself usable — a truncated or
+      // void run's rate is exactly as unquotable as any other number it produced (2026-08-04: this
+      // line and stage 5's table used to be the only two places a reader saw an ABORTED run's figures
+      // with no qualifier at all).
+      const runTruncation = describeRunTruncation(scoringRun);
       console.log(
         `  incumbent ${incumbentReport.arm} entered ${incumbentReport.entries}/${incumbentReport.rowsParsed} ` +
-          `= ${(incumbentReport.entryRate * 100).toFixed(1)}% on the same rows (measured this run)`,
+          `= ${(incumbentReport.entryRate * 100).toFixed(1)}% on the same rows ` +
+          (runTruncation.length === 0
+            ? '(measured this run)'
+            : `(TRUNCATED / VOID — MAY NOT BE QUOTED: ${runTruncation.join('; ')})`),
       );
     }
 
     const gate = classifyMintGate({
       deployment: winner,
+      deploymentComparisons: score.deployment,
       research: score.research,
       floor,
-      run: scoringExitOk ? score : { ...score, voided: true },
+      run: scoringRun,
       experimentsLogged,
       priorAttemptsOnCorpus,
     });

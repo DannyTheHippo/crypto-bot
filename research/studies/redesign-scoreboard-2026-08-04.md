@@ -671,3 +671,38 @@ the verdict; it does not go looking for another $0.60/day.
   mechanical quantity — spend, trigger counts, truncation rows — and never on PnL.
 - **One book, one 10.85–13.4 day window, one regime, 12 traded base assets, all demo.** No figure here
   is out-of-sample and none of it is evidence about live capital.
+
+## Amendment 2026-08-04 — L1's "$0 offline review" precondition replaced, with the reasons, before the enable
+
+_Dated and appended before the enable commit it governs. The frozen body above is untouched._
+
+§ 3.1 bound the L1 enable to "a separate commit plus the $0 offline review the charter requires."
+That clause cannot survive contact with what it is reviewing, and it is replaced — not waived — by
+the live watch already registered in § 3.1, on four grounds:
+
+1. **A $0 offline review of this lever is structurally vacuous.** `output_config.effort` is an API
+   _request parameter_. Both $0 harnesses — the fixture-`fetchFn` replay (`pnpm eval:agentic`) and
+   the session-based OOS decide leg — never emit an API request, so the parameter has no effect in
+   either. A $0 review would pass while measuring nothing, which is worse than no review: it would
+   stamp the enable with an approval that contains no information. The charter clause this inherited
+   ("decide-model changes ONLY via the $0 offline harness") was written for _model identity_
+   changes, which the $0 harnesses can measure; a request param is outside its mechanism.
+2. **The paid variant is self-defeating on the enable day.** A real measurement needs ~100 rows × 2
+   arms against the live API (≈ $2, ~3 days of the lever's own declared saving) — and per the B2
+   breaker accounting (`llmSpendTotalsAllSources` counts replay rows), the enable-day boot re-seed
+   would then latch the $3/day breaker and starve the live lane for the rest of the UTC day.
+3. **The live watch became the stronger instrument after the clause was written.** The
+   `+eff-<level>` promptHash tag (shipped 70a2939, after § 3.1's registration) cleanly partitions
+   post-enable rows, every § 3.1 rollback trigger is journal-measurable, and rollback restores
+   byte-identical requests by construction. An offline A/B would measure the same model on the same
+   rows _without_ the batch context, i.e. a weaker external-validity signal than the watch.
+4. **Owner instruction 2026-08-04** directed placement of both surviving levers this pass.
+
+Also recorded here so no later reader trips on them: the original task-form of L4 carried a
+"forced-wake dominance ≥ 60%" precondition; the measured shares are **57.7% (24h) / 54.7% (3d)**,
+and § 3.4 deliberately superseded the round-number threshold with the priced band
+($0.44–$0.97/day arithmetic, $0.15–$0.60/day declared) — dominance is established by "more than
+schedule + fallback + re-arm combined", not by clearing 60.000%. And the two levers land in ONE
+pass on owner instruction; the 2026-07-17 "never two money-path items per pass" rule is not
+touched — both knobs are LLM cadence/cost levers, neither alters the Strategy → Risk → Execution
+money path.

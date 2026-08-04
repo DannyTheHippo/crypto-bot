@@ -1106,3 +1106,31 @@ bullets compressed to pointers, which took it from 228 to 207. The remaining 7 w
 into the post-deploy soak for, and trimming a fact to hit a line count is the one thing the rule
 forbids. The next pass should move the § Index table or the § Flagged bodies out rather than re-trim
 prose.
+
+### SOAK: PASS (`loop:sweep` 2026-08-04T09:59:02Z, 14 min after deploy)
+
+Container healthy, `RestartCount` 0, boot `b7b3d700`, `error=0 fatal=0` this boot. **One alarm — the
+frozen binance reject window, unchanged. No new alarm.** **25 Prometheus rules loaded, 0 firing**: the
+two rules added this pass are live and correctly quiet, since all three context feeds are fresh.
+
+**Three of this pass's fixes are confirmed working from the outside, not merely green in a test:**
+
+- `derivatives-feed: excluding HYPE/USDT from spot-ticker polling` appears **exactly once** in the
+  boot's warn set. That is the `spotUnlisted` guard added in remediation doing precisely its job — the
+  pre-fix behaviour would have emitted that line every 60s, ~2,880/day, for HYPE and KAITO both.
+- The four new context-feed gauges came up **populated on the first boot** rather than absent, which
+  is the zero-seed requirement holding.
+- `error=0` again, and the FIL/USDT filter-drift refusal that used to be the one error line per boot
+  stays gone.
+
+**One new warn to carry, not an alarm:** `fill poll failed for venue "binance": binance GET …` — a
+single occurrence on a venue with no activity since 2026-07-31. Recorded so the next pass sees it as
+pre-existing rather than new if it recurs; a single failed poll on an idle venue is not a finding yet,
+and calling it one on n=1 is the error this loop keeps writing down.
+
+**The book did not move and was not supposed to** — nothing shipped here was a profitability change:
+`windowDays=11.3571, roundTrips=50, netPnlUsd=−66.5305, llmCostUsd=30.0924, winRate=0.24, ready=false`,
+reasons unchanged. v10 h=8 forward return is now n=27 / clusters=9, mean **−39.6 bps** CI [−100.1,
++11.2], still excluding the +19.3 replay prediction — WATCH-PLAYBOOK-V10-1 unchanged in direction.
+
+Running build `1a0a54d`; working tree `7e75ad7` is this docs commit, a docs-only delta.

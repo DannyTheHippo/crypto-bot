@@ -790,6 +790,112 @@ silent-mask this WATCH exists to detect.
 unfired alert is not a passing one. The alert-side change (`ReconciliationMismatch` now excludes this
 class) means a firing will be visible in the sweep's annotations, not as a page.
 
+### WATCH-V4-18 — a re-armed plan carries the model's own geometry, not a synthetic pair (2026-08-04, Pass 63)
+
+**Source:** open defect #149; shipped `44792d9`. `rearmExitGeometry` / `rearmStopTrigger` invert
+`venueTpPrice`/`venueStopPrice` against `avgEntry` to recover the pcts the ALREADY-RESTING venue orders
+encode, validated against `DECISION_V2_BOUNDS` (`agent-prompt.ts:274`) — the model's own tool-schema
+range, deliberately not a second hand-picked pair of constants.
+
+**Expected-positive.** On any restart re-arm over an open position that still has protective orders
+resting, the re-arm warn line reports `stop=<pct> [resting-stop]` and/or `tp=<pct> [resting-tp]` — NOT
+`[synthetic]` — and the re-armed `takeProfitPct` stops being exactly `0.02` on every such symbol.
+
+**Named defect outcomes — any one is a finding:**
+
+1. **Every re-arm still reports `[synthetic]`** despite orders resting ⇒ the lookup is not finding them.
+   On PERP the trigger comes only from the `planStopRegistry` row, whose sole seeder with no active plan
+   is `reconcileOrphanedAlgoStop`'s re-adopt — so this most likely means the re-adopt is not running, not
+   that the derivation is wrong.
+2. **A derived pct lands inside `DECISION_V2_BOUNDS` but outside the model's observed 0.012–0.04 band**
+   ⇒ a stale or foreign resting order was adopted. This is the KNOWN, ACCEPTED residual: the failure mode
+   is a premature exit, never an unbounded loss (a wrong-side order yields a negative pct and is
+   rejected), and it still beats a synthetic 5%/2% the model never authored. If it recurs, tighten the TP
+   bound from the schema range to the observed band.
+3. **Drift-cancel churn does NOT fall after this deploy** ⇒ the "#149 manufactures #148" mechanism is
+   wrong and the drift has another cause. Do not re-assert the causal claim without this signal.
+
+**Deadline.** First restart carrying an open position. If none by **2026-08-08**, record UNTESTED — an
+unexercised path is not a passing one.
+
+### WATCH-V4-19 — a drift/qty cancel no longer leaves a position bare for a bar (2026-08-04, Pass 63)
+
+**Source:** open defect #148 (live 2026-08-04T08:30:35–08:44Z: HYPE/BTC/UNI, $195.59 of a $434 perp book,
+`PLAN_STOP_WATCH_ENABLED=false` so the 1s watcher backstop was off); shipped `44792d9`.
+
+**Expected-positive.** No positioned symbol crosses a bar boundary with no protective stop resting.
+`agentic_venue_tp_total{event="placed"}` and `agentic_venue_stop_total{event="placed"}` increment in the
+SAME bar as each `drift_cancel` — the `'placed'` emission on the TP replace path was itself a must-fix
+this pass, without which ~36% of TP placements were invisible on the only counter evidencing that rail.
+
+**Named defect outcomes — any one is a finding:**
+
+1. **`drift_cancel` without a same-bar placement.** On the TP leg this is EXPECTED whenever the
+   `sideCollateral` guard fires (another order rests on the exit side, so the compound would clear a leg
+   the position still needs and the deferred path deliberately stands). **Measure how often that guard
+   fires** — if it is the common case rather than the exception, the fix does not cover the live scenario
+   it was written for.
+2. **Duplicate resting orders** ⇒ in-flight suppression (`venueTpPlacedAtBar` / `venueStopPlacedAtBar`)
+   is insufficient for the compound path, which reaches placement one call earlier than before.
+3. **`InsufficientFunds` on a spot leg** ⇒ the side-scoped, role-less `cancelBeforeSubmit` cleared a leg
+   the other needed. That is exactly what the `sideCollateral` guard exists to prevent, so any occurrence
+   means the guard's condition is wrong, not that the compound is unusable.
+
+**Deadline. 2026-08-08.** Note this cannot be exercised on the binance spot lane, which has had zero
+submits since 2026-07-31 — a spot-side zero is starvation, not health (the WATCH-V4-13 trap).
+
+### WATCH-V4-16 — one `config_snapshots` row per config hash (2026-08-03, Pass 58)
+
+**Body written Pass 63.** This WATCH and WATCH-V4-17 were created in Pass 58 as one-liners in
+`STATUS.md`, whose header promises "full text in `watches.md`" — and neither body was ever written.
+Pass 63 found both missing (zero occurrences of either id in this file) and wrote them from the
+STATUS one-liners plus `LOG.md` § Pass 58. **The record asserted a property of itself it had never
+established, which is the same class this loop keeps finding in the code.**
+
+**What it guards.** `config_snapshots` HAS a writer, contrary to the Pass-58 alarm text that first
+named it. The writer fails OPEN (a snapshot write failure must never block a boot); the sweep's W3
+reader fails CLOSED. That asymmetry is deliberate and must survive any change here.
+
+**Expected-positive.** Every boot leaves exactly ONE row per config hash; an unchanged redeploy BUMPS
+`activated_at` on the existing row rather than inserting a second; the `config_snapshot_missing` alarm
+stays cleared.
+
+**First reading (Pass 58): GREEN** — 1 row, `dust 5`, `epoch 2026-07-21T11:21:00Z`, no `db` / `bootId`
+/ `gitSha` fields.
+
+**Named defect outcomes — any one is a finding:**
+
+1. **Duplicate rows per hash** ⇒ the upsert is targeting the wrong conflict key.
+2. **`activated_at` does NOT move on an unchanged redeploy** ⇒ `onConflictDoUpdate` is not firing.
+3. **`config_snapshot_drift` fires** ⇒ either genuine drift, or the nested key walk mis-resolving
+   (the sweep tries the flat env spelling, the flat camelCase spelling, and the nested canonical
+   AppConfig location `agentic.promotionDustNotional` / `agentic.promotionEvidenceEpoch`).
+4. **The `config_snapshot_missing` alarm RETURNS** ⇒ the fail-open writer is failing silently. Read
+   the app log for `config snapshot write failed` — **do not rebuild the writer**; Pass 58 already
+   established it exists.
+
+### WATCH-V4-17 — an in-flight entry intent keeps its consult (2026-08-03, Pass 58)
+
+**Body written Pass 63** — see WATCH-V4-16 above for why it was missing.
+
+**What changed.** If the daily `recompute()` lands after an entry intent is submitted but before it
+produces a position row or an open-order row, the symbol is unpinned; with
+`AGENTIC_PORTFOLIO_CONSULT=true` every off-menu symbol then takes a hard `off_menu` hold. Pass 58
+pinned that seam (`548376c` had closed the original gap). Protective exits were never at risk —
+`ProtectiveExitService` runs on its own tick and `runActivePlan` precedes the consult gate — **the LLM
+consult genuinely was.**
+
+**Expected-positive.** No symbol carrying an in-flight entry intent is absent from
+`agentic_active_menu` at a recompute.
+
+**Named defect outcome.** An `off_menu` hold journalled for a symbol that has an in-flight intent —
+i.e. the gap `548376c` closed has reappeared.
+
+**Exposure window.** Up to a full UTC day, because `isPinned` is only evaluated inside `recompute()`.
+That is why a single observation is weak evidence here: the failure is rare per bar and sticky per day.
+
+**Status: UNFIRED** as of Pass 63.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

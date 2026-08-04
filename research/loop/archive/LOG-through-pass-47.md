@@ -7703,3 +7703,193 @@ stopped mid-task on a statement of intent and were resumed. One lane tried `allo
 import, found it broke typecheck project-wide, and **reverted it** rather than leaving a config landmine.
 Also relearned the hard way: **a full gate run mid-fan-out measures your peers, not you** — which §4.6
 now says out loud.
+
+## 2026-08-03 — Pass 58 (a table that never had a writer, and a repair withdrawn at the last gate)
+
+**Window:** 2026-08-03T06:41Z → 09:50Z. Lease `06e93e2925ed1e27`, taken 06:41:43Z — it BROKE a
+stale lease **2,796 min (46.6h) old**: Pass 56 took a lease on 08-01 and never released it.
+
+### COLLISION #6 — an owner-directed session ran inside this pass's lease and took its number
+
+A full interactive session ran **06:43Z → 08:05Z**, entirely inside a lease this pass already held,
+and committed eleven commits (`dbb3051`..`355eab1`) plus the `Pass 57` LOG entry. Its own entry says
+why the lock did not stop it: _"No lease taken — owner-directed session, not a scheduled pass."_ The
+lease binds only callers, so this is not a lock defect — it is the fifth demonstration that the lock
+cannot bind what does not call it, and the **sixth** concurrent-pass occurrence overall.
+
+**No work was lost and no file was contended.** That session's commits all landed 08:04–08:11Z,
+before this pass made its first edit, and this pass re-verified the tip immediately before staging.
+This pass is numbered **58**; `57` is spent. One live consequence worth keeping: the dirty tree at
+06:41Z (`gross-exposure.ts` + spec) was that session's in-flight work, and staging `-A` would have
+committed it. Staging only files this pass authored is what prevented it — the rule earned its keep.
+
+### The pass type was chosen by the §3 gate, not by preference
+
+`loop:sweep` fired **two** alarms. One (`venue_reject_rate_high [binance]`) is the known frozen
+window. The other, `config_snapshot_missing`, was **new, unclaimed, and named by the session that had
+just ended without fixing it** — its own entry records `config_snapshots` as having "zero rows and
+zero writers". §3 makes that a defect investigation, and it was.
+
+### What was actually wrong: the table never had a writer, and the number it guards had no provenance
+
+`ConfigSnapshotRepository.upsert()` shipped in the **initial commit, 2026-06-14**, bound at
+`CONFIG_SNAPSHOT_REPO`, and has never been called by anything. Eleven independent searches over
+`src/` return no `.upsert(` call site; `git log -S 'configSnapshots'` returns exactly one commit;
+the live table read 0 against `agent_decisions` at 41,752 as a positive control. Not a lost writer —
+**a writer that was specified in the design plan and never built.**
+
+That matters because `PROMOTION_EVIDENCE_EPOCH` and `PROMOTION_DUST_NOTIONAL` jointly define what
+counts as a closed round trip and which fills sit in the evidence window. The whole earned-live gate
+is computed from them, and there was **no record that the scoreboard's numbers were produced under
+the knobs they are compared against** — a redeploy with an edited `.env.app` rewrote history
+invisibly.
+
+Two design calls, both made because the obvious version was wrong:
+
+- **Payload = the full canonical `AppConfig`, not a two-knob projection.** The `hash` PK is computed
+  over the whole canonical object, so a projection makes the row's own key unverifiable against its
+  content. It is built through the same `canonicalObjectWithoutSecrets` the hash uses, so the row is
+  self-verifying.
+- **`onConflictDoNothing` → `onConflictDoUpdate` bumping `activatedAt`.** The reader picks by
+  `order by activated_at desc limit 1`; under do-nothing, a config A→B→A leaves A stamped at its
+  first activation and the reader returns **B, which is not running** — a false drift alarm on a
+  correct config. First-activation time is deliberately traded for current-activation correctness.
+
+Review caught two more before they shipped: the payload carried `bootId`/`gitSha`, which the hash
+excludes, so a PK collision would have frozen the first boot's identity against a fresh
+`activated_at`; and an unset `PROMOTION_EVIDENCE_EPOCH` — a documented, supported "all-time"
+configuration — would have dropped the key and wedged the reader on a permanently unknown shape.
+
+**Verified in production, not just in tests.** First row ever: `hash 3a12218…`, `mode testnet`,
+`activated_at 2026-08-03T09:37:08Z`, `promotionDustNotional 5`, `promotionEvidenceEpoch
+2026-07-21T11:21:00Z`, `config ? 'db'` **false**, `app ? 'bootId'` **false**, `app ? 'gitSha'`
+**false**. The alarm cleared, and neither `config_snapshot_drift` nor `config_snapshot_shape_unknown`
+replaced it — the writer and the reader agree end to end.
+
+### Three surfaces were asserting things they had never established
+
+The through-line of Passes 56 and 57 held for a third pass, and this time one of them was ours.
+
+1. **The alarm's own diagnosis would have misdirected the operator it summoned.** Its text said
+   `upsert()` "is bound … but never invoked … so no snapshot has ever been written". True when
+   written; false from this pass on. Left alone it would have told whoever it woke to **build a
+   writer that already exists**. Corrected to name the real post-fix diagnosis (fail-open writer ⇒
+   zero rows means the write failed this boot ⇒ read the app log). The old wording turned out to be
+   load-bearing in four spec files that asserted against it.
+2. **The harness monitor lied about a third of its own set.** `MONITORED_HARNESSES` claimed all three
+   monitored suites are "deliberately OFF the production gate". `pnpm test` is
+   `vitest run test/features …`, and `test/features/strategy/loop-sweep` is matched by that
+   positional — `loop-sweep-specs` is **on** the gate. Gate membership is now a per-harness fact.
+3. **The playbook triaged against 8 of 22 alarm kinds.** §3 listed 8; the code pushes 22 across 38
+   push sites — 12 added the same day by `1f68d6f`, 2 undocumented since 07-31. **64% of the alarms a
+   pass can meet were missing from the list it is told to triage against**, in a document carrying its
+   own verify-before-cite rule. Four thresholds were also wrong or incomplete (the
+   `budget_gauge_uninitialised` carve-out, the clean-stamp zero-gauge fallback, `restart_storm`'s
+   `> 1`, and the fourth stale citation on the `probe_failed` paragraph).
+
+### A repair that was written, reviewed, and then withdrawn — the dust pin leak
+
+**Found and measured:** four spot dust positions permanently hold consult-menu slots —
+`AAVE/USDT` ($0.06, stuck **9.3 days**), `SOL/USDT` ($0.04), `ZEC/USDT` ($0.35), `BTC/USDT` ($0.49).
+The money path uses **two different definitions of flat**: the fill path closes a round trip
+economically at `dustNotional`, the pin predicate tests exact zero. Sub-`stepSize` residue is below
+any venue `minNotional`, so **the pin is permanent by construction**. Cost **≈$0.33/day — 11% of the
+$3/day breaker** — for 148 consults over 4 days that produced **148 `hold`s and nothing else**.
+
+**Not shipped, and this is a blocked state, not a scheduling choice.** Both canonical dust sites
+carry a _"the position was once real"_ guard — `portfolio-state.service.ts`'s `reduced`, and
+`round-trips.ts`'s `peakNotional.gte(dustNotional)`, the latter added after a measured BCH/USDT
+defect. The first draft dropped it, which would have unpinned **a position being built** (an opening
+fill still under the threshold) — precisely the input those guards exist to reject. No signal at that
+seam can reconstruct it: `Position` carries only `signedQty`/`avgEntry`/`realizedPnl`, and
+`PortfolioViewPort` is a point-in-time read. The blocker is specific: persisting a high-water mark is
+a **money-table schema change (report-only, not loop-domain)**, and an in-memory one resets on
+restart, so it would never release positions stuck for days _across_ restarts. The sound route is a
+durable round-trip-cycle reader — **new capability, not a repair**. The unwired helper was deleted
+rather than left exported, so nothing advertises a capability that is not connected.
+
+**One genuine fix did survive from that work**, and it is independent of dust: an **in-flight entry
+intent could lose its consult mid-entry**. If the daily recompute lands after an intent is submitted
+but before it produces a position or open-order row, the symbol is unpinned, and with
+`AGENTIC_PORTFOLIO_CONSULT=true` every off-menu symbol gets a hard `off_menu` hold — for the rest of
+the UTC day, since `isPinned` is only evaluated inside `recompute()`. Pre-existing; now pinned.
+Protective exits were never at risk (`ProtectiveExitService` runs on its own tick and `runActivePlan`
+precedes the consult gate) — the LLM consult genuinely was.
+
+### The spot lane: a strong claim, verified, and the load-bearing half refuted
+
+Investigated because STATUS asserts the binance reject alarm _"resolves on the first real spot
+entry"_. That clearing path is unreachable: **zero binance submits for 3d 7h**, zero spot entries
+since 2026-07-30T10:30Z, and 7 spot entries lifetime against 189 reduce-only exit legs. The alarm
+will not clear by accumulation — it will **age out at ~2026-08-07T01:45Z** into the
+`venue_reject_rate_undetermined` annotation, which is silence, not health.
+
+The proposed mechanism — that `residual20-volbeta` builds its cohort from perps only, so spot gets
+`sideEligibility {long:false, short:false}` and can never enter — is **half right and was refuted on
+the half that mattered**. `sideEligibility` has exactly one consumer, which copies it into the
+prompt; Risk has no awareness of it. **It is prompt payload, not a code gate**, and the model has
+entered against it: two spot entries on 07-30 with both flags false, and 3 of 15 perp entries since
+07-31. What survives is severe _emergent_ suppression — 191 spot consults → 0 entries where the perp
+rate predicts ~7.7, P(0) ≈ 3.8e-4 — and it is **confounded with v10 `inverted`**, live from
+2026-07-30T16:57Z with no control arm.
+
+**Deliberately not acted on.** `verdicts.md` § entry signal is binding: _"Do not propose cost work as
+a profitability lever."_ Five spot symbols currently cost $0.53–1.00/day, but that framing is
+forbidden and the confound is real. Recorded as backlog work justified on **expectancy** — spot
+realized PnL is **−$8.01 over its 7 lifetime entries** — not on cost.
+
+### `llm_usage` looked like a lost writer and is not one
+
+69 rows, nothing since 2026-07-27, while the lane bills daily. **Vestigial by design:** its only
+writer was `reflection.service.ts`, deleted deliberately in `9a63edf`; writes stopped three days
+earlier because `bf06d26` fixed a re-arm bug and the weekly trigger correctly stopped firing.
+**The promotion cost figure is CORRECT** — `PromotionStatsRepository.tokenTotals` UNIONs
+`agent_decisions` (verified populated daily) with the reflection rows; spend that never happened
+cannot be missing. The rows are **not** dropped: they sit inside the epoch and are re-priced every
+gate run, so deleting them would understate cost and loosen a permission gate. Three comments naming
+the deleted service were corrected — they are what sends an investigator hunting a writer.
+
+### Headline metrics — the bleed is on trend
+
+| | Pass 56 (08-01T08:00Z) | Pass 58 (08-03T09:45Z) | Δ |
+| --- | --- | --- | --- |
+| closed round trips | 40 | 46 | +6 |
+| net-of-cost PnL | −$48.60 | **−$59.93** | **−$11.33** |
+| LLM cost | $22.096 | $26.965 | +$4.87 |
+| window | 8.47 / 14 d | 9.92 / 14 d | +1.45 |
+| win rate | 25.0% | 23.9% | −1.1pp |
+
+**−$5.6/day**, tracking the recorded −$5.73/day almost exactly. `agentic_promotion_blocked` names
+three live reasons: `NON_POSITIVE_NET_PNL`, `INSUFFICIENT_WINDOW`, `BELOW_PASSIVE_BENCHMARK`.
+`equity_usdt` 4969, kill switch RUNNING, `promotion_ready` 0. **S3's −$200 trigger still lands
+~2026-08-27**, before the 08-31 close. WATCH-V3-1: RSS holds, no climb toward the ~900MiB signal.
+
+### Diff, gates, soak
+
+`118132c` config-snapshot writer · `6149861` sweep reader + alarm/harness honesty · `7e1306c`
+playbook §3 inventory · `548376c` in-flight-intent pin · `9082f89` `llm_usage` comment corrections.
+
+Gates all green on the combined tree: `format:check`, `lint:md`, `typecheck`, `lint`, `build`,
+`test` **192 files / 3595 tests** (baseline 189/3572, so +23 tests), `test:livegate` **55/55**
+(untouched), `eval:agentic` 95. `loop:harness` 3/3 PASS — all three harnesses had been **STALE 68.4h**
+at pass start and are now `harness_ok`.
+
+Deployed `9082f89`, boot 09:37:08Z, `build_info` matches the tip. **Soak: alarms 2 → 1**,
+`config_snapshot_missing` cleared and not replaced by a drift or shape alarm, health 200/200,
+`RestartCount` 0, reconcile clean stamp 1.2 min, decides flowing. The one remaining alarm is the
+known frozen binance window.
+
+An honest artifact of this pass: the single `error` log line on the 08:27Z boot was
+`Cannot GET /health` — **this pass's own bad probe** (the endpoints are `/health/live` and
+`/health/ready`), not a stack defect.
+
+### Flagged / next
+
+1. **The dust pin leak is a blocked defect**, not backlog — ≈$0.33/day, root-caused, measured, with
+   the exact missing signal named above. First item for the next pass.
+2. **Six concurrent-pass occurrences.** The lease cannot bind sessions that do not call it; scheduler
+   and session co-firing remains owner-owned.
+3. **Pass 56 never released its lease** (46.6h stale). A pass that ends without `loop:unlock` leaves
+   the next one to break it — which fails open by design, but the break is the only signal.
+4. Spot-lane suppression → backlog, expectancy-framed, confounded with v10 until that is controlled.
+5. `charter.md` says the cost breaker is $5/day; `.env.app:97` deploys `3`. Unreconciled drift.

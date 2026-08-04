@@ -198,3 +198,20 @@ Closed ledger — rows moved out of `STATUS.md` when done, kept in full here (no
   an always-on host, GCP credentials, and live trading capital — and GCP itself is DEFERRED ENTIRELY
   to a future owner-initiated session (the loop does not prep or initiate it). This extends the
   Strategic-frame owner decisions above (2026-07-10/12/17/22) — grant 7 is the widest.
+
+## Loop file index — moved here from `STATUS.md` (Pass 63, 2026-08-04, for its 200-line cap)
+
+`STATUS.md` keeps the short form plus a pointer to this table; nothing was deleted, only moved.
+
+| file | read it when |
+| --- | --- |
+| `STATUS.md` | always, first, at the start of every pass |
+| `charter.md` (this file) | deciding whether a change is loop-domain or needs the owner; before firing a pre-authorization; before disputing a settled decision |
+| `verdicts.md` | before proposing work in an area it covers — the entry signal, exit rules, cost levers, the derived break-even bar (§ Addendum 2026-08-04), decide-model choice, price TA, non-price channels, the promotion benchmark, the live playbook lineage |
+| `watches.md` | checking a WATCH's exact expected-positive or named defect outcome; reading an open flagged item in full; the pre-fix bodies of open defects #147–#152 |
+| `LOG.md` | appending this pass's entry (newest last); reading the last five passes |
+| `archive/state-2026-07-30.md` | a line in `STATUS.md` or `watches.md` points there for the record behind it — v3 build/cutover, soak defects, per-pass decision records |
+| `archive/LOG-through-pass-47.md` | a pass entry older than the five kept in `LOG.md`; Pass 63 rotated Pass 58 out |
+| `state.md` | never for content — a stub kept because commit messages, `docs/runbook.md` and the scheduled task reference the path by name |
+| `digests/` | `loop:sweep` writes its digest here; rehydration reads the newest |
+| `incidents/` | a named incident note written by an earlier pass |

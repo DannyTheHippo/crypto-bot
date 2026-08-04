@@ -266,27 +266,35 @@ describe('oos-session-arm — free preconditions and unit checks', () => {
     expect(dirty.offendingRowIds).toEqual(['2']);
   });
 
-  it('checkEntryRateBound VOIDs outside [4%, 40%] and never on an empty batch (VOID condition 3)', () => {
+  it('checkEntryRateBound VOIDs above the 65% absolute ceiling and never on an empty batch (VOID condition 3(b), amended 2026-08-04)', () => {
     const low = checkEntryRateBound(
       Array.from({ length: 100 }, (_, i) => ({
         result: { ok: true, action: i === 0 ? 'open_long' : 'hold' },
       })),
     );
-    // Exact, not approximate: 1/100 and 2/10 are the same IEEE754 doubles as their literals, so
-    // equality is both correct and stricter here. `toBeCloseTo` is banned repo-wide (money rule).
+    // Exact, not approximate: 1/100 is the same IEEE754 double as its literal, so equality is both
+    // correct and stricter here. `toBeCloseTo` is banned repo-wide (money rule).
     expect(low.rate).toBe(0.01);
-    expect(low.void).toBe(true);
+    // A low rate is no longer void at decide time (defect #140) — there is no absolute floor; arm
+    // (a) of the amended condition needs the live lane's rate and is checked only at score time.
+    expect(low.void).toBe(false);
     const high = checkEntryRateBound(
       Array.from({ length: 10 }, () => ({ result: { ok: true, action: 'open_long' } })),
     );
     expect(high.rate).toBe(1);
     expect(high.void).toBe(true);
-    const inBand = checkEntryRateBound([
-      ...Array.from({ length: 8 }, () => ({ result: { ok: true, action: 'hold' } })),
-      ...Array.from({ length: 2 }, () => ({ result: { ok: true, action: 'open_long' } })),
+    const atBoundaryBelow = checkEntryRateBound([
+      ...Array.from({ length: 50 }, () => ({ result: { ok: true, action: 'open_long' } })),
+      ...Array.from({ length: 50 }, () => ({ result: { ok: true, action: 'hold' } })),
     ]);
-    expect(inBand.rate).toBe(0.2);
-    expect(inBand.void).toBe(false);
+    expect(atBoundaryBelow.rate).toBe(0.5);
+    expect(atBoundaryBelow.void).toBe(false);
+    const aboveCeiling = checkEntryRateBound([
+      ...Array.from({ length: 7 }, () => ({ result: { ok: true, action: 'open_long' } })),
+      ...Array.from({ length: 3 }, () => ({ result: { ok: true, action: 'hold' } })),
+    ]);
+    expect(aboveCeiling.rate).toBe(0.7);
+    expect(aboveCeiling.void).toBe(true);
     const empty = checkEntryRateBound([]);
     expect(empty.rate).toBeNull();
     expect(empty.void).toBe(false);

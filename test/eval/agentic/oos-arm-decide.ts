@@ -189,12 +189,14 @@ export interface EntryRateBoundCheck {
   readonly decided: number;
 }
 
-const MIN_ENTRY_RATE = 0.04;
-const MAX_ENTRY_RATE = 0.4;
+const MAX_ENTRY_RATE_ABS = 0.65;
 
 /**
- * VOID condition 3: entry rate outside [4%, 40%]. `rate: null` (zero decided rows) is never void
- * here — an empty batch is a different problem than an out-of-band rate, and is reported elsewhere.
+ * VOID condition 3(b) ONLY — the absolute 65% ceiling. Arm (a) (S/L outside [1/6, 6.0], amended
+ * 2026-08-04) is NOT checkable here: it needs the live lane's rate on the same rows, and the decide
+ * leg is blind to it by VOID condition 4. Arm (a) is enforced at score time in
+ * scripts/loop-oos-arm-core.mjs, where the live join already exists. `rate: null` (zero decided
+ * rows) is never void here.
  */
 export function checkEntryRateBound(
   outcomes: readonly { readonly result: { readonly ok: boolean; readonly action?: string } }[],
@@ -206,7 +208,7 @@ export function checkEntryRateBound(
   if (decided.length === 0) return { void: false, rate: null, entries: 0, decided: 0 };
   const rate = entries / decided.length;
   return {
-    void: rate < MIN_ENTRY_RATE || rate > MAX_ENTRY_RATE,
+    void: rate > MAX_ENTRY_RATE_ABS,
     rate,
     entries,
     decided: decided.length,

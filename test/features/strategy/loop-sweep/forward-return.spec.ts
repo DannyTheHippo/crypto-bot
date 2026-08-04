@@ -87,6 +87,8 @@ interface Core {
   MIN_ENTRIES: number;
   MIN_CLUSTERS: number;
   MAX_GAP_SHARE: number;
+  ANCHOR_LAG_SECONDS: { p50: number; min: number; max: number };
+  ANCHOR_LOOKAHEAD_BPS: { mean: number; meanAbsCeiling: number; p95Abs: number };
   REPLAY_REFERENCE: Record<string, { arm: string; predicted: Record<string, number> }>;
   computeForwardReturn: (input: {
     entryRows: EntryRow[] | null;
@@ -101,6 +103,8 @@ const {
   MIN_ENTRIES,
   MIN_CLUSTERS,
   MAX_GAP_SHARE,
+  ANCHOR_LAG_SECONDS,
+  ANCHOR_LOOKAHEAD_BPS,
   REPLAY_REFERENCE,
   computeForwardReturn,
   sweepAnnotations,
@@ -509,6 +513,112 @@ describe('realised entry forward return — determinism and fail-open shape', ()
       expect(() =>
         computeForwardReturn(bad as unknown as Parameters<typeof computeForwardReturn>[0]),
       ).not.toThrow();
+    }
+  });
+});
+
+describe('realised entry forward return — anchor-lag disclosure (defect #144)', () => {
+  // Same powered fixture as the determinism block above: 15 entries across 5 symbols, v10 default.
+  const symbols = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+  const gridRows = symbols.flatMap((s, k) => fullSeries('binance', s, T0, 100 + k, 0.1 * (k + 1)));
+  const entryRows = Array.from({ length: 15 }, (_, i) =>
+    entry({ symbol: symbols[i % 5], eventTime: T0 + i * BAR_MS }),
+  );
+
+  it('declares the anchor lag and its MEASURED look-ahead ceiling on EVERY read, including a void one', () => {
+    for (const r of [
+      computeForwardReturn({ entryRows, gridRows, reference: REF }),
+      computeForwardReturn({ entryRows: null, gridRows, reference: REF }),
+      computeForwardReturn({ entryRows: [], gridRows, reference: REF }),
+    ]) {
+      const a = r.annotations.filter((x) => x.kind === 'forward_return_anchor_lag');
+      expect(a).toHaveLength(1);
+      expect(a[0]!.detail).toContain("DECISION BAR'S CLOSE");
+      expect(a[0]!.detail).toContain('16.2s');
+      expect(a[0]!.detail).toContain('55.5s');
+      expect(a[0]!.detail).toContain('0.57 bps');
+    }
+  });
+
+  it('freezes the constants as MEASURED look-ahead, never the two-group 9.1 bps or extrapolated 3.4 bps figures', () => {
+    // Exact values, never toBeCloseTo: a silently re-tuned disclosure is the failure this pins.
+    expect(ANCHOR_LAG_SECONDS.p50).toBe(16.2);
+    expect(ANCHOR_LAG_SECONDS.min).toBe(1.3);
+    expect(ANCHOR_LAG_SECONDS.max).toBe(55.5);
+    expect(ANCHOR_LOOKAHEAD_BPS.mean).toBe(0.07);
+    // Published on the 83/94 rows that actually held a live ticker (2026-08-04 review finding: the
+    // other 11 fall back to the entry bar's own close, a structural zero that dilutes a pooled
+    // ceiling downward — see the constant's own header comment).
+    expect(ANCHOR_LOOKAHEAD_BPS.meanAbsCeiling).toBe(0.57);
+    expect(ANCHOR_LOOKAHEAD_BPS.p95Abs).toBe(2.45);
+  });
+
+  it('carries the disclosure VERBATIM into the compacted sweep view', () => {
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    const swept = sweepAnnotations(r).filter((a) => a.kind === 'forward_return_anchor_lag');
+    expect(swept).toHaveLength(1);
+    expect(swept[0]!.detail).toBe(
+      r.annotations.find((a) => a.kind === 'forward_return_anchor_lag')!.detail,
+    );
+  });
+
+  it('does not smuggle the wrong-statistic 9.1 bps / 3.4 bps figures into the disclosure text', () => {
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    const a = r.annotations.find((x) => x.kind === 'forward_return_anchor_lag')!;
+    expect(a.detail).not.toContain('9.1 bps');
+    expect(a.detail).not.toContain('3.4 bps');
+  });
+
+  it('renders the anchor disclosure in the report header', () => {
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    expect(renderForwardReturn(r)).toContain("decision bar's CLOSE");
+  });
+
+  it('FAILS OPEN — the disclosure changes no cell, no interval and no divergence flag', () => {
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    const p = r.panels.find((x) => x.population === 'all')!;
+    const h1 = p.horizons.find((x) => x.h === 1)!;
+    // v10 h=1 replay-predicted is -0.8 bps (REPLAY_REFERENCE); this fixture's live entries trend
+    // strongly positive, so the interval excludes it — pinning that the new disclosure did not
+    // suppress or alter the divergence this cell already computed.
+    expect(h1.status).toBe('measured');
+    expect(h1.cell?.powered).toBe(true);
+    expect(h1.divergence?.flagged).toBe(true);
+    expect(h1.divergence?.reason).toBeNull();
+    expect(renderForwardReturn(r)).toContain('— DIVERGENCE');
+    // Still no alarms key, still never throws.
+    expect('alarms' in r).toBe(false);
+    expect(Object.keys(r).sort()).toEqual(['annotations', 'panels', 'status']);
+    expect(() =>
+      computeForwardReturn(undefined as unknown as Parameters<typeof computeForwardReturn>[0]),
+    ).not.toThrow();
+  });
+});
+
+describe('realised entry forward return — replay-divergence annotation text (Pass 59 correction)', () => {
+  // Same powered, divergent fixture as above — needed to actually EMIT a forward_return_replay_divergence
+  // annotation to assert against.
+  const symbols = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+  const gridRows = symbols.flatMap((s, k) => fullSeries('binance', s, T0, 100 + k, 0.1 * (k + 1)));
+  const entryRows = Array.from({ length: 15 }, (_, i) =>
+    entry({ symbol: symbols[i % 5], eventTime: T0 + i * BAR_MS }),
+  );
+
+  it('states the fills-invisible-on-both-sides reason, not the false maker-fill adverse-selection attribution', () => {
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    const divergences = r.annotations.filter((a) => a.kind === 'forward_return_replay_divergence');
+    expect(divergences.length).toBeGreaterThan(0);
+    for (const a of divergences) {
+      // The corrected claim (watches.md § WATCH-PLAYBOOK-V10-1, 2026-08-03 amendment): this statistic
+      // ignores fills on both sides, so it cannot show adverse selection at all — only the
+      // filled-vs-unfilled split on the same rows can.
+      expect(a.detail).toContain('CANNOT show adverse selection');
+      expect(a.detail).toContain('filled-vs-unfilled split');
+      // The symmetric "report it whichever way it points" framing is correct and must survive.
+      expect(a.detail).toContain('not a fault and not noise');
+      // The false attribution this replaces must be gone, not merely renamed.
+      expect(a.detail).not.toContain('adverse-selection hypothesis confirming');
+      expect(a.detail).not.toContain('maker-side at 76% fill');
     }
   });
 });

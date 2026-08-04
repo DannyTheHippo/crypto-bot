@@ -348,4 +348,24 @@ describe('evaluateConsultSchedule gate priority (XA1 menu + XA5 noop)', () => {
   it('absent flags default to consulting (fail OPEN)', () => {
     expect(evaluateConsultSchedule(base)).toBe('consulted');
   });
+
+  // 2026-08-04 re-verification, corrected 2026-08-04 (review finding): the original version of this
+  // test set hasOpenPositionWithoutDirectives:true, which short-circuits at the function's SECOND
+  // branch — before scheduledConsultBars is ever read — so it passed for ANY state and pinned nothing
+  // about the fresh-boot fallback mechanism. The genuine claim ('consulted' names ONLY the organic
+  // on-schedule branch, which needs scheduledConsultBars non-null — a value only a completed prior
+  // proposal can set, so a restart's null schedule can never be labelled 'consulted') is pinned here
+  // by actually reaching the fallback branch: no open position, barsSinceConsult at the fallback bound.
+  it('a fresh boot with no schedule yet falls back to forced_fallback once due, never consulted', () => {
+    expect(
+      evaluateConsultSchedule({
+        ...base,
+        state: {
+          barsSinceConsult: base.fallbackConsultBars,
+          scheduledConsultBars: null,
+          lastConsultPrice: null,
+        },
+      }),
+    ).toBe('forced_fallback');
+  });
 });

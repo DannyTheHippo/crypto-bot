@@ -89,8 +89,10 @@ const {
 const {
   MAX_FAMILY_READS,
   Z_ALPHA,
-  MIN_ENTRY_RATE,
-  MAX_ENTRY_RATE,
+  ENTRY_RATE_RATIO_MAX,
+  ENTRY_RATE_RATIO_MIN,
+  MAX_ENTRY_RATE_ABS,
+  PRIMARY_REQUIRED_ROWS,
   SECONDARY_HORIZONS,
   computeOosArm,
   parseDecisionLine,
@@ -99,8 +101,10 @@ const {
 } = oosCore as {
   MAX_FAMILY_READS: number;
   Z_ALPHA: number;
-  MIN_ENTRY_RATE: number;
-  MAX_ENTRY_RATE: number;
+  ENTRY_RATE_RATIO_MAX: number;
+  ENTRY_RATE_RATIO_MIN: number;
+  MAX_ENTRY_RATE_ABS: number;
+  PRIMARY_REQUIRED_ROWS: { d: number; n: number }[];
   SECONDARY_HORIZONS: number[];
   computeOosArm: (input: {
     decisionLines: string[] | null;
@@ -405,8 +409,8 @@ describe('computeOosArm — VOID conditions', () => {
     expect(r.annotations.map((a) => a.kind)).toContain('oos_arm_void_caps_source');
   });
 
-  it('VOIDs on an entry rate outside [4%, 40%] (condition 3)', () => {
-    // 10 rows, ALL entries — 100% > 40%.
+  it('VOIDs on an arm entry rate above the 65% absolute ceiling (condition 3(b))', () => {
+    // 10 rows, ALL entries — 100% > 65%.
     const rows = Array.from({ length: 10 }, (_, i) =>
       record({ rowId: `r${i}`, eventTime: T0 + i * BAR_MS, action: 'open_long' }),
     );
@@ -422,7 +426,99 @@ describe('computeOosArm — VOID conditions', () => {
     const seals = [sealFor(rows.map((r) => r.rowId as string))];
     const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
     expect(r.reads[0]!.void).toBe(true);
-    expect(r.reads[0]!.voidReasons).toContain('entry_rate_out_of_band');
+    expect(r.reads[0]!.voidReasons).toContain('entry_rate_ceiling');
+  });
+
+  it('does NOT void when the session reproduces the incumbent v10 rate below the RETIRED 4% floor (defect #140)', () => {
+    // 2 entries of 64 rows = 0.03125 exactly — below the retired [4%, 40%] floor and adjacent to the
+    // incumbent lane's own v10 rate (21/543 = 3.8674%). The live lane enters the SAME 2 rows, so the
+    // ratio is exactly 1.0. This is the arm's most informative outcome; the retired absolute floor
+    // discarded it while still spending the window.
+    // 64 rows across 5 base assets so the primary is POWERED (n >= MIN_ENTRIES, clusters >= MIN_CLUSTERS).
+    // Exact equality, not approximate: 2/64 is an exact IEEE754 double. `toBeCloseTo` is banned repo-wide.
+    const bases = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+    const rows = Array.from({ length: 64 }, (_, i) =>
+      record({
+        rowId: `r${i}`,
+        eventTime: T0 + i * BAR_MS,
+        symbol: bases[i % 5]!,
+        action: i < 2 ? 'open_long' : 'hold',
+      }),
+    );
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = rows.map((r, i) => ({
+      eventTime: r.eventTime as number,
+      venue: r.venue as string,
+      symbol: r.symbol as string,
+      action: i < 2 ? 'open_long' : 'hold',
+      playbookVersion: null,
+      isFlat: true,
+    }));
+    const seals = [sealFor(rows.map((r) => r.rowId as string))];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    const read = r.reads[0]!;
+    expect(read.void).toBe(false);
+    expect(read.voidReasons).toEqual([]);
+    expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_void_entry_rate');
+    expect(read.primary).not.toBeNull();
+    expect(read.primary!.summary).toContain('arm entry-rate=3.1%');
+    expect(read.primary!.flagged).toBe(false);
+  });
+
+  it('VOIDs when the arm/live entry-rate ratio exceeds 6.0 — condition 3(a) (defect #140)', () => {
+    // Arm 32/64 = 0.5, live 2/64 = 0.03125 -> ratio 16.0x > the 6.0 payload-integrity ceiling.
+    const bases = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+    const rows = Array.from({ length: 64 }, (_, i) =>
+      record({
+        rowId: `r${i}`,
+        eventTime: T0 + i * BAR_MS,
+        symbol: bases[i % 5]!,
+        action: i < 32 ? 'open_long' : 'hold',
+      }),
+    );
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = rows.map((r, i) => ({
+      eventTime: r.eventTime as number,
+      venue: r.venue as string,
+      symbol: r.symbol as string,
+      action: i < 2 ? 'open_long' : 'hold',
+      playbookVersion: null,
+      isFlat: true,
+    }));
+    const seals = [sealFor(rows.map((r) => r.rowId as string))];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    const read = r.reads[0]!;
+    expect(read.void).toBe(true);
+    expect(read.voidReasons).toContain('entry_rate_ratio');
+    const detail = r.annotations.find((a) => a.kind === 'oos_arm_void_entry_rate')!.detail;
+    expect(detail).toContain('16.00x');
+  });
+
+  it('the ratio arm of condition 3 is INAPPLICABLE (not a VOID) when the live rate is exactly 0', () => {
+    // Arm 2/64, live 0/64 -> S/L is undefined; only the 65% absolute ceiling can apply, and it does not.
+    const bases = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+    const rows = Array.from({ length: 64 }, (_, i) =>
+      record({
+        rowId: `r${i}`,
+        eventTime: T0 + i * BAR_MS,
+        symbol: bases[i % 5]!,
+        action: i < 2 ? 'open_long' : 'hold',
+      }),
+    );
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = rows.map((r) => ({
+      eventTime: r.eventTime as number,
+      venue: r.venue as string,
+      symbol: r.symbol as string,
+      action: 'hold',
+      playbookVersion: null,
+      isFlat: true,
+    }));
+    const seals = [sealFor(rows.map((r) => r.rowId as string))];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    const read = r.reads[0]!;
+    expect(read.void).toBe(false);
+    expect(r.annotations.map((a) => a.kind)).toContain('oos_arm_entry_rate_ratio_inapplicable');
   });
 
   it('never voids an empty-decided batch on the entry-rate clause', () => {
@@ -441,7 +537,8 @@ describe('computeOosArm — VOID conditions', () => {
     ];
     const seals = [sealFor(['r1'])];
     const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
-    expect(r.reads[0]!.voidReasons).not.toContain('entry_rate_out_of_band');
+    expect(r.reads[0]!.voidReasons).not.toContain('entry_rate_ceiling');
+    expect(r.reads[0]!.voidReasons).not.toContain('entry_rate_ratio');
   });
 
   it('always names VOID condition 2 as unchecked, on every read, void or not', () => {
@@ -566,6 +663,84 @@ describe('computeOosArm — VOID conditions', () => {
     expect(r.annotations.map((a) => a.kind)).toContain('oos_arm_prompt_fidelity_unverifiable');
     expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_prompt_fidelity_verified');
     expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_void_prompt_fidelity');
+  });
+});
+
+// Regression for the 2026-08-04 adversarial review finding: armEntryRate is computed over
+// schemaValidRows.length (armTrials), but the Fisher table and pooled z used n = paired.length —
+// a different, larger denominator whenever any sealed row is schema-invalid. A 2x true rate
+// difference (arm 12.5% vs live 6.25%) printed fisher p=1.0000 because the buggy table
+// [armEntryCount, n-armEntryCount, liveEntryCount, n-liveEntryCount] = [4,60,4,60] is EXACTLY
+// symmetric whenever armEntryCount === liveEntryCount — a symmetric 2x2 table is always its own
+// mode under the hypergeometric null, so two-sided Fisher is 1.0000 by construction regardless of
+// the true rate gap the arm and live entry counts came from.
+describe('computeOosArm — primary denominator (armTrials vs n, 2026-08-04 review finding)', () => {
+  function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      rowId: 'r',
+      eventTime: T0,
+      venue: 'binance',
+      symbol: 'BTC/USDT',
+      base: 'BTC',
+      playbookVersion: 1,
+      hashes: {},
+      agentPromptCommitSha: '',
+      capsSource: 'recorded',
+      schemaValid: true,
+      action: 'hold',
+      directives: null,
+      ...over,
+    };
+  }
+  function sealFor(rowIds: string[]): { createdAtMs: number; metrics: unknown } {
+    return {
+      createdAtMs: 1,
+      metrics: {
+        windowStart: T0,
+        windowEnd: T0 + rowIds.length * BAR_MS,
+        rowIds,
+        payloadSha256: 'x',
+      },
+    };
+  }
+
+  it('scores the primary against armTrials (schema-valid rows), not n (all paired rows) — a 2x rate gap must not print fisher p=1.0000', () => {
+    // 64 paired rows, 32 schema-invalid. Among the 32 schema-valid rows, 4 are arm entries
+    // (armTrials=32, armEntryRate=12.5%). The live comparator enters 4 of all 64 rows
+    // (liveEntryRate=6.25%) — a true 2x rate difference the primary must be able to see.
+    const bases = ['AAA/USDT', 'BBB/USDT', 'CCC/USDT', 'DDD/USDT', 'EEE/USDT'];
+    const rows = Array.from({ length: 64 }, (_, i) => {
+      const schemaValid = i < 32;
+      const action = schemaValid && i < 4 ? 'open_long' : 'hold';
+      return makeRow({
+        rowId: `r${i}`,
+        eventTime: T0 + i * BAR_MS,
+        symbol: bases[i % 5]!,
+        schemaValid,
+        action,
+      });
+    });
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = rows.map((r, i) => ({
+      eventTime: r.eventTime as number,
+      venue: r.venue as string,
+      symbol: r.symbol as string,
+      action: i >= 60 ? 'open_long' : 'hold', // 4 of 64 paired rows -> 6.25%
+      playbookVersion: null,
+      isFlat: true,
+    }));
+    const seals = [sealFor(rows.map((r) => r.rowId as string))];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    const read = r.reads[0]!;
+    expect(read.void).toBe(false);
+    expect(read.primary).not.toBeNull();
+    expect(read.primary!.summary).toContain('POWERED');
+    expect(read.primary!.summary).toContain('arm entry-rate=12.5%');
+    expect(read.primary!.summary).toContain('n=64');
+    expect(read.primary!.summary).toContain('armTrials=32');
+    // The failure signature this test pins: a true 2x rate gap must never print p=1.0000, which is
+    // only reachable by silently substituting n for armTrials in the arm's own row.
+    expect(read.primary!.summary).not.toContain('fisher p=1.0000');
   });
 });
 
@@ -731,10 +906,16 @@ describe('renderOosArm / oosArmAnnotations — fail-open shape', () => {
 });
 
 describe('frozen constants — transcribed, not re-derived', () => {
-  it('pins Z_ALPHA and the entry-rate VOID band against the pre-registration text', () => {
+  it('pins Z_ALPHA and the entry-rate VOID band against the 2026-08-04 amendment text', () => {
     expect(Z_ALPHA).toBe(2.639);
-    expect(MIN_ENTRY_RATE).toBe(0.04);
-    expect(MAX_ENTRY_RATE).toBe(0.4);
+    expect(ENTRY_RATE_RATIO_MAX).toBe(6);
+    expect(ENTRY_RATE_RATIO_MIN).toBe(1 / 6);
+    expect(MAX_ENTRY_RATE_ABS).toBe(0.65);
+    expect(PRIMARY_REQUIRED_ROWS).toEqual([
+      { d: 0.1, n: 202 },
+      { d: 0.05, n: 604 },
+      { d: 0.03, n: 1441 },
+    ]);
   });
 
   it('reuses MIN_ENTRIES/MIN_CLUSTERS from the imported core rather than redefining them', () => {

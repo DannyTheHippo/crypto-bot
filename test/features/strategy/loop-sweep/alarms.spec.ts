@@ -41,6 +41,7 @@ interface Core {
   AGENTIC_DAILY_COST_BREAKER_USD: number;
   RECONCILE_CLEAN_STAMP_STALE_MS: number;
   BUDGET_GAUGE_INIT_GRACE_MS: number;
+  RSS_WARMUP_GRACE_MS: number;
 }
 const core = coreModule as unknown as Core;
 const {
@@ -51,6 +52,7 @@ const {
   AGENTIC_DAILY_COST_BREAKER_USD,
   RECONCILE_CLEAN_STAMP_STALE_MS,
   BUDGET_GAUGE_INIT_GRACE_MS,
+  RSS_WARMUP_GRACE_MS,
 } = core;
 const [SPOT, PERP] = VENUES;
 
@@ -688,5 +690,51 @@ describe('loop-sweep-core alarms', () => {
     const result = computeSweep({ prev: null, cur: curWith(app) });
     expect(kinds(result.annotations)).toContain('no_watermark');
     expect(result.deltas).toBeNull();
+  });
+
+  describe('rss delta warm-up qualifier (RSS_WARMUP_GRACE_MS)', () => {
+    it('CONTAMINATED — annotates when the PRIOR sample sat inside the warm-up grace, and the delta survives unchanged', () => {
+      const app = baseApp();
+      // Prior sweep landed at boot+3min — well inside RSS_WARMUP_GRACE_MS.
+      app.startedAt = new Date(NOW - (EXPECTED_SWEEP_INTERVAL_MS + 3 * 60_000)).toISOString();
+      app.probes.rss.value.bytes = 59_470_400;
+      const { deltas, annotations, alarms } = computeSweep({
+        prev: baseWatermark(),
+        cur: curWith(app),
+      });
+      expect(kinds(annotations)).toContain('rss_delta_spans_warmup');
+      expect(deltas?.rssBytes).toBe(59_469_400);
+      expect(kinds(alarms)).not.toContain('rss_delta_spans_warmup');
+    });
+
+    it('CLEAN — no annotation when the prior sample is far past the warm-up grace', () => {
+      const app = baseApp(); // startedAt stays the base 24h-old boot
+      app.probes.rss.value.bytes = 59_470_400;
+      const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(annotations)).not.toContain('rss_delta_spans_warmup');
+    });
+
+    it('BOUNDARY — the annotation is absent when the prior sample lands at exactly RSS_WARMUP_GRACE_MS of boot age (strict <)', () => {
+      const app = baseApp();
+      app.startedAt = new Date(
+        NOW - (EXPECTED_SWEEP_INTERVAL_MS + RSS_WARMUP_GRACE_MS),
+      ).toISOString();
+      app.probes.rss.value.bytes = 59_470_400;
+      const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(annotations)).not.toContain('rss_delta_spans_warmup');
+    });
+
+    it('FAILS OPEN — an unparseable startedAt yields no annotation and leaves the delta exactly as computed', () => {
+      const app = baseApp();
+      app.startedAt = 'not-a-date';
+      app.probes.rss.value.bytes = 59_470_400;
+      const { deltas, annotations, alarms } = computeSweep({
+        prev: baseWatermark(),
+        cur: curWith(app),
+      });
+      expect(kinds(annotations)).not.toContain('rss_delta_spans_warmup');
+      expect(kinds(alarms)).not.toContain('rss_delta_spans_warmup');
+      expect(deltas?.rssBytes).toBe(59_469_400);
+    });
   });
 });

@@ -13,7 +13,10 @@
 // WHAT THIS SCORER CAN AND CANNOT CHECK, stated once here rather than scattered:
 //   - VOID condition 1 (capsSource !== 'recorded')  — CHECKED, independently of the decide leg's own
 //     checkCapsFaithfulness (test/eval/agentic/oos-arm-decide.ts) as a defense-in-depth read.
-//   - VOID condition 3 (entry rate outside [4%, 40%]) — CHECKED, same independence rationale.
+//   - VOID condition 3, AS AMENDED 2026-08-04 (arm/live entry-rate ratio outside [1/6, 6.0], or arm
+//     rate above 65% absolute) — CHECKED, same independence rationale. The retired absolute [4%, 40%]
+//     band is gone: its 4% floor sat above the incumbent's own measured rate and voided correct
+//     behaviour (research/studies/oos-session-arm-2026-08-03.md § 3 of that amendment).
 //   - VOID condition 5 (missing seal) — CHECKED: no experiments row, no score.
 //   - VOID condition 2 (system-prompt fidelity hash match) — CHECKED when the caller supplies
 //     `promptBlobAtCommit` (the I/O shell's job: `git rev-parse <commitSha>:<PROMPT_SURFACE_FILE>` per
@@ -66,11 +69,17 @@ export const ALPHA = 0.05 / MAX_FAMILY_READS;
  * the second is the power term, not used by a single test). */
 export const Z_ALPHA = 2.639;
 
-/** Entry-rate VOID band (pre-registration § VOID conditions, condition 3) — same [4%, 40%] band
- * test/eval/agentic/oos-arm-decide.ts's checkEntryRateBound enforces at decide time; checked again
- * here as an independent, defense-in-depth read over the sealed+joined rows. */
-export const MIN_ENTRY_RATE = 0.04;
-export const MAX_ENTRY_RATE = 0.4;
+/** Entry-rate VOID band — pre-registration § VOID conditions condition 3 AS AMENDED 2026-08-04
+ * (research/studies/oos-session-arm-2026-08-03.md § 3 of that amendment). The absolute [4%, 40%]
+ * band is RETIRED: its 4% floor sat ABOVE the incumbent lane's own v10 rate (21/543 = 3.8674%), so
+ * it voided correct behaviour and discarded the arm's most informative outcome. The band is now
+ * RELATIVE to the live lane's rate on the SAME sealed rows, plus one absolute ceiling above every
+ * rate ever recorded on this corpus (kimi 62.0%, verdicts.md:190). 6.0 sits above the largest
+ * model-axis ratio on record (3.85x) and below the recorded capabilities-defect magnitude (7.64x),
+ * which is the payload-vs-model separation the condition claimed to make. */
+export const ENTRY_RATE_RATIO_MAX = 6.0;
+export const ENTRY_RATE_RATIO_MIN = 1 / 6.0;
+export const MAX_ENTRY_RATE_ABS = 0.65;
 
 /** ONLY h=24 is the declared SECONDARY bound (pre-registration § SECONDARY — an h=24 forward-return
  * BOUND: "What is reported: the h=24 mean and its cluster-bootstrap 95% interval ... over the read's
@@ -78,13 +87,18 @@ export const MAX_ENTRY_RATE = 0.4;
  * scope — passed as `eligibleHorizons` so their exclusion is NAMED, never silent. */
 export const SECONDARY_HORIZONS = [24];
 
-/** Required ROWS to detect an absolute entry-rate difference `d` at this arm's alpha/power
- * (pre-registration § Powered in days) — carried alongside every primary read so a point estimate
- * never appears without the row-count context that says whether it could possibly have moved. */
+/** Required ROWS to detect an absolute entry-rate difference `d` at this arm's alpha/power, per
+ * § 2 of the 2026-08-04 amendment (two-proportion, pooled, planning p = 0.041743) — carried
+ * alongside every primary read so a point estimate never appears without the row-count context
+ * that says whether it could possibly have moved. Supersedes the original one-sample table
+ * (140/558/1551) — NOT uniformly larger: the two-proportion form needs MORE rows at d=10pp
+ * (202 vs 140, 1.44x) and marginally more at d=5pp (604 vs 558, 1.08x), but FEWER at d=3pp
+ * (1441 vs 1551, 0.93x). The table below is correct (n = 2z²p̄q̄/d², z=3.4806, p=0.041743); only
+ * this comment's earlier blanket "needs more of them" claim was wrong. */
 export const PRIMARY_REQUIRED_ROWS = [
-  { d: 0.1, n: 140 },
-  { d: 0.05, n: 558 },
-  { d: 0.03, n: 1551 },
+  { d: 0.1, n: 202 },
+  { d: 0.05, n: 604 },
+  { d: 0.03, n: 1441 },
 ];
 
 function annotation(kind, detail) {
@@ -93,6 +107,60 @@ function annotation(kind, detail) {
 
 function mean(a) {
   return a.length === 0 ? null : a.reduce((s, x) => s + x, 0) / a.length;
+}
+
+// Lanczos approximation for ln(Gamma(x)) — used only to build log-binomial coefficients for the
+// Fisher's-exact substitution below (§ 2 of the 2026-08-04 amendment). Every call site here passes
+// x >= 1 (n+1, k+1 forms with n, k >= 0), so the reflection branch is dead in this module's own
+// usage; it is kept anyway so the function is correct on its own terms rather than correct only for
+// its current callers.
+const LANCZOS_G = 7;
+const LANCZOS_COEF = [
+  0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+  -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+  1.5056327351493116e-7,
+];
+
+function lgamma(x) {
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+  const xm1 = x - 1;
+  let a = LANCZOS_COEF[0];
+  const t = xm1 + LANCZOS_G + 0.5;
+  for (let i = 1; i < LANCZOS_G + 2; i++) a += LANCZOS_COEF[i] / (xm1 + i);
+  return 0.5 * Math.log(2 * Math.PI) + (xm1 + 0.5) * Math.log(t) - t + Math.log(a);
+}
+
+function logChoose(n, k) {
+  if (k < 0 || k > n) return -Infinity;
+  return lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1);
+}
+
+/**
+ * Two-sided Fisher's exact test p-value for the 2x2 table [[a, b], [c, d]] — the pre-declared
+ * substitution for the pooled two-proportion z when either arm's entry count is below 5 (§ 2 of the
+ * 2026-08-04 amendment). Sums hypergeometric probabilities no greater than the observed table's, in
+ * log-space to avoid factorial overflow at n in the hundreds. Returns null (never NaN, never throws)
+ * on a degenerate table — a zero row/column sum, where every possible table is equally likely and no
+ * statistic distinguishes them.
+ */
+function fisherExactTwoSidedP(a, b, c, d) {
+  const r1 = a + b;
+  const r2 = c + d;
+  const col1 = a + c;
+  const total = r1 + r2;
+  if (r1 <= 0 || r2 <= 0 || col1 <= 0 || col1 >= total) return null;
+  const kMin = Math.max(0, col1 - r2);
+  const kMax = Math.min(r1, col1);
+  const logDenom = logChoose(total, col1);
+  const logPAt = (k) => logChoose(r1, k) + logChoose(r2, col1 - k) - logDenom;
+  const logObserved = logPAt(a);
+  const eps = 1e-9;
+  let p = 0;
+  for (let k = kMin; k <= kMax; k++) {
+    const logPk = logPAt(k);
+    if (logPk <= logObserved + eps) p += Math.exp(logPk);
+  }
+  return Math.min(1, p);
 }
 
 const fmtPct = (v) => (v === null || !Number.isFinite(v) ? 'n/a' : `${(v * 100).toFixed(1)}%`);
@@ -130,13 +198,18 @@ function summarisePrimary(cell) {
   if (cell.n < MIN_ENTRIES) failed.push(`n=${cell.n}<${MIN_ENTRIES}`);
   if (cell.clusters < MIN_CLUSTERS) failed.push(`clusters=${cell.clusters}<${MIN_CLUSTERS}`);
   const power = cell.powered ? 'POWERED' : `UNDERPOWERED (${failed.join(' and ')})`;
-  const zStr =
-    cell.z === null
+  // Pre-declared substitution (§ 2 of the 2026-08-04 amendment): below 5 entries in either arm the
+  // normal approximation is invalid and the primary is a Fisher exact p, never a z.
+  const statStr = cell.usedFisher
+    ? cell.fisherP === null
+      ? 'fisher p=n/a'
+      : `fisher p=${cell.fisherP.toFixed(4)} (flags at alpha=${ALPHA.toFixed(4)})`
+    : cell.z === null
       ? 'z=n/a'
       : `z=${cell.z.toFixed(2)} (|z|>${Z_ALPHA} flags at alpha=${ALPHA.toFixed(4)})`;
   return (
     `${power} arm entry-rate=${fmtPct(cell.armRate)} live entry-rate=${fmtPct(cell.liveRate)} ` +
-    `n=${cell.n} clusters=${cell.clusters} ${zStr}`
+    `n=${cell.n} armTrials=${cell.armTrials} clusters=${cell.clusters} ${statStr}`
   );
 }
 
@@ -314,15 +387,50 @@ function scoreOneRead({
   const armEntryRate =
     schemaValidRows.length === 0 ? null : armEntryDecisions.length / schemaValidRows.length;
 
-  // VOID condition 3: entry rate outside [4%, 40%]. Never void on an empty batch — matches the decide
-  // leg's own checkEntryRateBound convention (test/eval/agentic/oos-arm-decide.ts).
-  if (armEntryRate !== null && (armEntryRate < MIN_ENTRY_RATE || armEntryRate > MAX_ENTRY_RATE)) {
-    voidReasons.push('entry_rate_out_of_band');
+  // The live comparator on the SAME sealed rows (§ 1 of the 2026-08-04 amendment, replacing the
+  // supplied 13.29% figure) — moved ahead of VOID condition 3 below because that condition is now
+  // defined relative to this rate, not against a frozen constant.
+  const liveEntryCount = paired.filter(
+    (p) => p.live.action === 'open_long' || p.live.action === 'open_short',
+  ).length;
+  const liveEntryRate = paired.length === 0 ? null : liveEntryCount / paired.length;
+
+  // VOID condition 3 AS AMENDED 2026-08-04: (a) S/L outside [1/6, 6.0], or (b) S > 65% absolute.
+  // There is NO absolute floor: a low session entry count is reported with its true n and achieved
+  // power (§ Underpowered and incomplete), never voided.
+  if (armEntryRate !== null && armEntryRate > MAX_ENTRY_RATE_ABS) {
+    // Distinct from the ratio reason below (condition 3(a)) — a read that trips BOTH must never
+    // print the same reason twice, which reads as one finding rather than two.
+    voidReasons.push('entry_rate_ceiling');
     annotations.push(
       annotation(
         'oos_arm_void_entry_rate',
-        `read ${readIndex}: arm entry rate ${fmtPct(armEntryRate)} is outside ` +
-          `[${fmtPct(MIN_ENTRY_RATE)}, ${fmtPct(MAX_ENTRY_RATE)}] — VOID condition 3`,
+        `read ${readIndex}: arm entry rate ${fmtPct(armEntryRate)} exceeds the absolute ceiling ` +
+          `${fmtPct(MAX_ENTRY_RATE_ABS)} — VOID condition 3(b)`,
+      ),
+    );
+  }
+  if (armEntryRate !== null && liveEntryRate !== null && liveEntryRate > 0) {
+    const entryRateRatio = armEntryRate / liveEntryRate;
+    if (entryRateRatio > ENTRY_RATE_RATIO_MAX || entryRateRatio < ENTRY_RATE_RATIO_MIN) {
+      voidReasons.push('entry_rate_ratio');
+      annotations.push(
+        annotation(
+          'oos_arm_void_entry_rate',
+          `read ${readIndex}: arm/live entry-rate ratio ${entryRateRatio.toFixed(2)}x ` +
+            `(${fmtPct(armEntryRate)} vs ${fmtPct(liveEntryRate)}) is outside ` +
+            `[${ENTRY_RATE_RATIO_MIN.toFixed(3)}, ${ENTRY_RATE_RATIO_MAX.toFixed(1)}] — ` +
+            'VOID condition 3(a): payload/prompt-surface integrity, not a model difference',
+        ),
+      );
+    }
+  } else if (armEntryRate !== null && liveEntryRate === 0) {
+    annotations.push(
+      annotation(
+        'oos_arm_entry_rate_ratio_inapplicable',
+        `read ${readIndex}: the live lane entered 0 of ${paired.length} sealed rows, so the ` +
+          'ratio arm of VOID condition 3 is INAPPLICABLE (not a VOID) — only the 65% ceiling ' +
+          'applies and the primary is computed by Fisher exact per § 2 of the 2026-08-04 amendment',
       ),
     );
   }
@@ -344,38 +452,66 @@ function scoreOneRead({
   }
 
   // ---- PRIMARY: arm entry rate vs the live lane's OWN rate on the SAME rows ----
-  // The comparator is the live lane's OWN measured rate on THIS read's own rows, never the supplied
-  // 13.29% figure (pre-registration § Weaknesses item 3: "the comparison is meaningless if the
-  // baseline is not the live lane's own rate on the same rows").
-  const liveEntryCount = paired.filter(
-    (p) => p.live.action === 'open_long' || p.live.action === 'open_short',
-  ).length;
-  const liveEntryRate = paired.length === 0 ? null : liveEntryCount / paired.length;
+  // liveEntryCount/liveEntryRate were computed above, ahead of VOID condition 3, which now depends
+  // on them. The comparator is still the live lane's OWN measured rate on THIS read's own rows, never
+  // the retired 13.29% figure (§ 1 of the 2026-08-04 amendment).
   const n = paired.length;
   const clustersInRead = new Set(paired.map((p) => baseAsset(p.decision.symbol))).size;
   // Imported MIN_ENTRIES/MIN_CLUSTERS floor, reused as a coarse gate — NOT the study's own
-  // required-row table (140-1551 rows, § Powered in days), which is carried alongside every primary
-  // read via PRIMARY_REQUIRED_ROWS instead of being enforced as a hard gate here.
+  // required-row table (202-1441 rows, § 2 of the 2026-08-04 amendment), which is carried alongside
+  // every primary read via PRIMARY_REQUIRED_ROWS instead of being enforced as a hard gate here.
   const powered = n >= MIN_ENTRIES && clustersInRead >= MIN_CLUSTERS;
+  const armEntryCount = armEntryDecisions.length;
+  // armTrials is the arm's OWN denominator (armEntryRate = armEntryCount / armTrials above), and it
+  // is NOT n whenever any sealed row is schema-invalid — n counts every PAIRED row, armTrials counts
+  // only the schema-valid ones the arm actually offered a rate over. Reusing n as the arm's row total
+  // in the table below silently rescales the arm's rate to armEntryCount/n, which is a DIFFERENT
+  // proportion than the one printed beside it (2026-08-04 review finding: a 12.5%-vs-6.3% arm/live
+  // gap printed fisher p=1.0000 because the mis-scaled table was symmetric by construction whenever
+  // armEntryCount === liveEntryCount, independent of the true rate gap).
+  const armTrials = schemaValidRows.length;
   let z = null;
-  if (
-    armEntryRate !== null &&
-    liveEntryRate !== null &&
-    liveEntryRate > 0 &&
-    liveEntryRate < 1 &&
-    n > 0
-  ) {
-    z = (armEntryRate - liveEntryRate) / Math.sqrt((liveEntryRate * (1 - liveEntryRate)) / n);
+  let fisherP = null;
+  let usedFisher = false;
+  if (armEntryRate !== null && liveEntryRate !== null && armTrials > 0 && n > 0) {
+    if (armEntryCount < 5 || liveEntryCount < 5) {
+      // Pre-declared substitution (§ 2 of the amendment), made before any read, never chosen after
+      // seeing counts: below 5 entries in either arm the normal approximation is invalid.
+      usedFisher = true;
+      fisherP = fisherExactTwoSidedP(
+        armEntryCount,
+        armTrials - armEntryCount,
+        liveEntryCount,
+        n - liveEntryCount,
+      );
+      annotations.push(
+        annotation(
+          'oos_arm_primary_fisher_exact',
+          `read ${readIndex}: primary computed by Fisher's exact test (arm entries=${armEntryCount}, ` +
+            `live entries=${liveEntryCount}, at least one below 5) per § 2 of the 2026-08-04 amendment`,
+        ),
+      );
+    } else {
+      const pPool = (armEntryCount + liveEntryCount) / (armTrials + n);
+      if (pPool > 0 && pPool < 1) {
+        z =
+          (armEntryRate - liveEntryRate) / Math.sqrt(pPool * (1 - pPool) * (1 / armTrials + 1 / n));
+      }
+    }
   }
   // No divergence/flag is ever computed on an underpowered cell — the SAME rule computeCell's
   // `powered` gate enforces for the bps secondary.
-  const flagged = powered && z !== null && Math.abs(z) > Z_ALPHA;
+  const flagged =
+    powered && ((z !== null && Math.abs(z) > Z_ALPHA) || (fisherP !== null && fisherP <= ALPHA));
   const primaryCell = {
     n,
+    armTrials,
     clusters: clustersInRead,
     armRate: armEntryRate,
     liveRate: liveEntryRate,
     z,
+    fisherP,
+    usedFisher,
     powered,
   };
   const primary = {

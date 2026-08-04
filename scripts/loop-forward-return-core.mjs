@@ -110,6 +110,63 @@ export const BOOTSTRAP_SEED = 20260731;
 export const MAX_GAP_SHARE = 0.2;
 
 /**
+ * THE ANCHOR IS NOT THE DECISION INSTANT, and this module now says so on every read.
+ *
+ * `c0` in forwardBps is the close of the bar whose OPEN is `event_time` — the price at
+ * `event_time + BAR_MS`. The lane's direction is fixed LATER: buildSnapshot materializes the live
+ * ticker/book maps at call time (strategy-host.ts:518-549, :425-427) and those maps REACH THE MODEL —
+ * agent-prompt.ts:1343-1345 renders `ticker {bid,ask,last}` and :1372 splices in the `orderBook` block
+ * (:840). Measured on the 94 entry rows: 94/94 payloads carry an orderBook block, 83/94 a non-null
+ * ticker. So `dir` is chosen knowing part of the move being measured, and no order could have been
+ * filled at this anchor.
+ *
+ * MEASURED, not assumed, on the exact ENTRY_SQL population (loop-forward-return.mjs:44-49), n=94,
+ * as of 2026-08-04:
+ *   select (extract(epoch from created_at)*1000 - event_time - 900000 - coalesce(latency_ms,0))
+ *   from agent_decisions
+ *   where action in ('open_long','open_short') and strategy_id not like 'replay-%'
+ *     and trigger_kind = 'candle'
+ *   -> p50 16.2s, min 1.3s, max 55.5s.
+ *
+ * `latency_ms` is SUBTRACTED deliberately. `created_at` is the journal WRITE time (defaultNow() at
+ * insert) and lands after the LLM round trip (p50 9.5s), which happens AFTER the information set is
+ * frozen — think time cannot buy look-ahead. prereg :452 quotes 28.3s; that is the write lag, and only
+ * the information lag bounds an artifact.
+ */
+export const ANCHOR_LAG_SECONDS = { p50: 16.2, min: 1.3, max: 55.5 };
+
+/**
+ * HOW BIG THE LOOK-AHEAD ACTUALLY IS — measured on these rows, not extrapolated onto them.
+ *
+ * `agent_decisions.ref_price` IS the `ticker.last` the model saw ON 83/94 ROWS: deriveMarketBasis
+ * (agentic.strategy.ts:3004-3008) reads the SAME `input.snapshot.tickers` map agent-prompt.ts:1307
+ * renders from, but FALLS BACK to `lastCandle.close` when the ticker map carries no entry for the
+ * symbol — the other 11/94 rows. Verified: every one of those 11 has `ref_price === close` EXACTLY,
+ * so they carry a STRUCTURAL zero drift (a floor, not a reading) and dilute a pooled E|.| downward if
+ * folded in uncritically.
+ * So `dir * (ref_price - close)/close` is the look-ahead term itself, not a proxy for it, on the 83
+ * rows where a live ticker was actually read. Measured 2026-08-04 on the exact ENTRY_SQL population:
+ *   all 94 rows:                mean = +0.07 bps   (v10, n=23: +0.06)
+ *   83/94 ticker-sourced rows (THE CEILING published below): E|.| = 0.57 bps, p95 |.| = 2.45 bps
+ * E|.| is the CEILING: E[dir*drift] <= E|drift| for ANY direction rule, clairvoyant included, with no
+ * random-walk and no borrowed variance. The model can also read the book, so the same probe on the
+ * payload's best bid/ask: median |mid - close| = 0.52 bps, p90 3.40 bps, median spread 0.82 bps (the
+ * mean 5.08 / max 139 are two wide-or-stale-book rows, not 16s of price movement).
+ *
+ * NOT 9.1 bps, and NOT 3.4 bps. 9.1 (prereg:460) is `2 * 0.798 * sigma` — a DIFFERENCE OF TWO GROUP
+ * MEANS on a median split, the microstructure study's statistic, not this one's. Re-deriving it for a
+ * single mean as `0.798 * sqrt(16.2/900) * 32.2 = 3.4` still extrapolates a grid-wide 15-minute SD down
+ * to 16 seconds under a random walk, and the direct measurement above refutes that extrapolation by ~6x
+ * on this population. Publish the measured number; a ceiling nobody measured is not more careful, it is
+ * just larger.
+ *
+ * DISCLOSURE, never a filter: nothing below suppresses a cell, an interval or a divergence flag because
+ * a number falls near this term. A measurement that hid its own findings to look careful would be
+ * failing CLOSED, which this instrument never does.
+ */
+export const ANCHOR_LOOKAHEAD_BPS = { mean: 0.07, meanAbsCeiling: 0.57, p95Abs: 2.45 };
+
+/**
  * The replay figures WATCH-PLAYBOOK-V10-1 was opened against (research/loop/watches.md:226-228),
  * transcribed rather than parsed out of the prose — a regex over a markdown paragraph is a silent
  * failure waiting to happen, and these numbers are frozen by the WATCH.
@@ -479,6 +536,52 @@ export function computeForwardReturn({
 } = {}) {
   const annotations = [];
 
+  // A caller with no replay comparand at all (loop-oos-arm-core.mjs's armFr/liveFr calls pass
+  // `reference: {}` — there is no replay cell for either arm) gets a SCOPED disclosure below: the
+  // full text quotes look-ahead figures measured on the live v10 ENTRY_SQL population, which is a
+  // different row set than whatever this call is scoring, and the "replay side of every divergence
+  // below" sentence is vacuous when no divergence is ever evaluated (2026-08-04 review finding).
+  const hasReferenceTable =
+    reference !== null &&
+    reference !== undefined &&
+    typeof reference === 'object' &&
+    Object.keys(reference).length > 0;
+
+  // Emitted UNCONDITIONALLY, before every early return: the disclosure must reach the reader on every
+  // read, including a void one, so no pass can quote an effect from this instrument without it.
+  annotations.push(
+    annotation(
+      'forward_return_anchor_lag',
+      hasReferenceTable
+        ? `ANCHOR DISCLOSURE — every mean below is anchored on the DECISION BAR'S CLOSE, ` +
+            `${ANCHOR_LAG_SECONDS.p50}s (p50; min ${ANCHOR_LAG_SECONDS.min}s, max ` +
+            `${ANCHOR_LAG_SECONDS.max}s) EARLIER than the instant the lane fixed its direction. The ` +
+            'direction was therefore chosen on an information set that already contained post-close ' +
+            'market state (94/94 entry payloads carry a live orderBook block, 83/94 a live ticker — ' +
+            "the other 11 read deriveMarketBasis's fallback to the entry bar's own close, " +
+            'agentic.strategy.ts:3004-3008, a structural zero rather than a reading), and no order ' +
+            'could have been filled at this anchor. MEASURED, not recomputed per read, 2026-08-04 on ' +
+            `the live v10 entry population (n=94; dir-aligned ref_price vs close): mean ` +
+            `${ANCHOR_LOOKAHEAD_BPS.mean} bps across all 94 rows; the ceiling — ` +
+            `${ANCHOR_LOOKAHEAD_BPS.meanAbsCeiling} bps (E|drift|, an upper bound for ANY direction ` +
+            `rule) and p95 ${ANCHOR_LOOKAHEAD_BPS.p95Abs} bps — on the 83 rows that actually held a ` +
+            'live ticker, since the 11 structural-zero rows would dilute it downward. It is a sub-bp ' +
+            'effect on a mean, not a discount to apply to every number. The replay side of every ' +
+            'divergence below re-decides on RECORDED payloads (a different row set, not these rows) ' +
+            'at the SAME bar-close anchor convention (playbook-space-replay.ts:562-577, :499-513), ' +
+            'so the term sits on both sides of the comparison rather than only on live. Disclosure ' +
+            'only: nothing here suppresses a cell, an interval or a divergence flag'
+        : `ANCHOR DISCLOSURE — every mean below is anchored on the DECISION BAR'S CLOSE, ` +
+            `${ANCHOR_LAG_SECONDS.p50}s (p50; min ${ANCHOR_LAG_SECONDS.min}s, max ` +
+            `${ANCHOR_LAG_SECONDS.max}s) EARLIER than the instant the lane fixed its direction — the ` +
+            'same structural lag measured 2026-08-04 on the live v10 ENTRY_SQL population (n=94; not ' +
+            "recomputed per read, and NOT a claim about THIS call's own row population). No replay " +
+            'reference was supplied for this call (`reference` carries no predicted values), so no ' +
+            'replay-vs-live divergence is ever evaluated below — the comparison this disclosure ' +
+            'otherwise qualifies does not run here',
+    ),
+  );
+
   const scoredHorizons = Array.isArray(eligibleHorizons)
     ? HORIZONS.filter((h) => eligibleHorizons.includes(h))
     : HORIZONS;
@@ -726,9 +829,12 @@ export function computeForwardReturn({
                 `replay-predicted ${fmtBps(predicted)} — the interval EXCLUDES the prediction ` +
                 `(delta ${fmtBps(divergence.delta)}). WATCH-PLAYBOOK-V10-1 is symmetric: this is a ` +
                 'FINDING to report in whichever direction it points, not a fault and not noise. ' +
-                'Live WORSE than replay is the adverse-selection hypothesis confirming (entries were ' +
-                'maker-side at 76% fill, which offline replay structurally cannot see); live BETTER ' +
-                'is a finding about the replay',
+                'This statistic scores agent_decisions rows (decisions, filled or not) on the SAME ' +
+                'close-convention grid at both ends — no fill price, no fee, no fill/no-fill filter, ' +
+                'matching how replay computes fwdBps — so it CANNOT show adverse selection: fills are ' +
+                'invisible to it on both sides of the comparison, live and replay alike. The ' +
+                'instrument that can is the filled-vs-unfilled split on these same rows (see ' +
+                'watches.md WATCH-PLAYBOOK-V10-1, 2026-08-04 amendment)',
             ),
           );
         }
@@ -826,6 +932,11 @@ export function renderForwardReturn(result) {
   const lines = ['## Realised entry forward return (WATCH-PLAYBOOK-V10-1)', ''];
   lines.push(
     '_Measurement only — annotations, never alarms. A divergence is a FINDING in either direction._',
+    '',
+    `_Anchored on the decision bar's CLOSE, ${ANCHOR_LAG_SECONDS.p50}s (p50) before the lane fixed ` +
+      `its direction on an information set already containing post-close state. Measured look-ahead ` +
+      `term: mean ${ANCHOR_LOOKAHEAD_BPS.mean} bps, ceiling ${ANCHOR_LOOKAHEAD_BPS.meanAbsCeiling} ` +
+      'bps — sub-bp on any mean below, and present on the replay side of every comparison too._',
     '',
   );
   if (!result || !Array.isArray(result.panels)) return lines.join('\n');

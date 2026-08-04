@@ -136,6 +136,26 @@ export const RECONCILE_CLEAN_STAMP_STALE_MS = 30 * 60 * 1000;
 // honest verdict, since remaining=0 on a young boot cannot distinguish the two.
 export const BUDGET_GAUGE_INIT_GRACE_MS = 5 * 60 * 1000;
 
+// RSS WARM-UP GRACE — measured, not guessed. `process_resident_memory_bytes` ramps from
+// 341,573,632 B (boot+15s) toward a plateau over the first ~28 minutes on the two boots measured so
+// far: the 22:42:36Z boot (466,329,600 B at boot+75s -> 791,752,704 B at boot+28min -> 790.7M..797.4M
+// flat for the following 70min) and the 09:37Z boot (765,018,112 B at boot+8min -> 787,177,472 B at
+// boot+38min). 45min covers both with margin. This constant exists because the rssBytes delta below
+// is a bare two-point subtraction with no rate normalisation, and this host restarts ~25x/week — so a
+// sweep pair straddling the ramp manufactures a phantom slope. It did, twice: Pass 59 read "4.0 then
+// 14.6 MiB/h, ACCELERATED" and Pass 60+1 read "41 MiB/h", both off deltas whose EARLIER sample sat
+// inside the ramp.
+//
+// PAST THE GRACE IS NOT A "THEN HOLDS" GUARANTEE (Pass 60 correction — the prior wording claimed a
+// universal plateau off n=2 boots and one of the two later refuted its own "flat" reading). On the
+// SAME 22:42:36Z boot, PAST the grace, `deriv(process_resident_memory_bytes[7h])*3600` measured
+// 2026-08-04 reads +1,572,036 B/h (+1.50 MiB/h) and `max_over_time[8h]` reaches 814,100,480 B —
+// above the 70min-flat band quoted above. No leak was DETECTABLE on the 49.7h boot of
+// 2026-08-01T07:55Z..2026-08-03T09:37Z, and only on that one boot: `max_over_time[47h]` =
+// 840,261,632 B (801.3 MiB, under WATCH-V3-1's ~900 MiB bound) and a `deriv[24h]*3600` trailing slope
+// of -550,606 B/h (negative). Both independently confirmed; neither is a claim about every boot.
+export const RSS_WARMUP_GRACE_MS = 45 * 60 * 1000;
+
 // The values `build_info{git_sha}` can carry that are NOT a reading: 'unknown' is both the Dockerfile
 // ARG default and the zod default, so it is what every image built without the GIT_SHA build arg
 // reports, and an absent or empty label is no reading either. Exported so the runner's digest line and
@@ -287,6 +307,45 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
     annotations.push({ kind: 'boot_changed', detail: 'boot changed — deltas reset' });
   } else {
     deltas = diffCounters(prev.counters, curCounters);
+    // The rssBytes delta is a bare subtraction of two absolute gauge samples (see diffCounters).
+    // When the EARLIER sample sat inside the post-boot warm-up ramp (see RSS_WARMUP_GRACE_MS) the
+    // difference is ramp, not slope — and a reader who divides it by the sweep gap gets a leak rate
+    // that does not exist. Key on the PRIOR sample's boot age, not this one's: by the time a pass
+    // reads the delta the current sample is usually well past the ramp while the previous one is not.
+    //
+    // FAIL DIRECTION — MEASUREMENT ANNOTATION, FAILS OPEN. This qualifies an RSS reading; it never
+    // suppresses the delta, never voids it, and never alarms. An unparseable startedAt or a
+    // non-finite elapsedMs yields NO annotation and leaves deltas.rssBytes exactly as computed:
+    // a broken boot-age read must not distort or block the measurement it annotates (the split
+    // rules/code-hygiene.md draws, and the same one the reject-rate header at the bottom of this
+    // file argues from the opposite side for its own fail-CLOSED health probe).
+    const rssStartedMs = Date.parse((cur && cur.startedAt) || '');
+    const curBootAgeMs =
+      Number.isFinite(nowMs) && Number.isFinite(rssStartedMs) ? nowMs - rssStartedMs : null;
+    const prevBootAgeMs =
+      curBootAgeMs !== null && Number.isFinite(elapsedMs) ? curBootAgeMs - elapsedMs : null;
+    if (
+      Number.isFinite(deltas.rssBytes) &&
+      prevBootAgeMs !== null &&
+      prevBootAgeMs >= 0 &&
+      prevBootAgeMs < RSS_WARMUP_GRACE_MS
+    ) {
+      annotations.push({
+        kind: 'rss_delta_spans_warmup',
+        probe: 'rss',
+        detail:
+          `rssBytes Δ${deltas.rssBytes} spans the post-boot warm-up: the PRIOR sample was taken ` +
+          `${Math.round(prevBootAgeMs / 60000)}min into this boot, under the ` +
+          `${RSS_WARMUP_GRACE_MS / 60000}min warm-up grace — this delta CONTAINS the post-boot ramp ` +
+          '(up to ~450 MB of it, measured 2026-08-04), so dividing it by the sweep gap OVERSTATES ' +
+          'any memory slope by an unknown amount; it neither establishes nor refutes a leak. Read ' +
+          'the slope from a Prometheus range query starting past the grace. BLIND SPOT: the only ' +
+          'thing that would catch a real leak confined to this window is ' +
+          'observability/alerts.rules.yml:47 (AppMemoryHigh, process_resident_memory_bytes > 1.2e9) ' +
+          'via the promAlerts probe — a leak that stays under 1.2GB through its first 45min is ' +
+          'invisible to BOTH this delta and that alert',
+      });
+    }
   }
 
   // Restart storm — from docker RestartCount, never negative (§C.6 provenance).

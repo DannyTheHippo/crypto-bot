@@ -245,6 +245,55 @@ groups:
           summary: 'Stream watchdog forced {{ $value }} reconnects in the last hour — market-data connection is flapping'
           runbook: 'docs/runbook.md'
 
+      # 2026-08-04 (Pass 62): fearGreed/positioning/tradeFlow are enabled, feed the decide prompt, and
+      # until this pass had NO metric at all — a total, permanent failure of any of them produced no
+      # gauge, no counter and no alert. The failure mode these two rules exist for is NOT a thrown
+      # request: each poller stores its snapshot only `if (snapshot)`, and toSnapshot returns null on a
+      # 200 whose body shape changed, so a dead upstream throws nothing, increments no error counter,
+      # logs nothing, and freezes lastSuccessfulPollAt while latest() quietly answers null past
+      # 2x pollIntervalMs and the prompt block vanishes. Staleness over lastSuccessfulPollAt is the only
+      # signal that distinguishes that from a quiet market.
+      #
+      # 21600s = 6h = FEAR_GREED_POLL_MS's own cadence, so this threshold is deliberately conservative
+      # for the other two (trade_flow polls every 60s, positioning every 300s — .env.app). A per-feed
+      # threshold needs a poll-interval info series that does not exist yet.
+      #
+      # The `== -1` never-polled sentinel is deliberately NOT alerted on, for exactly the reason the
+      # liquidation rule below is omitted: all three NOOP context feeds answer lastSuccessfulPollAt()
+      # null, so a feed turned OFF pins its gauge at -1 forever and `== -1` would page permanently on a
+      # deliberate configuration. These flags are toggleable A/B arms (environment.config.ts documents
+      # AGENTIC_TRADEFLOW as riding the same information-context control arm as DERIVATIVES_FEED_ENABLED,
+      # and all three default to 'false'), so that is a live foot-gun, not a hypothetical — the running
+      # process already exports sentiment_feed_staleness_seconds -1 with SENTIMENT_FEED_ENABLED=false.
+      # A never-polled ENABLED feed is instead caught by TargetDown and by the poll-error counter.
+      - alert: ContextFeedStale
+        expr: context_feed_staleness_seconds > 21600
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Context feed {{ $labels.feed }} has not polled successfully ({{ $value }}s) — its block is silently missing from the decide prompt'
+          runbook: 'docs/runbook.md'
+
+      # >= 5, not > 0, matching MarketStreamReconnectStorm's precedent above: a single transient 5xx or
+      # DNS blip on a public REST endpoint is the poller working, not a defect worth a page, and
+      # trade_flow alone polls 60x/hour. Note this rule does NOT catch the failure the staleness gauge
+      # exists for — a 200 whose body shape changed parses to null, throws nothing, and increments this
+      # counter not at all.
+      - alert: ContextFeedPollErrors
+        expr: increase(context_feed_poll_errors_total[1h]) >= 5
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Context feed {{ $labels.feed }} raised {{ $value }} poll error(s) in the last hour'
+          runbook: 'docs/runbook.md'
+
+      # NOT ADDED, deliberately: a `liquidation_stream_healthy == 0` rule. NOOP_LIQUIDATION_FEED's
+      # streamHealthy() returns false (context-feeds.module.ts), so that expression fires permanently
+      # whenever AGENTIC_LIQUIDATIONS_ENABLED is false — a deliberately disabled feed would page
+      # forever. Wiring it needs a feed-enabled info series to join against first, which would also let
+      # the `== -1` clause dropped above come back; the gauges are exported and dashboard-readable in
+      # the meantime.
+
   - name: crypto-bot-agentic
     rules:
       # The Anthropic client latches itself degraded on a FATAL API error (bad key, rejected schema,

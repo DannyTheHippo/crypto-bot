@@ -13,6 +13,7 @@ import {
   strategyId,
   symbolId,
   venueId,
+  type EpochMs,
 } from '../../../../src/domain/common/types/ids';
 import { price, qty } from '../../../../src/domain/common/types/money';
 import { EventLoopHealthIndicator } from '../../../../src/features/common/observability/event-loop-health.indicator';
@@ -25,9 +26,25 @@ import {
   type StrategyRegistryPort,
 } from '../../../../src/ports/strategy/strategy';
 import {
+  FEAR_GREED_FEED,
+  type FearGreedFeedPort,
+} from '../../../../src/ports/strategy/fear-greed-feed';
+import {
   MARKET_STREAM_TELEMETRY,
   type MarketStreamTelemetryPort,
 } from '../../../../src/ports/venue/market-data';
+import {
+  POSITIONING_FEED,
+  type PositioningFeedPort,
+} from '../../../../src/ports/venue/positioning-feed';
+import {
+  TRADE_FLOW_FEED,
+  type TradeFlowFeedPort,
+} from '../../../../src/ports/venue/trade-flow-feed';
+import {
+  LIQUIDATION_FEED,
+  type LiquidationFeedPort,
+} from '../../../../src/ports/venue/liquidation-feed';
 
 describe('EventLoopHealthIndicator.getMonitor() and MetricsService interval', () => {
   let moduleRef: TestingModule;
@@ -495,5 +512,183 @@ describe('MetricsService mode_info sampling — MODE_CONTROL unbound fallback', 
     vi.advanceTimersByTime(5000);
     const metric = await register.getSingleMetricAsString('mode_info');
     expect(metric).toContain('requested="live",effective="paper"} 1');
+  });
+});
+
+// Context-feed + liquidation-feed health sampling: four feeds enabled in production (fear-greed /
+// positioning / trade-flow / liquidation) whose ports already declared lastSuccessfulPollAt /
+// pollErrorCount / streamHealthy / reconnectCount accessors but had no MetricsService reader wired to
+// them at all — same mutable-state-object fake convention as FAKE_STREAM_TELEMETRY above, with a
+// throwOnStaleness escape hatch per feed to exercise the fail-open guard.
+type ContextFeedState = {
+  lastSuccessfulPollAt: EpochMs | null;
+  pollErrorCount: number;
+  throwOnStaleness: boolean;
+};
+const fearGreedState: ContextFeedState = {
+  lastSuccessfulPollAt: null,
+  pollErrorCount: 0,
+  throwOnStaleness: false,
+};
+const positioningState: ContextFeedState = {
+  lastSuccessfulPollAt: null,
+  pollErrorCount: 0,
+  throwOnStaleness: false,
+};
+const tradeFlowState: ContextFeedState = {
+  lastSuccessfulPollAt: null,
+  pollErrorCount: 0,
+  throwOnStaleness: false,
+};
+function resetContextFeedStates(): void {
+  for (const s of [fearGreedState, positioningState, tradeFlowState]) {
+    s.lastSuccessfulPollAt = null;
+    s.pollErrorCount = 0;
+    s.throwOnStaleness = false;
+  }
+}
+const FAKE_FEAR_GREED_FEED: FearGreedFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => {
+    if (fearGreedState.throwOnStaleness) throw new Error('fear-greed port exploded');
+    return fearGreedState.lastSuccessfulPollAt;
+  },
+  pollErrorCount: () => fearGreedState.pollErrorCount,
+};
+const FAKE_POSITIONING_FEED: PositioningFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => {
+    if (positioningState.throwOnStaleness) throw new Error('positioning port exploded');
+    return positioningState.lastSuccessfulPollAt;
+  },
+  pollErrorCount: () => positioningState.pollErrorCount,
+};
+const FAKE_TRADE_FLOW_FEED: TradeFlowFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => {
+    if (tradeFlowState.throwOnStaleness) throw new Error('trade-flow port exploded');
+    return tradeFlowState.lastSuccessfulPollAt;
+  },
+  pollErrorCount: () => tradeFlowState.pollErrorCount,
+};
+const liquidationState = { streamHealthy: false, reconnectCount: 0 };
+const FAKE_LIQUIDATION_FEED: LiquidationFeedPort = {
+  latest: () => null,
+  streamHealthy: () => liquidationState.streamHealthy,
+  reconnectCount: () => liquidationState.reconnectCount,
+};
+@Global()
+@Module({
+  providers: [
+    { provide: FEAR_GREED_FEED, useValue: FAKE_FEAR_GREED_FEED },
+    { provide: POSITIONING_FEED, useValue: FAKE_POSITIONING_FEED },
+    { provide: TRADE_FLOW_FEED, useValue: FAKE_TRADE_FLOW_FEED },
+    { provide: LIQUIDATION_FEED, useValue: FAKE_LIQUIDATION_FEED },
+  ],
+  exports: [FEAR_GREED_FEED, POSITIONING_FEED, TRADE_FLOW_FEED, LIQUIDATION_FEED],
+})
+class FakeContextFeedsBridgeModule {}
+
+describe('MetricsService context-feed + liquidation-feed sampling — feed ports present', () => {
+  let moduleRef: TestingModule;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+    register.clear();
+    resetContextFeedStates();
+    liquidationState.streamHealthy = false;
+    liquidationState.reconnectCount = 0;
+    vi.useFakeTimers();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule, FakeContextFeedsBridgeModule, ObservabilityModule],
+    }).compile();
+    await moduleRef.init();
+  });
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await moduleRef.close();
+    register.clear();
+    resetContextFeedStates();
+    liquidationState.streamHealthy = false;
+    liquidationState.reconnectCount = 0;
+  });
+
+  it('zero-seeds every {feed} child at construction, before any sample tick has run', async () => {
+    // No vi.advanceTimersByTime yet — module.init() ran the constructor (the zero-seed) but the 5s
+    // setInterval callback has not fired once. Absent-vs-real-zero is exactly what this proves.
+    const staleness = await register.getSingleMetricAsString('context_feed_staleness_seconds');
+    expect(staleness).toContain('feed="fear_greed"} -1');
+    expect(staleness).toContain('feed="positioning"} -1');
+    expect(staleness).toContain('feed="trade_flow"} -1');
+    const errors = await register.getSingleMetricAsString('context_feed_poll_errors_total');
+    expect(errors).toContain('feed="fear_greed"} 0');
+    expect(errors).toContain('feed="positioning"} 0');
+    expect(errors).toContain('feed="trade_flow"} 0');
+    expect(register.getSingleMetric('liquidation_stream_healthy'), 'registered').toBeDefined();
+    expect(register.getSingleMetric('liquidation_reconnects_total'), 'registered').toBeDefined();
+  });
+
+  it('reports the -1 sentinel (not 0, not absent) for a feed whose lastSuccessfulPollAt() is null', async () => {
+    vi.advanceTimersByTime(5000);
+    const staleness = await register.getSingleMetricAsString('context_feed_staleness_seconds');
+    expect(staleness).toContain('feed="fear_greed"} -1');
+    expect(staleness).toContain('feed="positioning"} -1');
+    expect(staleness).toContain('feed="trade_flow"} -1');
+  });
+
+  it('raises context_feed_poll_errors_total by exactly the delta when pollErrorCount() advances', async () => {
+    positioningState.pollErrorCount = 3;
+    vi.advanceTimersByTime(5000);
+    let errors = await register.getSingleMetricAsString('context_feed_poll_errors_total');
+    expect(errors).toContain('feed="positioning"} 3');
+
+    positioningState.pollErrorCount = 5; // +2 this tick, not an absolute set to 5-then-3-again
+    vi.advanceTimersByTime(5000);
+    errors = await register.getSingleMetricAsString('context_feed_poll_errors_total');
+    expect(errors).toContain('feed="positioning"} 5');
+  });
+
+  it('a throwing accessor on one feed does not prevent the other feeds from being sampled in the same tick', async () => {
+    positioningState.throwOnStaleness = true;
+    fearGreedState.lastSuccessfulPollAt = epochMs(Date.now() - 30_000);
+    tradeFlowState.pollErrorCount = 7;
+
+    expect(() => vi.advanceTimersByTime(5000)).not.toThrow();
+
+    const staleness = await register.getSingleMetricAsString('context_feed_staleness_seconds');
+    const fearGreedLine = staleness.split('\n').find((line) => line.includes('feed="fear_greed"'));
+    expect(
+      fearGreedLine,
+      'fear_greed sampled despite positioning throwing the same tick',
+    ).toBeDefined();
+    expect(Number(fearGreedLine?.trim().split(' ').pop())).toBeGreaterThan(0);
+
+    const errors = await register.getSingleMetricAsString('context_feed_poll_errors_total');
+    expect(errors, 'trade_flow sampled despite positioning throwing the same tick').toContain(
+      'feed="trade_flow"} 7',
+    );
+
+    positioningState.throwOnStaleness = false;
+  });
+
+  it('samples liquidation_stream_healthy and liquidation_reconnects_total (delta) from the WS port', async () => {
+    liquidationState.streamHealthy = true;
+    liquidationState.reconnectCount = 2;
+    vi.advanceTimersByTime(5000);
+    let healthy = await register.getSingleMetricAsString('liquidation_stream_healthy');
+    expect(healthy).toContain('liquidation_stream_healthy 1');
+    let reconnects = await register.getSingleMetricAsString('liquidation_reconnects_total');
+    expect(reconnects).toContain('liquidation_reconnects_total 2');
+
+    liquidationState.streamHealthy = false;
+    liquidationState.reconnectCount = 5;
+    vi.advanceTimersByTime(5000);
+    healthy = await register.getSingleMetricAsString('liquidation_stream_healthy');
+    expect(healthy).toContain('liquidation_stream_healthy 0');
+    reconnects = await register.getSingleMetricAsString('liquidation_reconnects_total');
+    expect(reconnects).toContain('liquidation_reconnects_total 5');
   });
 });

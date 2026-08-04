@@ -9,6 +9,7 @@ import Decimal from 'decimal.js';
 import { performance } from 'perf_hooks';
 import { Counter, Gauge } from 'prom-client';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import type { EpochMs } from '../../../domain/common/types/ids';
 import { venueForSymbol } from '../../../domain/venue/types/venue-map';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/trading/execution';
@@ -19,6 +20,10 @@ import {
 import { MODE_CONTROL, type ModeControlPort } from '../../../ports/trading/mode-control';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
 import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
+import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/strategy/fear-greed-feed';
+import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/venue/positioning-feed';
+import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/venue/trade-flow-feed';
+import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/venue/liquidation-feed';
 import {
   STRATEGY_REGISTRY,
   type StrategyLifecycle,
@@ -319,6 +324,45 @@ export const SENTIMENT_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
   help: 'Cumulative sentiment-feed poll failures',
 });
 
+// Context-feed health for the three REST-poll feeds that reached the agentic prompt with NO metric
+// surface at all — fear-greed, positioning, trade-flow. All three ports share the exact
+// lastSuccessfulPollAt/pollErrorCount accessor shape derivatives/sentiment above already use, so one
+// {feed}-labeled gauge/counter pair replaces three near-duplicate metric families instead of copying
+// DERIVATIVES_FEED_STALENESS_GAUGE/DERIVATIVES_FEED_POLL_ERRORS_COUNTER three more times. Present
+// regardless of each feed's own enabled flag — staleness simply never drops while a feed is
+// unwired/disabled/keyless (same convention as the derivatives/sentiment pair). Every `feed` child is
+// zero-seeded in the constructor below so a feed that fails completely reads a real -1/0 rather than
+// going absent (see the constructor's own comment).
+export const CONTEXT_FEED_LABELS = ['fear_greed', 'positioning', 'trade_flow'] as const;
+export type ContextFeedLabel = (typeof CONTEXT_FEED_LABELS)[number];
+
+export const CONTEXT_FEED_STALENESS_GAUGE = makeGaugeProvider({
+  name: 'context_feed_staleness_seconds',
+  help: 'Seconds since each context feed last polled successfully (-1 if never), by feed',
+  labelNames: ['feed'],
+});
+export const CONTEXT_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
+  name: 'context_feed_poll_errors_total',
+  help: 'Cumulative context-feed poll failures, by feed',
+  labelNames: ['feed'],
+});
+
+// Liquidation feed health. Unlike the three REST-poll feeds above, LiquidationFeedPort is WS-based
+// (ccxt PRO watchLiquidationsForSymbols) and exposes stream connectivity + reconnect count rather
+// than poll accessors — liquidations are naturally sparse, so "no recent event" is not the same
+// signal as "stream is down" (see liquidation-feed.ts's own header comment). Label-free: one stream,
+// one process. No explicit zero-seed needed — prom-client materialises a label-less gauge/counter at
+// 0 on construction (Metric.reset(), called from the base constructor), unlike a labeled child which
+// is born lazily on first `.labels(...)` touch.
+export const LIQUIDATION_STREAM_HEALTHY_GAUGE = makeGaugeProvider({
+  name: 'liquidation_stream_healthy',
+  help: 'Liquidation feed websocket stream health (1 healthy, 0 down/reconnecting/disabled)',
+});
+export const LIQUIDATION_RECONNECTS_COUNTER = makeCounterProvider({
+  name: 'liquidation_reconnects_total',
+  help: 'Cumulative liquidation-feed stream reconnects',
+});
+
 // Market-stream channel staleness + watchdog reconnects, sampled in the same 5s pull loop
 // (MARKET_STREAM_TELEMETRY). Motivated by the 2026-07-16 incident: all five spot candle channels
 // hung silently for 8h with zero log/metric/alert surface — a stalled ccxt watch* future is
@@ -455,6 +499,14 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly sentimentStalenessGauge: Gauge<string>,
     @InjectMetric('sentiment_feed_poll_errors_total')
     private readonly sentimentPollErrorsCounter: Counter<string>,
+    @InjectMetric('context_feed_staleness_seconds')
+    private readonly contextFeedStalenessGauge: Gauge<string>,
+    @InjectMetric('context_feed_poll_errors_total')
+    private readonly contextFeedPollErrorsCounter: Counter<string>,
+    @InjectMetric('liquidation_stream_healthy')
+    private readonly liquidationStreamHealthyGauge: Gauge<string>,
+    @InjectMetric('liquidation_reconnects_total')
+    private readonly liquidationReconnectsCounter: Counter<string>,
     @InjectMetric('market_channel_staleness_seconds')
     private readonly marketChannelStalenessGauge: Gauge<string>,
     @InjectMetric('market_stream_forced_reconnects_total')
@@ -480,6 +532,13 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // MarketFeedModule is @Global so this always resolves to the real SENTIMENT_FEED provider
     // (NOOP_SENTIMENT_FEED when the flag/key is off/absent — see app.module.ts).
     @Optional() @Inject(SENTIMENT_FEED) private readonly sentimentFeed?: SentimentFeedPort,
+    // @Optional for the same standalone-boot reason; in the running app ContextFeedsModule is
+    // @Global so these resolve to the real feed providers (or their NOOP stubs when each feed's own
+    // flag/key is off/absent/unwired — context-feeds.module.ts).
+    @Optional() @Inject(FEAR_GREED_FEED) private readonly fearGreedFeed?: FearGreedFeedPort,
+    @Optional() @Inject(POSITIONING_FEED) private readonly positioningFeed?: PositioningFeedPort,
+    @Optional() @Inject(TRADE_FLOW_FEED) private readonly tradeFlowFeed?: TradeFlowFeedPort,
+    @Optional() @Inject(LIQUIDATION_FEED) private readonly liquidationFeed?: LiquidationFeedPort,
     // @Optional for the same standalone-boot reason; in the running app MarketStreamsModule is
     // @Global so this resolves to the live VenueRoutingFeedHealth facade (or its inert stub under
     // test/ci).
@@ -490,7 +549,62 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // ModeControlModule is @Global in the running app, so Overview/Ops mode panels track
     // resolveMode().effective after arming — not a stale boot-time configMode snapshot.
     @Optional() @Inject(MODE_CONTROL) private readonly modeControl?: ModeControlPort,
-  ) {}
+  ) {
+    // Zero-seed every {feed} child at construction, before the first sample tick. prom-client only
+    // materialises a labeled child once `.labels(...)` touches it, so an unseeded feed would go
+    // ABSENT on total failure rather than reading its true -1/0 — and "absent" is indistinguishable
+    // from "healthy but quiet", exactly the reading this metric exists to rule out (same Pass 44/47/50
+    // defect class as market_stream_forced_reconnects_total / agent_capability_violations_total
+    // above). Own try/catch per gauge/counter (Pass 50 convention — agent-metrics-recorder.service.ts,
+    // reconciliation.service.ts) so a throw seeding one never cancels the other's seed.
+    // FAILURE DIRECTION: this is a measurement/reporting surface, not a trading gate — it fails OPEN,
+    // so a seeding failure here must never block boot.
+    try {
+      for (const feed of CONTEXT_FEED_LABELS) {
+        this.contextFeedStalenessGauge.labels({ feed }).set(-1);
+      }
+    } catch {
+      /* measurement-only: see FAILURE DIRECTION above */
+    }
+    try {
+      for (const feed of CONTEXT_FEED_LABELS) {
+        this.contextFeedPollErrorsCounter.inc({ feed }, 0);
+      }
+    } catch {
+      /* measurement-only: see FAILURE DIRECTION above */
+    }
+  }
+
+  // Shared sampler for the three REST-poll context feeds (fear-greed/positioning/trade-flow), which
+  // all expose the same lastSuccessfulPollAt/pollErrorCount accessor pair as derivatives/sentiment —
+  // one method instead of three near-identical copies. Each accessor gets its OWN try/catch so a
+  // throw from either one never blocks the other, or any sibling feed's sample this same tick.
+  // FAILURE DIRECTION: measurement/reporting surface — fails OPEN, never into the sampling loop or
+  // the order path.
+  private sampleContextFeed(
+    feed: ContextFeedLabel,
+    port: { lastSuccessfulPollAt(): EpochMs | null; pollErrorCount(): number },
+    prevPollErrorsByFeed: Map<ContextFeedLabel, number>,
+  ): void {
+    try {
+      const lastSuccessAt = port.lastSuccessfulPollAt();
+      this.contextFeedStalenessGauge
+        .labels({ feed })
+        .set(lastSuccessAt === null ? -1 : (Date.now() - lastSuccessAt) / 1000);
+    } catch {
+      /* measurement-only: see FAILURE DIRECTION above */
+    }
+    try {
+      const totalErrors = port.pollErrorCount();
+      const prev = prevPollErrorsByFeed.get(feed) ?? 0;
+      if (totalErrors > prev) {
+        this.contextFeedPollErrorsCounter.inc({ feed }, totalErrors - prev);
+      }
+      prevPollErrorsByFeed.set(feed, totalErrors);
+    } catch {
+      /* measurement-only: see FAILURE DIRECTION above */
+    }
+  }
 
   private sampleModeInfo(): void {
     // Info-gauge pattern (same as kill_switch_state): reset so only the current label set carries 1.
@@ -528,6 +642,11 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // (one previous-count entry per venue label) — see the sampling loop below for the real-label
     // switch (v3 §8).
     const prevForcedReconnectsByVenue = new Map<string, number>();
+    // Same delta technique, one previous-count entry per {feed} label, shared across the three
+    // REST-poll context feeds sampled via sampleContextFeed below.
+    const prevContextFeedPollErrors = new Map<ContextFeedLabel, number>();
+    // Same delta technique for the WS-based liquidation feed's cumulative reconnect count.
+    let prevLiquidationReconnects = 0;
 
     this.sampleInterval = setInterval(() => {
       const wallMs = Date.now();
@@ -689,6 +808,33 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           this.sentimentPollErrorsCounter.inc(totalErrors - prevSentimentPollErrors);
         }
         prevSentimentPollErrors = totalErrors;
+      }
+
+      if (this.fearGreedFeed) {
+        this.sampleContextFeed('fear_greed', this.fearGreedFeed, prevContextFeedPollErrors);
+      }
+      if (this.positioningFeed) {
+        this.sampleContextFeed('positioning', this.positioningFeed, prevContextFeedPollErrors);
+      }
+      if (this.tradeFlowFeed) {
+        this.sampleContextFeed('trade_flow', this.tradeFlowFeed, prevContextFeedPollErrors);
+      }
+
+      if (this.liquidationFeed) {
+        try {
+          this.liquidationStreamHealthyGauge.set(this.liquidationFeed.streamHealthy() ? 1 : 0);
+        } catch {
+          /* measurement-only: a throwing accessor must never block the rest of this sampling tick */
+        }
+        try {
+          const totalReconnects = this.liquidationFeed.reconnectCount();
+          if (totalReconnects > prevLiquidationReconnects) {
+            this.liquidationReconnectsCounter.inc(totalReconnects - prevLiquidationReconnects);
+          }
+          prevLiquidationReconnects = totalReconnects;
+        } catch {
+          /* measurement-only: a throwing accessor must never block the rest of this sampling tick */
+        }
       }
 
       if (this.marketStreamTelemetry) {

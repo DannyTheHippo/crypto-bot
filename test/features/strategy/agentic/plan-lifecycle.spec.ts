@@ -703,7 +703,7 @@ describe('AgenticStrategy v2 directive lifecycle (B3)', () => {
     expect(seenTheses[1]).toBe(THESIS);
   });
 
-  it('a moved takeProfitPct on adjust drift_cancels the stale resting venue-TP order on the next managed bar', async () => {
+  it('a moved takeProfitPct on adjust replaces the stale resting venue-TP order on the next managed bar', async () => {
     class AdjustTpClient implements AgentClientPort {
       calls = 0;
       propose(): Promise<AgentProposal> {
@@ -753,13 +753,20 @@ describe('AgenticStrategy v2 directive lifecycle (B3)', () => {
     expect(adjustBar).toEqual([]);
 
     // Bar 3: managed quiet bar — manageVenueTp compares the resting 103 SELL against the ADJUSTED
-    // plan's new TP (105) and cancels it for next-bar re-placement.
+    // plan's new TP (105). #148 (2026-08-04): the stale order is cancelled and the re-priced one
+    // submitted in the SAME chain entry, so the adjusted TP is resting from this bar on rather than
+    // leaving the position with no venue take-profit until the next managed bar.
     const driftBar = await strategy.decide(
       buildInput(3, { position: held, openOrders: [restingSell103] }),
     );
     expect(driftBar).toHaveLength(1);
-    expect(driftBar[0]!.kind).toBe('CANCEL_OPEN');
-    expect(events).toEqual(['drift_cancel']);
+    expect(driftBar[0]!.kind).toBe('EXIT_LONG');
+    expect(driftBar[0]!.exitStyle).toBe('RESTING');
+    expect(driftBar[0]!.limitPriceHint!.toFixed()).toBe('105');
+    expect(driftBar[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' });
+    // Both labels: the compound entry cancels AND places, and 'placed' is the only counter
+    // evidencing this rail places anything at all.
+    expect(events).toEqual(['drift_cancel', 'placed']);
   });
 
   it('adjust with partialCloseFraction shrinks the position; the stale full-size venue TP qty_cancels then re-places', async () => {
@@ -972,6 +979,77 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     expect(atTp).toHaveLength(1);
     expect(atTp[0]!.kind).toBe('EXIT_LONG');
     expect(atTp[0]!.reason).toBe('plan exit: take_profit');
+  });
+
+  // 2026-08-04 (#149): the synthetic 0.02 TP above is geometry the model never authored — a 2.5:1
+  // adverse pair against the 0.05 stop, and ~1500bps of phantom drift against a correctly-priced
+  // resting order, which manageVenueTp then cancels. When the position's own TP still rests at the
+  // venue, the re-arm re-derives the pct from THAT price instead (venueTpPrice inverted against
+  // avgEntry), so the recovered plan matches the exit the venue is actually holding.
+  it('re-derives the re-armed takeProfitPct from the resting venue TP order rather than the synthetic 0.02', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    const restingTp: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000009'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.001'),
+      limitPrice: price('103.5'), // 100 × 1.035 — the model's own 0.035 TP, still resting
+    };
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient(), {
+      intentStore: roledIntentStore(new Map([[String(restingTp.clientOrderId), 'vtp']])),
+    });
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held, openOrders: [restingTp] }));
+
+    // Close 102 is where the SYNTHETIC 0.02 would have taken profit — the re-derived 0.035 holds.
+    const belowDerivedTp = await strategy.decide(
+      buildInput(1, { close: '102', position: held, openOrders: [restingTp] }),
+    );
+    expect(belowDerivedTp).toEqual([]);
+
+    const atDerivedTp = await strategy.decide(
+      buildInput(2, { close: '103.5', position: held, openOrders: [restingTp] }),
+    );
+    expect(atDerivedTp).toHaveLength(1);
+    expect(atDerivedTp[0]!.reason).toBe('plan exit: take_profit');
+  });
+
+  it('ignores a resting TP whose implied pct falls outside the decision contract and keeps the synthetic fallback', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    // 130 off avgEntry 100 implies a 0.30 TP — past DECISION_V2_BOUNDS.takeProfitPct.max (0.2), so
+    // this order cannot be recovered model geometry (a stale order from a long-gone entry, or a
+    // foreign one). Discarded rather than clamped: the synthetic 0.02 stands and exits at 102.
+    const staleTp: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000010'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.001'),
+      limitPrice: price('130'),
+    };
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient(), {
+      intentStore: roledIntentStore(new Map([[String(staleTp.clientOrderId), 'vtp']])),
+    });
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held, openOrders: [staleTp] }));
+    const atSyntheticTp = await strategy.decide(
+      buildInput(1, { close: '102', position: held, openOrders: [staleTp] }),
+    );
+    expect(atSyntheticTp).toHaveLength(1);
+    expect(atSyntheticTp[0]!.reason).toBe('plan exit: take_profit');
   });
 
   it('does not emit onRearmFallback when hold+directives re-arm attaches a model plan', async () => {
@@ -1248,7 +1326,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(out[0]!.reason).toBe('plan exit: stop');
   });
 
-  it('cancels the resting SELL when its price drifts beyond the replace-drift threshold', async () => {
+  it('replaces the resting SELL in one chain entry when its price drifts beyond the replace-drift threshold', async () => {
     const client = new PlanningClient();
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
@@ -1260,17 +1338,61 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     events.length = 0;
 
     // Bar 2: a SELL rests at 104 instead of the plan's 103 — drift = |104-103|/103 × 10000 ≈ 97bps,
-    // well past the default 10bps threshold ⇒ cancel for next-bar re-placement, no exit.
+    // well past the default 10bps threshold. #148 (2026-08-04): a bare CANCEL_OPEN here deferred the
+    // re-placement to the next managed bar, leaving the position with NO resting take-profit in
+    // between (live: ~15min naked on 2026-08-04, watcher backstop off) — the cancel now rides the
+    // replacement's own cancelBeforeSubmit so both land in one SignalSinkService chain entry.
     const out = await strategy.decide(
       buildInput(2, { position: longPosition('100'), openOrders: [restingSell('104')] }),
     );
     expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.exitStyle).toBe('RESTING');
+    expect(out[0]!.limitPriceHint!.toFixed()).toBe('103'); // re-priced to the plan TP, same bar
+    expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' });
+    expect(out[0]!.reason).toContain('drifted');
+    // The replacement counts as a placement — same 'placed' the fresh-placement branch and the perp
+    // stop's own same-bar re-place emit; without it ~36% of live TP placements were uncounted.
+    expect(events).toEqual(['drift_cancel', 'placed']);
+  });
+
+  // cancelBeforeSubmit is side-scoped with no role filter (SignalSinkService.cancelOrdersForSide),
+  // so the compound replace above would sweep a coexisting resting protective stop along with the
+  // drifted TP. Cancelling a stop the live position still needs is strictly worse than re-placing
+  // the TP a bar later, so the replace FAILS CLOSED back to the role-scoped bare cancel whenever
+  // anything else rests on this side.
+  it('falls back to the role-scoped bare cancel on drift when a vsl order coexists on the TP side', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const driftedTp = restingSell('104');
+    const vslOrder: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000011'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.001'),
+      limitPrice: price('98'),
+    };
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+      intentStore: roledIntentStore(
+        new Map([
+          [String(driftedTp.clientOrderId), 'vtp'],
+          [String(vslOrder.clientOrderId), 'vsl'],
+        ]),
+      ),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP at 103
+    events.length = 0;
+
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [driftedTp, vslOrder] }),
+    );
+    expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('SELL');
-    // Push 3 P7c: manageVenueTp's own reconciliation cancels scope to cancelRole:'vtp' — it never
-    // touches a coexisting resting protective stop (see the two-resting-SELLs discrimination test).
-    expect(out[0]!.cancelRole).toBe('vtp');
-    expect(out[0]!.reason).toContain('drifted');
+    expect(out[0]!.cancelRole).toBe('vtp'); // the resting stop is never swept by a TP re-price
+    expect(out[0]!.cancelBeforeSubmit).toBeUndefined();
     expect(events).toEqual(['drift_cancel']);
   });
 

@@ -830,9 +830,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     const strategy = new AgenticStrategy(SID, perpParams(), client, {
       onVenueStop: (e) => events.push(e),
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
-      // Bar 1 (placement) sees nothing resting yet; bar 2+ (reconcile) observes the ack — mirrors
-      // the spot suite's own per-bar openOrders shape (buildInput's opts.openOrders), just modeled
-      // as a call-counter since fetchOpenAlgoOrders takes no per-bar argument to vary by.
+      // One read per bar since #147 — the orphan sweep does it and manageVenueStopPerp reuses that
+      // same list, so the counter below numbers BARS, not consumers: call #1 is bar 0 (FLAT, nothing
+      // resting), every later call is one managed bar observing the ack. Modeled as a call-counter
+      // since fetchOpenAlgoOrders takes no per-bar argument to vary by, mirroring the spot suite's
+      // own per-bar openOrders shape (buildInput's opts.openOrders).
       algoOrders: {
         fetchOpenAlgoOrders: () => {
           fetchCalls += 1;
@@ -842,12 +844,12 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       planStopRegistry: registry,
     });
     await strategy.decide(perpInput(0));
-    await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+    await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // first managed bar
     events.length = 0;
 
     const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // confirmed
     expect(out).toEqual([]);
-    expect(events).toEqual(['skipped_existing']);
+    expect(events).toEqual(['orphan_scan', 'skipped_existing']);
     expect(registry.get(PERP_REG_KEY)).toEqual({
       side: 'LONG',
       stopPrice: '98',
@@ -856,7 +858,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     });
   });
 
-  it('drift_cancel calls cancelAlgoOrder directly (no CANCEL_OPEN signal — the algo rail is never in openOrders) and journals the cancel', async () => {
+  it('drift_cancel calls cancelAlgoOrder directly (no CANCEL_OPEN signal — the algo rail is never in openOrders), journals the cancel, and re-places within the same bar', async () => {
     const events: VenueStopEvent[] = [];
     const resting = algoOrder('90'); // far from the expected trigger 98 — genuine drift
     const cancelled: Array<{ algoId: string; symbol: string }> = [];
@@ -869,9 +871,9 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       algoOrders: {
         fetchOpenAlgoOrders: () => {
           fetchCalls += 1;
-          // Push 3 P7f fix 7b: bar 0 (no active plan yet) now also runs the orphaned-algo-stop
-          // boot check, consuming call #1 (harmlessly — nothing resting, FLAT). manageVenueStopPerp's
-          // own placement scan is therefore call #2 ("placed" bar), reconcile is call #3 ("drift" bar).
+          // Push 3 P7f fix 7b + #147: the orphaned-algo-stop sweep runs on EVERY bar (bar 0
+          // harmlessly — nothing resting, FLAT) and hands its list to manageVenueStopPerp, so this
+          // counter numbers bars: #1 bar 0, #2 the "placed" bar, #3 the "drift" bar.
           return Promise.resolve(fetchCalls <= 2 ? [] : [resting]);
         },
         cancelAlgoOrder: (algoId, symbol) => {
@@ -891,14 +893,52 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
     events.length = 0;
 
+    // #148 (2026-08-04): the cancel still goes through the direct adapter call (no CANCEL_OPEN can
+    // reach the algo rail), but the re-placement no longer waits for the next managed bar — that
+    // deferral left the position with no venue stop for a full bar interval (live: STOP_MARKETs
+    // VENUE_CANCELED 08:30:37/44Z, nothing resting again until 08:45, watcher backstop off). The
+    // cancel above is confirmed, so the fresh stop is emitted in this same decide() call.
     const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // drift
-    expect(out).toEqual([]); // no Signal — the cancel happened via the direct adapter call
-    expect(events).toEqual(['drift_cancel']);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.exitStyle).toBe('RESTING_STOP');
+    expect(out[0]!.triggerPriceHint!.toFixed()).toBe('98'); // re-derived, not the stale 90
+    // 'orphan_scan' leads every managed perp bar since #147 — the sweep reaches its venue read on
+    // this bar too; 'drift_cancel' then 'placed' remain the same-bar self-heal under test.
+    expect(events).toEqual(['orphan_scan', 'drift_cancel', 'placed']);
     expect(cancelled).toEqual([{ algoId: resting.algoId, symbol: String(PERP_SYM) }]);
     expect(goneCalls).toEqual([PERP_SYM]);
   });
 
-  it('qty_cancel calls cancelAlgoOrder directly and journals the cancel', async () => {
+  // Cancelling a protective stop is irreversible-adjacent: with the cancel's own outcome unknown,
+  // a same-bar placement could leave TWO stops resting for one position. The self-heal above is
+  // therefore gated on a CONFIRMED cancel and fails toward no-op otherwise.
+  it('does NOT re-place within the bar when the drift cancel itself throws (unconfirmed cancel)', async () => {
+    const events: VenueStopEvent[] = [];
+    const resting = algoOrder('90');
+    let fetchCalls = 0;
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, perpParams(), client, {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve(fetchCalls <= 2 ? [] : [resting]);
+        },
+        cancelAlgoOrder: () => Promise.reject(new Error('venue rejected the cancel')),
+      },
+      planStopRegistry: planStopRegistry(),
+    });
+    await strategy.decide(perpInput(0));
+    await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+    events.length = 0;
+
+    const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') }));
+    expect(out).toEqual([]);
+    expect(events).toEqual(['orphan_scan', 'drift_cancel']); // no 'placed' — the drifted stop may still rest
+  });
+
+  it('qty_cancel calls cancelAlgoOrder directly, journals the cancel, and re-places within the same bar', async () => {
     const events: VenueStopEvent[] = [];
     const resting = algoOrder('98', '0.0005'); // qty mismatch vs the 0.001 position
     const cancelled: string[] = [];
@@ -928,8 +968,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     events.length = 0;
 
     const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // qty mismatch
-    expect(out).toEqual([]);
-    expect(events).toEqual(['qty_cancel']);
+    // Re-sized within the same bar (#148) — the correctly-sized stop replaces the mismatched one
+    // here rather than leaving the position uncovered until the next managed bar.
+    expect(out).toHaveLength(1);
+    expect(out[0]!.exitStyle).toBe('RESTING_STOP');
+    expect(events).toEqual(['qty_cancel', 'placed']);
     expect(cancelled).toEqual([resting.algoId]);
     expect(goneCalls).toEqual([PERP_SYM]);
   });
@@ -992,10 +1035,12 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     events.length = 0;
 
     // Step 0.0001 → roundToStep(0.0012345, 0.0001, 'down') = 0.0012 protectable, vs the 0.001 resting
-    // (a genuine ≥1-step uncovered slice) ⇒ qty_cancel via the direct cancelAlgoOrder call.
+    // (a genuine ≥1-step uncovered slice) ⇒ qty_cancel via the direct cancelAlgoOrder call, then the
+    // same-bar re-place (#148) instead of a bar with nothing protecting the position.
     const out = await strategy.decide(perpInput(2, { position: perpSubStep() }));
-    expect(out).toEqual([]);
-    expect(events).toEqual(['qty_cancel']);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.exitStyle).toBe('RESTING_STOP');
+    expect(events).toEqual(['qty_cancel', 'placed']);
     expect(cancelled).toEqual([resting.algoId]);
   });
 
@@ -1295,11 +1340,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
         algoOrders: {
           fetchOpenAlgoOrders: () => {
             fetchCalls += 1;
-            // Push 3 P7f fix 7b: bar 0 (no active plan yet) runs the orphaned-algo-stop boot check
-            // first, consuming call #1 (harmlessly — nothing resting, FLAT). manageVenueStopPerp's
-            // own placement scan is therefore call #2 (bar1: placed), call #3 confirms (bar2), and
-            // call #4+ (bar3) is the vanish this describe block exists to exercise.
-            if (fetchCalls <= 2) return Promise.resolve([]); // bar0 boot check + bar1: placed
+            // Push 3 P7f fix 7b + #147: one read per BAR — the orphan sweep performs it (bar 0
+            // harmlessly, nothing resting while FLAT) and manageVenueStopPerp reuses the same list.
+            // #1 bar0, #2 bar1 (placed), #3 bar2 (confirmed), #4+ bar3 — the vanish this describe
+            // block exists to exercise.
+            if (fetchCalls <= 2) return Promise.resolve([]); // bar0 sweep + bar1: placed
             if (fetchCalls === 3) return Promise.resolve([resting]); // bar2: confirmed resting
             return Promise.resolve([]); // bar3+: vanished
           },
@@ -1327,7 +1372,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
 
       const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
       expect(out).toEqual([]);
-      expect(events).toEqual(['triggered']);
+      expect(events).toEqual(['orphan_scan', 'triggered']);
       expect(goneCalls).toEqual([PERP_SYM]);
       expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false);
     });
@@ -1346,7 +1391,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
       expect(out).toHaveLength(1);
       expect(out[0]!.exitStyle).toBe('RESTING_STOP');
-      expect(events).toEqual(['placed']);
+      expect(events).toEqual(['orphan_scan', 'placed']);
       expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false); // placed, not yet re-confirmed
     });
 
@@ -1363,10 +1408,15 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
 
       const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
       expect(out).toEqual([]);
-      expect(events).toEqual([]); // no 'placed' — this bar's placement decision was skipped
+      // Only the sweep's own read label — no 'placed', this bar's placement decision was skipped.
+      expect(events).toEqual(['orphan_scan']);
     });
 
-    it('dep ABSENT: behavior is byte-identical to today (proceeds straight to re-placement)', async () => {
+    // Named for what it pins, not for a byte-comparison: the emitted sequence is no longer identical
+    // to the pre-feature one (#147 prepends the sweep's own 'orphan_scan' to every managed perp bar).
+    // The subject is the absent-dep fallback — with no onAlgoStopGone wired there is no recovery
+    // consult and no skip, so the vanish falls straight through to re-placement.
+    it('dep ABSENT: the vanish is never consulted — the re-placement path runs unchanged', async () => {
       const events: VenueStopEvent[] = [];
       const { strategy, registry } = threeBarVanishSetup({
         onVenueStop: (e) => events.push(e),
@@ -1381,7 +1431,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       expect(out).toHaveLength(1);
       expect(out[0]!.exitStyle).toBe('RESTING_STOP');
       expect(out[0]!.triggerPriceHint!.toFixed()).toBe('98');
-      expect(events).toEqual(['placed']); // same as the pre-feature "reconciles" test's own placed bar
+      expect(events).toEqual(['orphan_scan', 'placed']); // re-placed, with no 'triggered'/skip in between
       expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false);
     });
   });
@@ -1541,22 +1591,139 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
     expect(events).toEqual(['orphan_scan', 'orphan_cancel']);
   });
 
-  it('no-ops once the registry already holds an entry for this key (avoids re-scanning every flat bar)', async () => {
-    const resting = algoOrder('97');
+  // #147 (2026-08-04) inverts what this slot used to pin. The old contract — "a registry entry for
+  // this key ⇒ never read the venue again" — is the defect itself: once ANY entry existed the sweep
+  // short-circuited for the life of the plan, so a SECOND orphan on the same symbol was structurally
+  // unreachable. Four reduce-only STOP_MARKETs sat ACKED with no order_event for four days across
+  // ~37 boots behind exactly that guard. The registry entry is now evidence used to decide WHICH
+  // candidate is current, never a reason to skip the read.
+  it('#147: reads the venue even with a registry entry present, and cancels only the candidate the confirmed algoId contradicts', async () => {
+    const confirmed = algoOrder('97'); // the stop this position is actually relying on
+    const stale = algoOrder('93', '0.001', 'cbp0perp00000000000700080000000000s2');
     let fetchCalls = 0;
     const events: VenueStopEvent[] = [];
+    const cancelled: string[] = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
     const registry = planStopRegistry(
       new Map([
-        [PERP_REG_KEY, { side: 'LONG', stopPrice: '97', venueStopResting: true, algoId: 'cached' }],
+        [
+          PERP_REG_KEY,
+          { side: 'LONG', stopPrice: '97', venueStopResting: true, algoId: confirmed.algoId },
+        ],
       ]),
     );
     const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(
+        new Map([
+          [confirmed.clientAlgoId!, 'vsl'],
+          [stale.clientAlgoId!, 'vsl'],
+        ]),
+      ),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve([confirmed, stale]);
+        },
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(fetchCalls).toBe(1); // the entry no longer short-circuits the read
+    expect(events).toEqual(['orphan_scan', 'orphan_cancel']);
+    // FAILS CLOSED: the only cancellable candidate is one the registry's CONFIRMED algoId positively
+    // contradicts — the confirmed stop itself is never touched while the position is open.
+    expect(cancelled).toEqual([stale.algoId]);
+    expect(goneCalls).toEqual([PERP_SYM]); // symbol-scoped fold, one call for the whole sweep
+    expect(registry.get(PERP_REG_KEY)?.algoId).toBe(confirmed.algoId);
+  });
+
+  // The other half of the old name's concern ("avoids re-scanning every flat bar") — answered by
+  // reuse rather than by skipping: the sweep hands its list to manageVenueStopPerp, so widening it
+  // to every managed bar costs ONE venue round trip per bar, not two. Each fetchOpenAlgoOrders
+  // carries ccxt's 10s default timeout under decide()'s own AGENTIC_TIMEOUT_MS + 2s wall-clock
+  // backstop, so a second read on the same symbol in the same bar is what would actually hurt.
+  it('#147 cost: two consumers, ONE venue read per managed bar — manageVenueStopPerp reuses the sweep’s list', async () => {
+    const resting = algoOrder('98'); // at the plan's own derived stop — confirms, never churns
+    let fetchCalls = 0;
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new PlanningClient(), {
       onVenueStop: (e) => events.push(e),
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
       algoOrders: {
         fetchOpenAlgoOrders: () => {
           fetchCalls += 1;
-          return Promise.resolve([resting]);
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+        },
+      },
+      planStopRegistry: planStopRegistry(),
+    });
+    await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V })); // FLAT, sweep only
+    expect(fetchCalls).toBe(1);
+    expect(events).toEqual(['orphan_scan']);
+    events.length = 0;
+
+    // A managed bar: the sweep runs AND manageVenueStopPerp reconciles the same symbol — both labels
+    // prove both ran, off a single read.
+    await strategy.decide(
+      buildInput(1, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(events).toEqual(['orphan_scan', 'skipped_existing']);
+    expect(fetchCalls).toBe(2); // 1 (bar 0) + 1 — not 3
+  });
+
+  // The four REFUSAL branches. The prior attempt at this sweep shipped a stop-killing bug, and until
+  // these existed the whole refusal side was unpinned: flipping the confirmed-algoId test or dropping
+  // the lone-candidate guard cancelled every genuine stop on every positioned perp symbol with the
+  // suite still green. Each spec below names the mutation it exists to fail on.
+  it('refusal: a LONE candidate is never cancelled while positioned, and a registry entry never re-adopts over the plan stop', async () => {
+    // Mutations this fails on: dropping the `=== 'vsl'` role filter (the foreign 'vtp' algo order
+    // becomes a second candidate and the confirmed-algoId branch cancels it), and relaxing the
+    // re-adopt's `registryEntry === undefined` precondition (the venue's 97 trigger would overwrite
+    // the plan's own 99 stop price, splitting the watcher's crossing check from the executor's).
+    const confirmed = algoOrder('97');
+    const foreignTp = algoOrder('105', '0.001', 'cbp0perp00000000000700080000000000t1');
+    const cancelled: string[] = [];
+    const events: VenueStopEvent[] = [];
+    const registry = planStopRegistry(
+      new Map([
+        [
+          PERP_REG_KEY,
+          { side: 'LONG', stopPrice: '99', venueStopResting: true, algoId: confirmed.algoId },
+        ],
+      ]),
+    );
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(
+        new Map([
+          [confirmed.clientAlgoId!, 'vsl'],
+          [foreignTp.clientAlgoId!, 'vtp'],
+        ]),
+      ),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([confirmed, foreignTp]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
         },
       },
       planStopRegistry: registry,
@@ -1568,7 +1735,182 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
         venue: PERP_V,
       }),
     );
-    expect(fetchCalls).toBe(0); // already-adopted guard short-circuits before the venue call
-    expect(events).toEqual([]); // and short-circuits BEFORE 'orphan_scan' — the scan never ran
+    expect(cancelled).toEqual([]);
+    expect(events).toEqual(['orphan_scan']);
+    expect(registry.get(PERP_REG_KEY)).toEqual({
+      side: 'LONG',
+      stopPrice: '99',
+      venueStopResting: true,
+      algoId: confirmed.algoId,
+    });
+  });
+
+  it('refusal: two candidates with NO confirmed algoId in the registry — nothing is cancelled, the refusal is logged', async () => {
+    // Mutation this fails on: deleting the `expectedAlgoId === undefined || !vslOrders.some(...)`
+    // refusal, which drops straight into the cancel loop where nothing equals `undefined` — BOTH
+    // stops go, including the one the open position is relying on.
+    const first = algoOrder('97');
+    const second = algoOrder('93', '0.001', 'cbp0perp00000000000700080000000000s2');
+    const cancelled: string[] = [];
+    const events: VenueStopEvent[] = [];
+    const warnings: string[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      logger: { warn: (m) => warnings.push(m) },
+      intentStore: roledIntentStore(
+        new Map([
+          [first.clientAlgoId!, 'vsl'],
+          [second.clientAlgoId!, 'vsl'],
+        ]),
+      ),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([first, second]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      // venueStopResting/algoId absent: no placement of this plan's stop was ever observed resting,
+      // so the registry holds no fact that could say WHICH of the two is current.
+      planStopRegistry: planStopRegistry(
+        new Map([[PERP_REG_KEY, { side: 'LONG', stopPrice: '97', venueStopResting: false }]]),
+      ),
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(cancelled).toEqual([]);
+    expect(events).toEqual(['orphan_scan']);
+    expect(warnings.some((m) => m.includes('none matching a confirmed algoId'))).toBe(true);
+  });
+
+  it('refusal: two candidates and a confirmed algoId naming neither — leaves all resting', async () => {
+    // Mutation this fails on: inverting `!vslOrders.some((o) => o.algoId === expectedAlgoId)` to
+    // `vslOrders.some(...)`. With the confirmed stop absent from the venue's answer the inverted
+    // test falls through to the cancel loop, where nothing matches the skip condition and every
+    // candidate — the position's only remaining protection — is cancelled.
+    const first = algoOrder('97');
+    const second = algoOrder('93', '0.001', 'cbp0perp00000000000700080000000000s3');
+    const cancelled: string[] = [];
+    const events: VenueStopEvent[] = [];
+    const warnings: string[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      logger: { warn: (m) => warnings.push(m) },
+      intentStore: roledIntentStore(
+        new Map([
+          [first.clientAlgoId!, 'vsl'],
+          [second.clientAlgoId!, 'vsl'],
+        ]),
+      ),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([first, second]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      planStopRegistry: planStopRegistry(
+        new Map([
+          [
+            PERP_REG_KEY,
+            {
+              side: 'LONG',
+              stopPrice: '97',
+              venueStopResting: true,
+              // A third order, absent from the venue's answer this bar (cancelled/filled elsewhere,
+              // or a read that came back partial) — evidence about NEITHER candidate.
+              algoId: 'venue-algo-not-in-this-answer',
+            },
+          ],
+        ]),
+      ),
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(cancelled).toEqual([]);
+    expect(events).toEqual(['orphan_scan']);
+    expect(warnings.some((m) => m.includes('leaving all resting'))).toBe(true);
+  });
+
+  it('refusal: a DUST position (reported FLAT to the agent) keeps its resting stop — reduce-only perp stops are minNotional-exempt', async () => {
+    // Mutation this fails on: gating the FLAT branch on context.position.side instead of the raw
+    // position row. buildContext reclassifies a sub-minNotional holding as FLAT so the model stops
+    // proposing un-executable exits, but evaluate.ts's minNotionalExempt lets a reduce-only PERP
+    // stop through at any size — so the dust IS protectable and cancelling its stop strands it (no
+    // path re-places one: manageVenueStop needs a LONG/SHORT side).
+    const resting = algoOrder('97');
+    const cancelled: string[] = [];
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([resting]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      planStopRegistry: planStopRegistry(),
+    });
+    // 0.001 @ 100 = $0.10 against a $50 minimum ⇒ dust.
+    strategy.onInit({
+      params: {},
+      warmupCandles: new Map(),
+      symbolConstraints: new Map([
+        [PERP_SYM, { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('50') }],
+      ]),
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(cancelled).toEqual([]);
+    expect(events).toEqual(['orphan_scan']);
+  });
+
+  it("refusal: the sweep's read throws on a managed bar — manageVenueStopPerp no-ops off 'read-failed' rather than retrying the read", async () => {
+    // Mutation this fails on: dropping the 'read-failed' early return in manageVenueStopPerp, which
+    // spends a SECOND 10s-timeout read inside the same bar and — when that one answers empty — can
+    // place a duplicate stop beside one the failed read simply could not see.
+    let fetchCalls = 0;
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new PlanningClient(), {
+      onVenueStop: (e) => events.push(e),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.reject(new Error('adapter shape throw'));
+        },
+      },
+      planStopRegistry: planStopRegistry(),
+    });
+    await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V })); // FLAT, sweep only
+    expect(fetchCalls).toBe(1);
+    events.length = 0;
+
+    const out = await strategy.decide(
+      buildInput(1, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(out).toEqual([]);
+    expect(fetchCalls).toBe(2); // one read for the bar, not one per consumer
+    expect(events).toEqual(['reconcile_error']); // no 'placed' — the decision is skipped, not guessed
   });
 });

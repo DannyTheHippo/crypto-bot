@@ -48,7 +48,7 @@ import {
   type StrategyInitContext,
 } from '../../../ports/strategy/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
-import { buildMarketPayload } from './agent-prompt';
+import { buildMarketPayload, DECISION_V2_BOUNDS } from './agent-prompt';
 import { deriveRegimeTags } from './episodic-memory';
 import type { RoundTripEvidencePort } from '../../../ports/trading/promotion';
 import type { DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
@@ -211,7 +211,9 @@ export interface AgenticStrategyParams {
 // this bar or last and its ack hasn't been observed yet, so re-placing would race a duplicate;
 // 'cancel_for_exit' — a stop/max_hold exit cancelled the resting SELL ahead of its own full-size IOC
 // exit; 'drift_cancel' — the resting SELL's price drifted past venueTpReplaceDriftBps and was
-// cancelled for next-bar re-placement; 'qty_cancel' — the resting SELL's qty no longer matches the
+// cancelled, followed by a 'placed' on the SAME bar (#148's compound cancel-and-replace) EXCEPT on
+// the fail-closed fallback where another order rests on this side, which defers the re-placement to
+// the next managed bar and emits nothing further; 'qty_cancel' — the resting SELL's qty no longer matches the
 // position (entry remainder filled after placement) and was cancelled for full-size re-placement;
 // 'tp_race_hold' — the close crossed the TP while the SELL still rests (its own venue fill is the
 // exit; an IOC here would collide with the base it locks), so the bar holds awaiting the fill;
@@ -229,7 +231,10 @@ export type VenueTpEvent =
   | 'filled_flat';
 
 // AGENTIC_VENUE_STOP lifecycle events (see manageVenueStop / AgenticStrategyDeps.onVenueStop) —
-// mirrors VenueTpEvent's own set, minus 'tp_race_hold' (the stop's own venue fill racing a bar-close
+// mirrors VenueTpEvent's own set, with one divergence on the shared labels: 'drift_cancel'/
+// 'qty_cancel' are followed by a same-bar 'placed' only on PERP and only off a CONFIRMED cancel (a
+// throwing cancelAlgoOrder emits neither), while SPOT never places at all (manageVenueStopSpot),
+// minus 'tp_race_hold' (the stop's own venue fill racing a bar-close
 // check is 'stood_down'/'force_fired' below, a distinct decision from the TP's race-hold) plus three
 // stop-specific additions: 'stood_down' — the bar-close executor deferred a 'stop' exit to the
 // confirmed-resting venue stop (breach within the force band); 'force_fired' — the SAME check found
@@ -867,10 +872,13 @@ export class AgenticStrategy implements AsyncStrategy {
     // both the quiet-hold path and the LLM path return it.
     const staleCancels = this.staleEntryCancels(input);
     const context = this.buildContext(input);
-    // Push 3 P7f fix 7b: boot/restart orphan check — see reconcileOrphanedAlgoStop's own header
-    // comment. No-op unless planMode+venueStopEnabled+perp AND there is no active plan tracking this
-    // reconcile already (the normal case, every bar with a live plan).
-    if (this.planMode) await this.reconcileOrphanedAlgoStop(context);
+    // Push 3 P7f fix 7b: orphaned-algo-stop sweep — see reconcileOrphanedAlgoStop's own header
+    // comment. No-op unless planMode+venueStopEnabled+perp. The list it read is threaded into this
+    // bar's own stop reconcile (manageVenueStopPerp) so the same symbol is never fetched twice on
+    // one bar; undefined ⇒ that path reads for itself, exactly as before.
+    const algoOrdersThisBar = this.planMode
+      ? await this.reconcileOrphanedAlgoStop(input, context)
+      : undefined;
     // Captured before trackClosedTrade advances lastPositionSide to THIS call's side — this is the
     // side the strategy was actually carrying while the PREVIOUS (still-unannotated) decision's
     // outcome accrued, which is what annotatePreviousOutcome needs to render "(held long)"/"(flat)"
@@ -922,7 +930,13 @@ export class AgenticStrategy implements AsyncStrategy {
     // this bar (skipping venue-TP/stop reconciliation, same as the pre-B2 cadence-triggered
     // fallthrough); non-null ⇒ this bar stays quiet and fully managed (venue reconciliation runs).
     if (this.planMode && this.activePlan) {
-      const planSignals = await this.runActivePlan(input, context, heldDuringPrev, consultNow);
+      const planSignals = await this.runActivePlan(
+        input,
+        context,
+        heldDuringPrev,
+        consultNow,
+        algoOrdersThisBar,
+      );
       if (planSignals !== null) return [...staleCancels, ...planSignals];
     }
 
@@ -1108,11 +1122,12 @@ export class AgenticStrategy implements AsyncStrategy {
       decision.action !== 'flat'
     ) {
       const isShort = context.position.side === 'SHORT';
+      const geometry = await this.rearmExitGeometry(input, context.position.avgEntry, isShort);
       this.activePlan = {
         plan: {
           sizeFraction: '0.01',
-          stopLossPct: AGENTIC_MAX_STOP_LOSS_PCT,
-          takeProfitPct: '0.02',
+          stopLossPct: geometry.stopLossPct,
+          takeProfitPct: geometry.takeProfitPct,
           entryOffsetBps: 0,
           entryValidityBars: 1,
           maxHoldBars: 96,
@@ -1128,7 +1143,7 @@ export class AgenticStrategy implements AsyncStrategy {
         pendingScaleInQty: null,
       };
       this.logger.warn(
-        `re-arm fallback: ${this.symbol} positioned ${context.position.side} but consult returned ${decision.action} without directives — attaching protective defaults (stop=${AGENTIC_MAX_STOP_LOSS_PCT})`,
+        `re-arm fallback: ${this.symbol} positioned ${context.position.side} but consult returned ${decision.action} without directives — attaching protective defaults (stop=${geometry.stopLossPct} [${geometry.stopLossSource}], tp=${geometry.takeProfitPct} [${geometry.takeProfitSource}])`,
       );
       this.onRearmFallback?.();
     }
@@ -1245,6 +1260,11 @@ export class AgenticStrategy implements AsyncStrategy {
     context: AgentContext,
     heldDuringPrev: 'LONG' | 'SHORT' | 'FLAT',
     consultNow: boolean,
+    // This bar's already-read algo-order list, when the orphan sweep read one — see
+    // reconcileOrphanedAlgoStop's own comment on why the perp rail must not fetch it twice.
+    // 'read-failed' is threaded through untouched and consumed by manageVenueStopPerp, which must
+    // distinguish "the sweep read nothing" from "the sweep's read errored" — see its own comment.
+    algoOrdersThisBar?: readonly AlgoOrderState[] | 'read-failed',
   ): Promise<Signal[] | null> {
     const active = this.activePlan!;
     active.barsElapsed += 1;
@@ -1551,6 +1571,7 @@ export class AgenticStrategy implements AsyncStrategy {
       lastCandle,
       isShort,
       tpSide,
+      algoOrdersThisBar,
     );
     return [...tpSignals, ...stopSignals];
   }
@@ -1639,14 +1660,64 @@ export class AgenticStrategy implements AsyncStrategy {
     const driftBps = restingTp.limitPrice.minus(expectedTp).abs().div(expectedTp).mul(10_000);
     if (driftBps.gt(this.venueTpReplaceDriftBps)) {
       this.onVenueTp?.('drift_cancel');
+      // 2026-08-04 (#148): cancel AND re-place in ONE chain entry instead of deferring the
+      // re-placement to the next managed bar — the bare cancel left the position with no resting
+      // take-profit for a whole bar interval (live: HYPE/BTC/UNI drift-cancelled 08:30:35-44Z with
+      // nothing resting again until 08:45, on a deployment running with the 1s watcher backstop
+      // off). Rides the exit path's own cancelBeforeSubmit compound (runActivePlan's stop/max_hold
+      // branch, same field): SignalSinkService cancels and submits inside ONE processSignal call, so
+      // no other same-key signal can interleave into the gap. venueTpPlacedAtBar arms the same
+      // in-flight suppression the fresh-placement branch above uses, so an unacked replacement is
+      // never duplicated next bar.
+      //
+      // cancelBeforeSubmit is side-scoped with NO role filter (signal.ts / cancelOrdersForSide), so
+      // it clears every side-matching order — on spot that can include a coexisting resting 'vsl'
+      // protective stop, which the role-scoped bare cancel below deliberately never touches.
+      // Cancelling a stop the live position still needs is irreversible-adjacent, so this FAILS
+      // CLOSED: the compound replace is taken only when the drifted TP is the ONLY order resting on
+      // this side (always the case on perp, where the stop lives on the algo rail and never appears
+      // in openOrders); with anything else beside it the pre-existing role-scoped cancel stands and
+      // the re-place waits for the next bar, exactly as before.
+      const sideCollateral = input.snapshot.portfolio.openOrders.some(
+        (o) =>
+          o.symbol === this.symbol &&
+          o.side === tpSide &&
+          o.clientOrderId !== restingTp.clientOrderId,
+      );
+      if (sideCollateral) {
+        return [
+          this.buildCancelOpenSignal(
+            input,
+            lastCandle,
+            tpSide,
+            `venue take-profit: resting ${tpSide} drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place (another order rests on this side)`,
+            'vtp',
+          ),
+        ];
+      }
+      active.venueTpPlacedAtBar = active.barsElapsed;
+      // The replacement IS a placement: without this emit the compound branch would place a real
+      // resting TP that never reaches agentic_venue_tp_total{event="placed"}, the only counter
+      // evidencing the rail places anything (live: 4 of 11 TP placements would have been invisible).
+      // Same emit the fresh-placement branch above and the perp stop's same-bar re-place already do.
+      this.onVenueTp?.('placed');
       return [
-        this.buildCancelOpenSignal(
-          input,
-          lastCandle,
-          tpSide,
-          `venue take-profit: resting ${tpSide} drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place`,
-          'vtp',
-        ),
+        {
+          strategyId: this.id,
+          venue: this.venue,
+          symbol: this.symbol,
+          kind: isShort ? 'EXIT_SHORT' : 'EXIT_LONG',
+          strength: 1,
+          cancelBeforeSubmit: { side: tpSide },
+          refPrice: lastCandle.close,
+          exitStyle: 'RESTING',
+          limitPriceHint: currentTp,
+          basedOnSeq: lastCandle.seq,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: this.planExitTtlBars * this.baseIntervalMs,
+          dedupeKey: `${this.id}:${this.symbol}:agentic:venue_tp_replace:${input.snapshot.eventTime}`,
+          reason: `venue take-profit: resting ${tpSide} drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel and replace in the same chain entry`,
+        },
       ];
     }
 
@@ -1707,6 +1778,7 @@ export class AgenticStrategy implements AsyncStrategy {
     lastCandle: CandleEvent,
     isShort: boolean,
     stopSide: 'BUY' | 'SELL',
+    algoOrdersThisBar?: readonly AlgoOrderState[] | 'read-failed',
   ): Promise<Signal[]> {
     if (!this.venueStopEnabled) return [];
     if (
@@ -1731,6 +1803,7 @@ export class AgenticStrategy implements AsyncStrategy {
           currentStop,
           context,
           key,
+          algoOrdersThisBar,
         )
       : await this.manageVenueStopSpot(
           input,
@@ -1753,6 +1826,101 @@ export class AgenticStrategy implements AsyncStrategy {
       isShort ? new Decimal(1).plus(stopLossPct) : new Decimal(1).minus(stopLossPct),
     );
     return price(roundToMoneyPrecision(raw).toFixed());
+  }
+
+  // Re-arm fallback geometry (2026-08-04): recovers the exit pcts the venue orders ALREADY resting
+  // for this position encode, by inverting venueTpPrice/venueStopPrice above against avgEntry — the
+  // same "re-adopt off the venue's own price" rule reconcileOrphanedAlgoStop applies to a stranded
+  // stop's trigger. A resting TP/stop was priced off directives the model genuinely authored, so it
+  // is evidence of the plan a restart lost; the synthetic '0.05'/'0.02' pair the caller falls back
+  // to is a 2.5:1 ADVERSE payoff no decision ever carried (the lane's live takeProfitPct over 166
+  // journalled plans spans 0.012-0.04), and re-arming 0.02 over a correctly-priced 0.035 resting
+  // order reads as ~1500bps of drift — the fallback manufactured the very cancel churn manageVenueTp
+  // then had to repair. Each leg is derived and validated INDEPENDENTLY: one unreadable leg never
+  // discards the other. Validity is DECISION_V2_BOUNDS (agent-prompt.ts) — the exact range the
+  // model's own tool schema permits, so a value outside it cannot be recovered model geometry (a
+  // stale order from a long-gone entry, or a foreign one) and is discarded rather than clamped;
+  // deliberately not a second hand-picked pair of numbers here, per that constant's own
+  // one-source-never-two-copies note. Reconstruction/measurement, so it FAILS OPEN to the caller's
+  // synthetic constants: no resting order, an unreadable price, or an out-of-contract result leaves
+  // the plan exactly where it was before this existed — never wider than the bounds already allow.
+  private async rearmExitGeometry(
+    input: AgentDecisionInput,
+    avgEntry: string | null,
+    isShort: boolean,
+  ): Promise<{
+    stopLossPct: string;
+    stopLossSource: string;
+    takeProfitPct: string;
+    takeProfitSource: string;
+  }> {
+    const geometry = {
+      stopLossPct: AGENTIC_MAX_STOP_LOSS_PCT,
+      stopLossSource: 'synthetic',
+      takeProfitPct: '0.02',
+      takeProfitSource: 'synthetic',
+    };
+    if (avgEntry === null) return geometry;
+    const entry = new Decimal(avgEntry);
+    if (!entry.isFinite() || entry.lte(0)) return geometry;
+    // Both legs rest on the position's exit side — SELL for a LONG, BUY for a SHORT (mirrored).
+    const exitSide: 'BUY' | 'SELL' = isShort ? 'BUY' : 'SELL';
+
+    const restingTp = await this.restingOrderForRole(input, exitSide, 'vtp');
+    if (restingTp?.limitPrice !== undefined) {
+      const derived = isShort
+        ? new Decimal(1).minus(restingTp.limitPrice.div(entry))
+        : restingTp.limitPrice.div(entry).minus(1);
+      if (this.withinContractBound(derived, DECISION_V2_BOUNDS.takeProfitPct)) {
+        geometry.takeProfitPct = derived.toFixed();
+        geometry.takeProfitSource = 'resting-tp';
+      }
+    }
+
+    const trigger = await this.rearmStopTrigger(input, exitSide);
+    if (trigger !== undefined) {
+      const derived = isShort
+        ? trigger.div(entry).minus(1)
+        : new Decimal(1).minus(trigger.div(entry));
+      if (this.withinContractBound(derived, DECISION_V2_BOUNDS.stopLossPct)) {
+        geometry.stopLossPct = derived.toFixed();
+        geometry.stopLossSource = 'resting-stop';
+      }
+    }
+    return geometry;
+  }
+
+  // The resting protective stop's own TRIGGER price, per rail. PERP: a STOP_MARKET lives on the algo
+  // rail and never appears in openOrders, so the only in-process record of its trigger is the
+  // registry row — and with no active plan (this method's only caller re-arms precisely because
+  // there is none) the sole writer that can have seeded it is reconcileOrphanedAlgoStop's re-adopt,
+  // off the venue's own triggerPrice (clearPlan drops the row with the plan, so nothing stale can
+  // survive here). SPOT: a resting STOP_LOSS_LIMIT's OpenOrderSummary.limitPrice is the BUFFERED leg
+  // PositionSizerService built PAST the trigger, never the trigger itself (spotStopExpectedLimit
+  // replicates that formula) — so the buffer is divided back out. Reading the buffered leg as the
+  // trigger would inflate the derived stop by the buffer (50bps default), pushing a genuine 5% stop
+  // past the contract bound and silently discarding the derivation this exists to make.
+  private async rearmStopTrigger(
+    input: AgentDecisionInput,
+    exitSide: 'BUY' | 'SELL',
+  ): Promise<Decimal | undefined> {
+    if (this.isPerpVenue()) {
+      const entry = this.planStopRegistry?.get(positionKey(this.id, this.venue, this.symbol));
+      return entry?.venueStopResting === true ? new Decimal(entry.stopPrice) : undefined;
+    }
+    const restingStop = await this.restingOrderForRole(input, exitSide, 'vsl');
+    if (restingStop?.limitPrice === undefined) return undefined;
+    const buffer = new Decimal(this.stopLimitBufferBps).div(10_000);
+    const divisor =
+      exitSide === 'SELL' ? new Decimal(1).minus(buffer) : new Decimal(1).plus(buffer);
+    return divisor.lte(0) ? undefined : restingStop.limitPrice.div(divisor);
+  }
+
+  private withinContractBound(
+    value: Decimal,
+    bound: { readonly min: number; readonly max: number },
+  ): boolean {
+    return value.isFinite() && value.gte(bound.min) && value.lte(bound.max);
   }
 
   // SPOT reconciliation: MANAGE-ONLY, never place. Confirmed defect (independent adversarial review,
@@ -1899,6 +2067,7 @@ export class AgenticStrategy implements AsyncStrategy {
     currentStop: Price,
     context: AgentContext,
     key: string,
+    algoOrdersThisBar?: readonly AlgoOrderState[] | 'read-failed',
   ): Promise<Signal[]> {
     // Backlog #54 (FLAG 1): this read was the ONE throw-capable algo call on the managed-bar hot
     // path not under try/catch — its rejection propagated out of decide(), discarding the venue-TP
@@ -1910,9 +2079,23 @@ export class AgenticStrategy implements AsyncStrategy {
     // 'reconcile_error' lifecycle event. Executor bar-close + S3 backstops stay armed throughout —
     // the position is never naked on this path. Mirrors P7f fix 5's swallow in
     // cancelPerpAlgoStopIfResting's fallback lookup, which documented this exact bug class.
+    if (algoOrdersThisBar === 'read-failed') {
+      // The orphan sweep's own read of this symbol failed earlier in this same decide() and already
+      // emitted 'reconcile_error'. Skip this bar's placement decision on that evidence — same
+      // fail-toward-no-op direction as the catch below (a blind placement could duplicate a stop the
+      // read failed to see), without spending a second 10s-timeout retry inside the bar budget.
+      this.logger.warn(
+        `venue-stop reconcile: the orphan sweep's fetchOpenAlgoOrders already failed for ${this.symbol} (perp) this bar — skipping this bar's placement decision`,
+      );
+      return [];
+    }
     let open: readonly AlgoOrderState[];
     try {
-      open = (await this.algoOrders?.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
+      // The orphan sweep already read this symbol's algo rail at the top of this same decide() —
+      // reuse it rather than spending a second round trip. It hands over `undefined` whenever its
+      // snapshot cannot be trusted (nothing fetched, or it cancelled something), which lands on the
+      // read below exactly as before.
+      open = algoOrdersThisBar ?? (await this.algoOrders?.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
     } catch (err) {
       this.onVenueStop?.('reconcile_error');
       this.logger.warn(
@@ -1979,16 +2162,7 @@ export class AgenticStrategy implements AsyncStrategy {
         // 'canceled' | 'none' — nothing to recover; the existing re-place logic below proceeds
         // unchanged.
       }
-      if (
-        active.venueStopPlacedAtBar !== null &&
-        active.barsElapsed <= active.venueStopPlacedAtBar + 1
-      ) {
-        this.onVenueStop?.('skipped_inflight');
-        return [];
-      }
-      active.venueStopPlacedAtBar = active.barsElapsed;
-      this.onVenueStop?.('placed');
-      return [this.buildVenueStopSignal(input, lastCandle, stopSide, currentStop)];
+      return this.placeVenueStop(active, input, lastCandle, stopSide, currentStop);
     }
 
     active.venueStopPlacedAtBar = null;
@@ -2012,9 +2186,19 @@ export class AgenticStrategy implements AsyncStrategy {
         void this.journalAlgoStopCanceled();
       } catch {
         // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction. The
-        // next reconcile bar re-observes the (still-drifted) order and retries.
+        // next reconcile bar re-observes the (still-drifted) order and retries. Returns rather than
+        // falling through to the re-placement below: with the cancel's own outcome UNCONFIRMED, a
+        // same-bar placement risks a second stop resting beside one the venue may never have
+        // removed, so this fails toward no-op.
+        return [];
       }
-      return [];
+      // 2026-08-04 (#148): re-place in the SAME bar rather than deferring to the next managed cycle —
+      // the bare cancel-then-wait left the position with no venue stop for a full bar interval (live:
+      // perp STOP_MARKETs went VENUE_CANCELED 08:30:37/44Z with nothing resting again until 08:45, on
+      // a deployment running with the 1s watcher backstop off). The cancel above is CONFIRMED (it did
+      // not throw), so this is exactly the "nothing is resting" precondition the placement branch
+      // above already acts on, reached one call earlier in the same bar.
+      return this.placeVenueStop(active, input, lastCandle, stopSide, currentStop);
     }
 
     // Step-rounded reconciliation, identical rationale to manageVenueTp's qty check: the reduce-only
@@ -2031,13 +2215,41 @@ export class AgenticStrategy implements AsyncStrategy {
         await this.algoOrders!.cancelAlgoOrder!(restingAlgo.algoId, this.symbol);
         void this.journalAlgoStopCanceled(); // fire-and-forget, same as the drift branch above
       } catch {
-        // Best-effort, same as the drift branch above — reachable only from the cancel.
+        // Best-effort, same as the drift branch above — reachable only from the cancel, and same
+        // fail-toward-no-op direction on an unconfirmed cancel.
+        return [];
       }
-      return [];
+      // Same-bar re-place off a CONFIRMED cancel — see the drift branch's own comment.
+      return this.placeVenueStop(active, input, lastCandle, stopSide, currentStop);
     }
 
     this.onVenueStop?.('skipped_existing');
     return [];
+  }
+
+  // The shared "nothing is resting — should a stop be placed?" decision: reached from the ordinary
+  // no-'vsl'-found branch AND, since #148, from the drift/qty branches immediately after a CONFIRMED
+  // cancel (see their own comments). In-flight suppression bounds the duplicate window a placement
+  // that hasn't acked into fetchOpenAlgoOrders yet would otherwise open; the window is per-plan
+  // in-memory state (ActivePlanState.venueStopPlacedAtBar), always null on a fresh or re-armed plan,
+  // so it can never straddle a restart.
+  private placeVenueStop(
+    active: ActivePlanState,
+    input: AgentDecisionInput,
+    lastCandle: CandleEvent,
+    stopSide: 'BUY' | 'SELL',
+    currentStop: Price,
+  ): Signal[] {
+    if (
+      active.venueStopPlacedAtBar !== null &&
+      active.barsElapsed <= active.venueStopPlacedAtBar + 1
+    ) {
+      this.onVenueStop?.('skipped_inflight');
+      return [];
+    }
+    active.venueStopPlacedAtBar = active.barsElapsed;
+    this.onVenueStop?.('placed');
+    return [this.buildVenueStopSignal(input, lastCandle, stopSide, currentStop)];
   }
 
   // Spot-only: replicates PositionSizerService's own STOP_LOSS_LIMIT buffer formula (trigger ×
@@ -2080,16 +2292,44 @@ export class AgenticStrategy implements AsyncStrategy {
   // registry is wiped right along with it (it lives in the SAME process). A restart that happens
   // while a perp stop is genuinely resting therefore leaves it unobserved by EITHER this strategy
   // OR ProtectiveExitService's registry-driven watcher (empty registry ⇒ nothing to watch) until the
-  // model re-attaches a plan on its next consult — a multi-bar protection gap. This runs every bar
-  // with no active plan (cheap early-outs below make it a no-op once nothing is stranded), covering
-  // BOTH outcomes: the stop still protects a real position (re-adopt) or the position is already
-  // gone (cancel the orphan) — never left resting unrecognized either way.
-  private async reconcileOrphanedAlgoStop(context: AgentContext): Promise<void> {
-    if (this.activePlan !== null) return; // manageVenueStopPerp's own reconcile already owns this bar
-    if (!this.venueStopEnabled || !this.isPerpVenue()) return;
-    if (!this.algoOrders?.fetchOpenAlgoOrders || !this.planStopRegistry) return;
+  // model re-attaches a plan on its next consult — a multi-bar protection gap. Covers BOTH outcomes:
+  // the stop still protects a real position (re-adopt) or the position is already gone (cancel the
+  // orphan) — never left resting unrecognized either way.
+  //
+  // WIDENED 2026-08-04 (#147): runs on every managed bar, and inspects EVERY 'vsl' candidate rather
+  // than the first. Live evidence: four reduce-only STOP_MARKETs sat ACKED with no order_event since
+  // their ACK for four days across ~37 boots. Three structural blockers, all removed here — the
+  // active-plan early return (manageVenueStopPerp only ever tracks the ONE order it placed or last
+  // confirmed, so a stale STOP_MARKET from an earlier plan/boot on the same side was never inspected
+  // by it either), the "already adopted this session" registry short-circuit (once ANY entry existed
+  // the venue was never read again for the life of the plan), and the `break` at the first match
+  // (a second orphan on the same symbol was structurally unreachable).
+  //
+  // Failure direction: this reconciles PROTECTIVE orders, so cancelling one a live position still
+  // needs is strictly worse than leaving a stale one resting — every cancel below FAILS CLOSED and
+  // requires an affirmative match. While positioned that means: at least two candidates AND one of
+  // them equal to the registry's confirmed algoId (matching by role alone can never separate "our
+  // current stop" from a stranger — every STOP_MARKET on this side resolves 'vsl'); a LONE candidate
+  // is never cancelled, whatever the registry says about it. Anything ambiguous is left resting and
+  // logged rather than guessed. Only a genuinely empty book — no non-zero position row for this
+  // symbol at all, not merely a dust-reclassified FLAT view — cancels freely (see that branch).
+  //
+  // Returns the algo-order list it read so manageVenueStopPerp can reuse it instead of fetching the
+  // same symbol twice on the same bar: this now runs on every managed bar, and each
+  // fetchOpenAlgoOrders carries ccxt's 10s default timeout under the host's decide() wall-clock
+  // backstop of AGENTIC_TIMEOUT_MS + 2s (92s as deployed — trading-runtime.module.ts's
+  // agentTimeoutMs), whose overrun drops the bar and feeds auto-DRAIN. 'read-failed' says the venue read itself threw,
+  // so the caller skips its own retry (one failed read, one 'reconcile_error', not two of each);
+  // `undefined` means there is simply no usable list — never fetched, or this sweep cancelled
+  // something and its own snapshot is now stale — and the caller reads for itself, as before.
+  private async reconcileOrphanedAlgoStop(
+    input: AgentDecisionInput,
+    context: AgentContext,
+  ): Promise<readonly AlgoOrderState[] | 'read-failed' | undefined> {
+    if (!this.venueStopEnabled || !this.isPerpVenue()) return undefined;
+    if (!this.algoOrders?.fetchOpenAlgoOrders || !this.planStopRegistry) return undefined;
     const key = positionKey(this.id, this.venue, this.symbol);
-    if (this.planStopRegistry.get(key) !== undefined) return; // already adopted this session
+    const registryEntry = this.planStopRegistry.get(key);
 
     let open: readonly AlgoOrderState[];
     try {
@@ -2100,58 +2340,109 @@ export class AgenticStrategy implements AsyncStrategy {
       // failure direction as the rest of this lane. Same label manageVenueStopPerp's identical
       // fetch failure already emits, so both rails' read failures land on one series.
       this.onVenueStop?.('reconcile_error');
-      return;
+      return 'read-failed';
     }
-    // Every guard above is satisfied and the venue answered: this is the only evidence the
-    // no-active-plan reconcile path executes at all. Without it a zero on the labels below is
-    // indistinguishable from the path never running.
+    // Every guard above is satisfied and the venue answered: this is the only evidence this reconcile
+    // path executes at all. Without it a zero on the labels below is indistinguishable from the path
+    // never running. It is NOT evidence of health on its own — roleForOrder resolves 'unknown' on any
+    // boot without an intent store, which makes every classification below a no-op.
     this.onVenueStop?.('orphan_scan');
-    let ours: AlgoOrderState | undefined;
+    const vslOrders: AlgoOrderState[] = [];
     for (const o of open) {
       if (o.clientAlgoId === undefined) continue;
-      if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') {
-        ours = o;
-        break;
-      }
+      if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') vslOrders.push(o);
     }
-    if (ours === undefined) return; // nothing stranded
+    if (vslOrders.length === 0) return open; // nothing stranded
 
     if (context.position.side === 'LONG' || context.position.side === 'SHORT') {
-      // Branch (a) — re-adopt: it IS our stop for the CURRENT position (preferred per the finding —
-      // cancelling and re-placing would leave a real gap the re-adopt avoids entirely). Seeded off
-      // the resting order's OWN triggerPrice, never a re-derived entry×(1∓stopLossPct) — there is no
-      // active plan to re-derive that from post-restart, and the venue's own resting price is the
-      // more accurate truth anyway. Immediately unblocks ProtectiveExitService's watcher/force-band,
-      // without waiting for the model's next consult to re-attach a plan.
-      this.planStopRegistry.set(key, {
-        side: context.position.side,
-        stopPrice: ours.triggerPrice,
-        venueStopResting: true,
-        algoId: ours.algoId,
-      });
-      this.onVenueStop?.('orphan_readopt');
-      return;
+      if (vslOrders.length === 1) {
+        // A lone candidate is never cancelled while positioned — it is either this position's own
+        // stop or the only protection it has left, and no evidence available here separates those.
+        // Re-adopt it only when nothing else is tracking it (no plan in memory AND no registry row):
+        // with a plan active, manageVenueStopPerp confirms it later in this same bar off the stop
+        // price setPlanStop seeded, and overwriting that with the venue's trigger here would split
+        // the watcher's crossing check from the executor's own bar-close check.
+        const only = vslOrders[0];
+        if (this.activePlan === null && registryEntry === undefined && only !== undefined) {
+          // Seeded off the resting order's OWN triggerPrice, never a re-derived
+          // entry×(1∓stopLossPct) — there is no active plan to re-derive that from post-restart, and
+          // the venue's own resting price is the more accurate truth anyway. Immediately unblocks
+          // ProtectiveExitService's watcher/force-band, without waiting for the model's next consult.
+          this.planStopRegistry.set(key, {
+            side: context.position.side,
+            stopPrice: only.triggerPrice,
+            venueStopResting: true,
+            algoId: only.algoId,
+          });
+          this.onVenueStop?.('orphan_readopt');
+        }
+        return open;
+      }
+
+      // Two or more candidates protect ONE position: all but one are stale. Cancelling requires
+      // knowing which one is current, and the registry's confirmed algoId (written only once a
+      // placement is observed resting) is the only fact here that can say so.
+      const expectedAlgoId = registryEntry?.algoId;
+      if (expectedAlgoId === undefined || !vslOrders.some((o) => o.algoId === expectedAlgoId)) {
+        this.logger.warn(
+          `venue-stop orphan scan: ${vslOrders.length} resting algo stops for ${this.symbol} while positioned ${context.position.side}, none matching a confirmed algoId — leaving all resting (cancelling the wrong one would strand the position)`,
+        );
+        return open;
+      }
+      if (!this.algoOrders.cancelAlgoOrder) return open;
+      let canceledAny = false;
+      for (const o of vslOrders) {
+        if (o.algoId === expectedAlgoId) continue; // never the order this position is relying on
+        try {
+          await this.algoOrders.cancelAlgoOrder(o.algoId, this.symbol);
+          this.onVenueStop?.('orphan_cancel');
+          canceledAny = true;
+        } catch {
+          // Best-effort per order — see cancelPerpAlgoStopIfResting's own comment on the failure
+          // direction; a failed cancel is simply retried by a later sweep.
+          this.onVenueStop?.('orphan_cancel_failed');
+        }
+      }
+      // journalAlgoStopCanceled is symbol-scoped (it asks the venue's algo-history rail about every
+      // non-terminal order for this symbol), so one call covers everything this sweep cancelled.
+      if (canceledAny) void this.journalAlgoStopCanceled();
+      return canceledAny ? undefined : open;
     }
 
-    // Branch (b) — flat: the position this stop protected is gone (closed some other way while this
-    // strategy had no active plan tracking it) — a genuine orphan with nothing left to protect.
-    // Best-effort cancel, same fail-safe direction as cancelPerpAlgoStopIfResting (never blocks
-    // decide(); a cancel failure here is retried on a later bar since nothing was adopted).
-    if (!this.algoOrders.cancelAlgoOrder) return;
-    try {
-      await this.algoOrders.cancelAlgoOrder(ours.algoId, this.symbol);
-    } catch {
-      // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction. The
-      // emit is what makes the swallow readable: without it a zero on 'orphan_cancel' cannot
-      // distinguish "never matched" from "matched and the cancel threw". Returns rather than falling
-      // through, so ONE cancel can never emit both this label and the success label below.
-      this.onVenueStop?.('orphan_cancel_failed');
-      return;
+    // FLAT: whatever these protected is gone (closed some other way while no plan tracked it), so
+    // every candidate is a genuine orphan — cancel them all.
+    //
+    // Gated on the RAW position rather than context.position.side, which buildContext reclassifies
+    // to FLAT for a sub-minNotional DUST holding: a reduce-only PERP stop is EXEMPT from minNotional
+    // (domain/trading/risk/evaluate.ts's minNotionalExempt), so a dust perp position is still
+    // protectable and a stop on it would still fill — the dust view is a prompt-side convenience,
+    // never evidence that nothing is left to protect. Cancelling a live position's protective stop
+    // is irreversible-adjacent, so this FAILS CLOSED: any non-zero row for this symbol leaves every
+    // candidate resting and defers to manageVenueStop, which is the only path allowed to re-price
+    // one. manageVenueStop itself never re-places for a dust position (it needs LONG/SHORT), so the
+    // exposure this refuses to create — a naked dust position — stays refused rather than repaired.
+    const rawPositionHeld = [...input.snapshot.portfolio.positions.values()].some(
+      (p) => p.symbol === this.symbol && !p.signedQty.isZero(),
+    );
+    if (rawPositionHeld) return open;
+    if (!this.algoOrders.cancelAlgoOrder) return open;
+    let canceledAny = false;
+    for (const o of vslOrders) {
+      try {
+        await this.algoOrders.cancelAlgoOrder(o.algoId, this.symbol);
+        // Emitted outside the catch deliberately: the two labels stay mutually exclusive by
+        // construction, not by the recorder happening to swallow its own throws.
+        this.onVenueStop?.('orphan_cancel');
+        canceledAny = true;
+      } catch {
+        // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction. The
+        // emit is what makes the swallow readable: without it a zero on 'orphan_cancel' cannot
+        // distinguish "never matched" from "matched and the cancel threw".
+        this.onVenueStop?.('orphan_cancel_failed');
+      }
     }
-    // Outside the try deliberately: the two labels are mutually exclusive by construction, not by
-    // the recorder happening to swallow its own throws.
-    this.onVenueStop?.('orphan_cancel');
-    void this.journalAlgoStopCanceled();
+    if (canceledAny) void this.journalAlgoStopCanceled();
+    return canceledAny ? undefined : open;
   }
 
   // Shared placement-signal shape for both rails — PositionSizerService's isRestingStopExit branch
@@ -2257,8 +2548,10 @@ export class AgenticStrategy implements AsyncStrategy {
   // then fetchOpenAlgoOrders + the algo-history reads per candidate) against an exchange client with
   // no configured timeout, so ccxt's 10s default applies PER CALL; the callers that would await it
   // are (1) the cancel-first path, which holds a risk-reducing exit Signal it must not delay while
-  // the position sits unprotected, and (2) reconcileOrphanedAlgoStop, which runs inside a 2s
-  // non-LLM decide() budget whose overrun drops the whole bar's result and trips auto-DRAIN. No
+  // the position sits unprotected, and (2) reconcileOrphanedAlgoStop, which runs inside the host's
+  // decide() wall-clock backstop of AGENTIC_TIMEOUT_MS + 2s (92s as deployed — see
+  // trading-runtime.module.ts's agentTimeoutMs) whose overrun drops the whole bar's result and trips
+  // auto-DRAIN, a budget several sequential 10s reads can genuinely exhaust. No
   // call site reads the verdict, so nothing is lost by not waiting. Never rejects (the catch below
   // is total), so a bare `void` cannot leak an unhandled rejection. The one asymmetry deliberately
   // preserved: a failed FOLD leaves the order non-terminal (foldVenueTerminal's own

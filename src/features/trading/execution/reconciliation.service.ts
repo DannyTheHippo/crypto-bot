@@ -985,8 +985,25 @@ export class ReconciliationService {
     }
   }
 
-  /** Lookback for closed-order trade recovery when the running trades checkpoint is past the fill. */
-  private static readonly ADOPT_CLOSED_LOOKBACK_MS = 7 * 86_400_000;
+  // Lookback for closed-order trade recovery when the running trades checkpoint is past the fill.
+  // 6 days, deliberately INSIDE ccxt's 7-day client-side cap for linear markets (pinned 4.5.58,
+  // js/src/binance.js fetchMyTrades: endTime = min(since + 7d, now) once now - since >= 7d) — the
+  // SAME headroom source as MAX_TRADE_LOOKBACK_MS below (staying under the cap keeps ccxt from
+  // deriving an endTime off a `now` read a round trip earlier, which could truncate the newest
+  // trades), but NOT the identical reason: MAX_TRADE_LOOKBACK_MS is a FLOOR under an unrelated
+  // `since` (Math.max below, in reconcileTrades) — it can only widen a window. This constant is the
+  // SOLE `since` for this query, so narrowing it from 7d to 6d strictly shrinks the recoverable
+  // range at the old end.
+  //
+  // FAILURE DIRECTION — accepted cost, not a floor: a venue-side terminal (fill) older than 6 days
+  // but within 7 was recoverable before this narrowing (ccxt still clamped endTime to `now`, so the
+  // window was effectively [now-7d, now]); after it, that fill sits outside [now-6d, now] and
+  // backfillClosedOrderTrades matches nothing. adoptTerminal then bumps adopt_non_adoptable
+  // (ACTIONABLE) on every later pass, which persistently blocks lastCleanAt and with it
+  // RecoveryCoordinatorService's auto-resume — loud and repeated, never a silent strand and never a
+  // blind resubmit. A >6d reconciler gap is live-plausible on this host's sleep duty cycle, so this
+  // 6-7d band is a real, accepted cost of the 7d-cap headroom above, not a hypothetical.
+  private static readonly ADOPT_CLOSED_LOOKBACK_MS = 6 * 86_400_000;
 
   private async backfillClosedOrderTrades(
     exchange: ExchangePort,

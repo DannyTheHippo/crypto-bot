@@ -76,5 +76,9 @@ export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<strin
   ['APT/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
   ['ARB/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
   ['OP/USDT', { tickSize: '0.0001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
-  ['FIL/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  // FIL/USDT tickSize corrected 0.001->0.0001 (2026-08-04): the 2026-07-18 probe pass missed this
+  // row — caught by the boot-time filters-drift-check guard's own live reading at boot
+  // (`FIL/USDT tickSize table=0.001 venue=0.0001`; research/loop/STATUS.md:82, LOG.md:866),
+  // refusing the symbol on a 10x tick mismatch until the table was fixed (defect #146).
+  ['FIL/USDT', { tickSize: '0.0001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
 ]);

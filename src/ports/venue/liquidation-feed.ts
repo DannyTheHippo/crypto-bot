@@ -21,10 +21,13 @@ export interface LiquidationSnapshot {
 }
 
 export interface LiquidationFeedPort {
-  // null ONLY while the stream itself is down (never started, or currently erroring/reconnecting —
-  // see streamHealthy()). A HEALTHY stream with zero liquidation events in the trailing window still
-  // answers a snapshot (count: 0, liqNotionalUsd: 0, longShareOfLiqs: null) — "quiet market" and
-  // "dead stream" are deliberately NOT the same absence (the brief's own distinction).
+  // null while the stream itself is down (never started, or currently erroring/reconnecting — see
+  // streamHealthy()), OR while this deployment subscribes no perp market for the symbol (never
+  // configured, or pruned at runtime because the venue rejected it as unlisted — e.g. a spot-only
+  // listing with no perp sibling). A HEALTHY stream that IS subscribed to the symbol's perp market
+  // and simply saw zero liquidation events in the trailing window still answers a snapshot (count: 0,
+  // liqNotionalUsd: 0, longShareOfLiqs: null) — "quiet market" and "no measurement" are deliberately
+  // NOT the same absence (the brief's own distinction).
   latest(symbol: SymbolId): LiquidationSnapshot | null;
   // Feed-wide (not per-symbol) stream health — true once the watch loop is running without an
   // unrecovered error, false while actively backing off before a reconnect attempt.

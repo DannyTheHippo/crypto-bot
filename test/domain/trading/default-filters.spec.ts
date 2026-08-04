@@ -110,6 +110,15 @@ describe('DEFAULT_FILTERS', () => {
       minQty: '1',
       minNotional: '1',
     });
+    // FIL/USDT was the one row the 2026-07-18 probe pass missed (transcription error, tickSize
+    // 10x too coarse) — corrected 2026-08-04 per the boot-time filters-drift-check guard's own
+    // live reading (research/loop/STATUS.md:82, LOG.md:866).
+    expect(DEFAULT_FILTERS.get('FIL/USDT')).toEqual({
+      tickSize: '0.0001',
+      stepSize: '0.01',
+      minQty: '0.01',
+      minNotional: '5',
+    });
   });
   it('has no entries beyond the demo universe', () => {
     expect(DEFAULT_FILTERS.get('MATIC/USDT')).toBeUndefined();

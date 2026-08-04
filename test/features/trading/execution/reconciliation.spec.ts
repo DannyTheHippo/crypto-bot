@@ -1118,6 +1118,35 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.halted).toBe(false);
   });
 
+  // Same trap Pass 60 fixed for the sibling MAX_TRADE_LOOKBACK_MS floor (see the census comment
+  // above it), left open here: pinned ccxt 4.5.58 derives endTime = min(since + 7d, now) once
+  // now - since >= 7d for a linear market, and equality alone satisfies >=. An exact-7d lookback
+  // therefore always collapses `endTime` to a `now` read before loadMarkets/signing/the network
+  // round trip, silently truncating the newest trades — including possibly the fill this backfill
+  // exists to recover — with no thrown error (empty-array success).
+  it("floors the closed-order backfill lookback strictly inside ccxt's 7-day linear-market cap, never at it", async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => venueOrder(coid, 'closed'),
+      trades: [],
+    });
+    seedOpenOrder(ctx, coid);
+    await ctx.recon.reconcile();
+    // Two DISTINCT fetchMyTrades calls are expected: reconcileOpenOrders' adoptTerminal →
+    // backfillClosedOrderTrades (axis 1) runs before reconcileTrades (axis 2, reconcileEveryVenue),
+    // so index 0 is the backfill's own `since`. The length assertion is load-bearing, not
+    // decorative: on this cold checkpoint both axes independently floor to the SAME T-6d (axis 2 via
+    // the unrelated MAX_TRADE_LOOKBACK_MS floor), so checking index 0's VALUE alone cannot tell
+    // "backfill ran and computed 6d" apart from "backfill was skipped entirely and index 0 is really
+    // axis 2's call" — asserting exactly 2 calls happened is what proves the backfill's own call is
+    // genuinely present (a regression that dropped it would collapse this to length 1).
+    expect(ctx.tradeSinceCalls).toHaveLength(2);
+    const since = ctx.tradeSinceCalls[0]!;
+    expect(T - since).toBe(6 * 86_400_000);
+    expect(T - since).toBeLessThan(7 * 86_400_000);
+  });
+
   it('a "closed" order whose local record never captured a venueOrderId refuses via adopt_non_adoptable rather than guessing which trades are its own', async () => {
     const intent = makeIntent();
     const coid = intent.clientOrderId;

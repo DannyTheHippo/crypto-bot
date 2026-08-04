@@ -168,6 +168,65 @@ describe('TradeFlowFeedService', () => {
     expect(svc.lastSuccessfulPollAt()).not.toBeNull();
   });
 
+  // defect-145-class (2026-08-04): storage keyed spot-form while every perp strategy instance
+  // queries with its own perp-form this.symbol — 0 of 1215 post-epoch perp agent_decisions rows
+  // ever carried a tradeFlow block while all 644 spot rows did (live agent_decisions query, cutoff
+  // 2026-07-21 11:21 UTC).
+  describe('spot/perp key normalisation', () => {
+    it('a perp-form caller (BTC/USDT:USDT) receives the snapshot stored under the spot symbol it was polled for', async () => {
+      const { clock } = mutableClock();
+      const rows = [klineRow('100', '60', 0), klineRow('999', '999', 900_000)];
+      const svc = new TradeFlowFeedService(fixtureSource(rows), {
+        symbols: [SYM],
+        interval: '15m',
+        lookbackBars: 1,
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const perpSnap = svc.latest(symbolId('BTC/USDT:USDT'));
+
+      expect(perpSnap).not.toBeNull();
+      expect(perpSnap).toEqual(svc.latest(SYM));
+    });
+
+    it('a perp symbol with no spot sibling ever subscribed (HYPE/USDT:USDT) answers null', async () => {
+      const { clock } = mutableClock();
+      const rows = [klineRow('100', '60', 0), klineRow('999', '999', 900_000)];
+      const svc = new TradeFlowFeedService(fixtureSource(rows), {
+        symbols: [SYM], // only BTC/USDT is subscribed — HYPE/USDT never configured
+        interval: '15m',
+        lookbackBars: 1,
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(symbolId('HYPE/USDT:USDT'))).toBeNull();
+    });
+
+    it('staleness (STALE_POLL_MULTIPLE) applies through the normalised path for a perp-form caller too', async () => {
+      const { clock, set } = mutableClock(1_000_000);
+      const rows = [klineRow('100', '60', 0), klineRow('999', '999', 900_000)];
+      const svc = new TradeFlowFeedService(fixtureSource(rows), {
+        symbols: [SYM],
+        interval: '15m',
+        lookbackBars: 1,
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const perpSym = symbolId('BTC/USDT:USDT');
+      expect(svc.latest(perpSym)).not.toBeNull();
+
+      set(1_000_000 + 60_000 * 2 + 1);
+      expect(svc.latest(perpSym)).toBeNull();
+    });
+  });
+
   it('answers null (never a garbage snapshot) when there are no closed rows at all', async () => {
     const { clock } = mutableClock();
     // Only the still-forming row — dropped, leaving zero closed bars.

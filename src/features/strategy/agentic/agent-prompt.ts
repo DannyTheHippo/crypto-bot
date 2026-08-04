@@ -695,7 +695,7 @@ export function buildSystemPrompt(
       : []),
     ...(tradeFlowFeedEnabled
       ? [
-          "The user message may include a tradeFlow block with barImbalance (the most recent closed bar's taker buy-vs-sell volume skew, -1..1), cvd (the cumulative volume delta over the last lookbackBars bars), cvdDeltas (the per-bar CVD delta for roughly the last 8 closed bars, oldest-first), and divergence ('bullish_divergence' when price fell but CVD rose over that same window, 'bearish_divergence' for the mirror, null otherwise) — positive cvd/delta values mean aggressive buying dominated; divergence is a MODULATOR on conviction, never a standalone entry trigger; it is omitted when no fresh trade-flow snapshot is available.",
+          "The user message may include a tradeFlow block with barImbalance (the most recent closed bar's taker buy-vs-sell volume skew, -1..1), cvd (the cumulative volume delta over the last lookbackBars bars), cvdDeltas (the per-bar CVD delta for roughly the last 8 closed bars, oldest-first), and divergence ('bullish_divergence' when price fell but CVD rose over that same window, 'bearish_divergence' for the mirror, null otherwise) — measured on the SPOT market for this base asset, so for a perpetual-futures symbol it is the spot sibling's flow, not the perp's own; positive cvd/delta values mean aggressive buying dominated; divergence is a MODULATOR on conviction, never a standalone entry trigger; it is omitted when no fresh trade-flow snapshot is available.",
         ]
       : []),
     ...(positioningFeedEnabled

@@ -107,6 +107,18 @@ function perpSymbolFor(symbol: SymbolId): string {
   return `${base}/${quote}:${quote}`;
 }
 
+// BASE/QUOTE:SETTLE (perp) or BASE/QUOTE (already spot) -> BASE/QUOTE — the inverse direction from
+// perpSymbolFor, used to ask the SPOT client for the spot market (splitSymbol drops any :SETTLE
+// suffix regardless of which form it's given, so this is idempotent on an already-spot symbol).
+// Load-bearing: ccxt 4.5.58's `binance` class (PINNED) also loads linear-swap markets
+// (node_modules/ccxt/js/src/binance.js:1324-1330 fetchMarkets types incl. 'linear'), so calling
+// fetchTicker with the PERP form on the spot client silently resolves to the LINEAR market
+// (binance.js:4395 `else if (market['linear'])`) instead of throwing — the bug this helper fixes.
+function spotSymbolFor(symbol: SymbolId): string {
+  const { base, quote } = splitSymbol(symbol);
+  return `${base}/${quote}`;
+}
+
 export interface DerivativesFeedOptions {
   readonly symbols: readonly SymbolId[];
   readonly pollIntervalMs: number;
@@ -130,6 +142,11 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
   private errorCount = 0;
   // Perp symbols the venue permanently lacks (process-lifetime exclusion — see pollOne).
   private readonly venueUnlisted = new Set<string>();
+  // Spot symbols the venue permanently lacks a ticker for (e.g. a perp-only listing with no spot
+  // pair at all, such as HYPE/USDT or KAITO/USDT) — the SAME process-lifetime-exclusion pattern as
+  // venueUnlisted above, just triggered from fetchSpotTicker's rejection rather than pollOne's, so
+  // one of this deployment's most-consulted perp symbols does not warn on every 60s poll forever.
+  private readonly spotUnlisted = new Set<string>();
   // d2 accumulation buffers — populated on EVERY successful poll regardless of
   // AGENTIC_DERIVATIVES_V2_ENABLED (see V2_LOOKBACK_MS's comment and this file's class header).
   private readonly oiHistory = new Map<SymbolId, TrendSample[]>();
@@ -194,18 +211,20 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
     // same class as the liquidation-feed prune).
     if (this.venueUnlisted.has(perpSymbol)) return;
     try {
-      // d2: the spot ticker rides the SAME Promise.all as funding/OI — a spot-fetch failure fails
-      // the whole poll (existing catch below), rather than a silently-partial v2-less snapshot.
-      // ADD-A: recentFundingRates does NOT ride this array — fetchRecentFundingRates swallows its
-      // own errors (never rejects), so a history-fetch failure degrades only the new fundingHistory
-      // block rather than wiping the whole snapshot (fail-open measurement, unlike the co-required
-      // funding/OI/ticker triple above).
+      // d2: the spot ticker is fetched via fetchSpotTicker below, which never rejects — a
+      // spot-fetch failure (e.g. a perp-launched symbol with no spot listing at all, HYPE/USDT:USDT
+      // and KAITO/USDT:USDT per TRADE_FLOW_SPOT_SKIP in context-feeds.module.ts) degrades only
+      // spotPerpBasisBps rather than discarding the co-required funding/OI snapshot. This is a
+      // reference/measurement field, not a money path: it fails OPEN toward omitting the derived
+      // value. Isolating it also keeps a spot-side rejection out of the catch below, so the
+      // venue-unlisted classifier can only ever fire on a genuine perp-market (funding/OI) error.
+      // ADD-A: recentFundingRates does NOT ride this array either — fetchRecentFundingRates swallows
+      // its own errors (never rejects), so a history-fetch failure degrades only the new
+      // fundingHistory block rather than wiping the whole snapshot.
       const [funding, oi, ticker, recentFundingRates] = await Promise.all([
         this.source.fetchFundingRate(perpSymbol),
         this.source.fetchOpenInterest(perpSymbol),
-        this.source.fetchTicker
-          ? this.source.fetchTicker(String(symbol))
-          : Promise.resolve(undefined),
+        this.fetchSpotTicker(symbol),
         this.fetchRecentFundingRates(perpSymbol),
       ]);
       const snapshot = this.toSnapshot(symbol, funding, oi, ticker, recentFundingRates);
@@ -214,6 +233,10 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
         this.lastSuccessAt = snapshot.asOf;
       }
     } catch (err) {
+      // Only fetchFundingRate/fetchOpenInterest can reach this catch — fetchSpotTicker and
+      // fetchRecentFundingRates catch their own rejections above — so this message match can only
+      // originate from a perp-market call and never misattributes a spot-side rejection as the perp
+      // market being unlisted.
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes(`does not have market symbol ${perpSymbol}`)) {
         this.venueUnlisted.add(perpSymbol);
@@ -224,6 +247,42 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
       }
       this.errorCount += 1;
       this.options.logger?.warn(`derivatives-feed poll failed for ${perpSymbol}: ${msg}`);
+    }
+  }
+
+  // d2 true spot-perp basis: fetches the spot ticker via spotSymbolFor (never the raw configured
+  // symbol, which may already be in perp form — see spotSymbolFor's header comment for the ccxt
+  // resolution gotcha this avoids). Never throws/rejects, mirroring fetchRecentFundingRates below:
+  // a failure (no spot market for this symbol, or the source lacking fetchTicker) resolves undefined
+  // so spotPerpBasisBps comes out null without risking the co-required funding/OI snapshot.
+  private async fetchSpotTicker(symbol: SymbolId): Promise<{ last?: string | number } | undefined> {
+    if (!this.source.fetchTicker) return undefined;
+    const spotSymbol = spotSymbolFor(symbol);
+    // Permanent spot-listing gap (mirrors venueUnlisted's own comment) — retrying every poll cycle
+    // for a symbol that can never answer is pure log spam, so it is excluded once and for the
+    // process lifetime. spotPerpBasisBps degrades to null; the co-required funding/OI snapshot is
+    // untouched (this method's return is already isolated from pollOne's catch for that reason).
+    if (this.spotUnlisted.has(spotSymbol)) return undefined;
+    try {
+      return await this.source.fetchTicker(spotSymbol);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // endsWith, not includes: ccxt's BadSymbol message puts the symbol at the very end, and the
+      // spot form is a PREFIX of the perp form (e.g. 'BTC/USDT' of 'BTC/USDT:USDT') — an includes()
+      // match would misfire on a rejection that actually named the perp market.
+      if (msg.endsWith(`does not have market symbol ${spotSymbol}`)) {
+        this.spotUnlisted.add(spotSymbol);
+        this.options.logger?.warn(
+          `derivatives-feed: excluding ${spotSymbol} from spot-ticker polling — venue has no such spot market (perp-only listing)`,
+        );
+        return undefined;
+      }
+      // Log the symbol actually queried (the spot form) — `symbol` here may be the configured
+      // PERP form (perpSymbolFor/spotSymbolFor's own header comments), which was never asked for.
+      this.options.logger?.warn(
+        `derivatives-feed spot-ticker poll failed for ${spotSymbol}: ${msg}`,
+      );
+      return undefined;
     }
   }
 

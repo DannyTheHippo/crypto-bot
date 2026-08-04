@@ -98,6 +98,12 @@ const NOOP_LIQUIDATION_FEED: LiquidationFeedPort = {
 
 // v3: the stage-1 HYPE/KAITO fail-open residual (spot klines gap on these two perp-launched
 // symbols) becomes an explicit skip list, derived at boot, rather than a silent per-call fail-open.
+// Stays a structural no-op against tradeFlowSymbols' own SPOT_VENUE-only input (HYPE/USDT and
+// KAITO/USDT, being perp-launched, can never appear in that descriptor's symbol list) — the
+// trade-flow-feed keying fix (trade-flow-feed.service.ts, 2026-08-04) normalises the READ side
+// (a perp-form caller now resolves to the same spot-form key a spot-form caller does), which is
+// orthogonal to what gets WRITTEN here: this list only ever prunes symbols out of the write side's
+// own already-spot-only input.
 const TRADE_FLOW_SPOT_SKIP = new Set(['HYPE/USDT', 'KAITO/USDT']);
 
 // X4 residual: derives the CryptoPanic `currencies` filter from the deployment's OWN traded basket —
@@ -207,9 +213,16 @@ function buildLiquidationWatchSource(): LiquidationWatchSource {
         readonly {
           readonly symbol: string;
           readonly side: string;
-          readonly quoteValue?: number;
-          readonly contracts?: number;
-          readonly price?: number;
+          // string | number: this client is constructed with `number: String` in the enclosing
+          // buildLiquidationWatchSource (CLAUDE.md rule 1), so ccxt's safeLiquidation delivers every parsed numeric as a STRING
+          // at runtime even though its .d.ts declares number — the same contract
+          // derivatives-feed.service.ts's DerivativesRestSource already types around. Annotating
+          // these as `number` was the assertion behind the 2026-08-04 defect: LiquidationFeedService
+          // tested `typeof v === 'number'` and so read every priced event as unpriced, which made
+          // liqNotionalUsd structurally incapable of ever being non-zero.
+          readonly quoteValue?: string | number;
+          readonly contracts?: string | number;
+          readonly price?: string | number;
           readonly timestamp?: number;
         }[]
       >,

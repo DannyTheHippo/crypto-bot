@@ -66,11 +66,17 @@ describe('LiquidationFeedService', () => {
     // defect-145 regression: SYM is perp-form (the one production actually configures). The prior
     // record() converted the incoming perp event DOWN to spot before checking membership against a
     // perp-form options.symbols, so this exact scenario silently accumulated nothing.
+    //
+    // 2026-08-04 defect: quoteValue/contracts/price arrive as ccxt numeric STRINGS at runtime (the
+    // client is constructed with `number: String`, CLAUDE.md rule 1 — see LiquidationEvent's own
+    // comment), so string fixtures are the PRIMARY/default shape here, not the number-literal
+    // afterthought the suite used to carry exclusively (the same test-double-diverges-from-real-
+    // adapter shape defect-145 already documents for this file).
     const { clock } = mutableClock();
     const source = queuedSource([
       [
-        { symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 10_000 }, // long liquidated
-        { symbol: 'BTC/USDT:USDT', side: 'buy', quoteValue: 5_000 }, // short liquidated
+        { symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '10000' }, // long liquidated
+        { symbol: 'BTC/USDT:USDT', side: 'buy', quoteValue: '5000' }, // short liquidated
       ],
     ]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
@@ -92,6 +98,9 @@ describe('LiquidationFeedService', () => {
     // The agentic strategy queries latest() with the SPOT symbol (agentic.strategy.ts's this.symbol)
     // while the composition root configures/subscribes this service in PERP form — both must
     // normalize to the same key via perpSymbolFor, or a real consult reads an empty window forever.
+    // A number-literal quoteValue here (unlike the string-default fixtures elsewhere in this file) —
+    // asFiniteNumber accepts both shapes, and this test's own concern is key normalization, not
+    // pricing, so it doubles as the suite's number-literal coverage.
     const { clock } = mutableClock();
     const source = queuedSource([[{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 10_000 }]]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
@@ -139,10 +148,17 @@ describe('LiquidationFeedService', () => {
     svc.stop();
   });
 
-  it('falls back to contracts * price when quoteValue is absent', async () => {
+  // 2026-08-04 defect: ccxt (constructed with `number: String`, CLAUDE.md rule 1) delivers contracts
+  // and price as numeric STRINGS at runtime, not the `number` its .d.ts (and this repo's own prior
+  // LiquidationEvent typing) claimed. asFiniteNumber used to gate on `typeof v === 'number'` and so
+  // rejected every real venue value, forcing toNotionalUsd's `: 0` fallback unconditionally — a
+  // string-valued fixture here is what production actually sends, and is what proves the fix (a
+  // number-literal-only fixture, like this suite carried before, cannot catch this: it never exercises
+  // the branch that was broken).
+  it('falls back to contracts * price when quoteValue is absent, from ccxt STRING-valued fields', async () => {
     const { clock } = mutableClock();
     const source = queuedSource([
-      [{ symbol: 'BTC/USDT:USDT', side: 'sell', contracts: 2, price: 100 }],
+      [{ symbol: 'BTC/USDT:USDT', side: 'sell', contracts: '2', price: '100' }],
     ]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
 
@@ -150,6 +166,58 @@ describe('LiquidationFeedService', () => {
     await flushMicrotasks();
 
     expect(svc.latest(SYM)!.liqNotionalUsd).toBe(200);
+    svc.stop();
+  });
+
+  it('a string-valued quoteValue prices the event instead of falling through to the 0 fallback', async () => {
+    const { clock } = mutableClock();
+    const source = queuedSource([[{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '10000' }]]);
+    const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
+
+    svc.start();
+    await flushMicrotasks();
+
+    const snap = svc.latest(SYM)!;
+    expect(snap.count).toBe(1);
+    expect(snap.liqNotionalUsd).toBe(10_000);
+    svc.stop();
+  });
+
+  it('longShareOfLiqs becomes non-null once string-valued events are recorded (pre-fix: gated on total > 0, which a permanently-zero total could never clear)', async () => {
+    const { clock } = mutableClock();
+    const source = queuedSource([
+      [
+        { symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '10000' },
+        { symbol: 'BTC/USDT:USDT', side: 'buy', quoteValue: '5000' },
+      ],
+    ]);
+    const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
+
+    svc.start();
+    await flushMicrotasks();
+
+    const snap = svc.latest(SYM)!;
+    expect(snap.longShareOfLiqs).not.toBeNull();
+    expectCloseTo(snap.longShareOfLiqs!, 10_000 / 15_000, 10);
+    svc.stop();
+  });
+
+  it('a genuinely uncomputable event (garbage/absent fields) contributes 0, without corrupting the sum of the events that WERE priced', async () => {
+    const { clock } = mutableClock();
+    const source = queuedSource([
+      [
+        { symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '10000' }, // priced
+        { symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 'not-a-number' }, // garbage, uncomputable
+      ],
+    ]);
+    const svc = new LiquidationFeedService(source, { symbols: [SYM], clock });
+
+    svc.start();
+    await flushMicrotasks();
+
+    const snap = svc.latest(SYM)!;
+    expect(snap.count).toBe(2); // both events still counted
+    expect(snap.liqNotionalUsd).toBe(10_000); // the uncomputable one contributes 0, never NaN
     svc.stop();
   });
 
@@ -184,7 +252,7 @@ describe('LiquidationFeedService', () => {
     const { clock } = mutableClock();
     const source = queuedSource([
       new Error('ws disconnected'),
-      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 100 }],
+      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '100' }],
     ]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock, backoffMs: 1 });
 
@@ -208,7 +276,7 @@ describe('LiquidationFeedService', () => {
   it('prunes samples older than the rolling window, so an old liquidation stops counting', async () => {
     const { clock, set } = mutableClock(0);
     const source = queuedSource([
-      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 100 }],
+      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '100' }],
       [], // second call lands after the window has been advanced past
     ]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock, windowMin: 60 });
@@ -251,7 +319,7 @@ describe('LiquidationFeedService', () => {
     const warn = vi.fn();
     const source = queuedSource([
       new Error('ws disconnected'),
-      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 100 }],
+      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '100' }],
     ]);
     const svc = new LiquidationFeedService(source, {
       symbols: [SYM],
@@ -315,7 +383,7 @@ describe('LiquidationFeedService', () => {
   it('never warns of zero events once a real event has been recorded', async () => {
     const { clock, set } = mutableClock(0);
     const warn = vi.fn();
-    const source = queuedSource([[{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 100 }]]);
+    const source = queuedSource([[{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: '100' }]]);
     const svc = new LiquidationFeedService(source, { symbols: [SYM], clock, logger: { warn } });
 
     svc.start();

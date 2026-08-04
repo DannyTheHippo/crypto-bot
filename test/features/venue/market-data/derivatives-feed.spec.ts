@@ -244,19 +244,174 @@ describe('DerivativesFeedService', () => {
       expect(svc.latest(SYM)!.spotPerpBasisBps).toBeNull();
     });
 
-    it('a fetchTicker failure fails the whole poll (never a silently partial v2-less snapshot)', async () => {
+    // Fix for the ticker-fetches-perp-market defect (derivatives-feed.service.ts's spotSymbolFor):
+    // the ticker rejection is now caught independently (fetchSpotTicker), so it degrades only
+    // spotPerpBasisBps — never the co-required funding/OI snapshot. This is a reference/measurement
+    // field, not a money path (fails OPEN, per this file's fetchSpotTicker comment).
+    it('a fetchTicker failure degrades only spotPerpBasisBps — never discards the funding/OI snapshot', async () => {
       const { clock } = mutableClock();
+      const warnings: string[] = [];
       const source = fixtureSource({ spotLast: '100', failTicker: true });
       const svc = new DerivativesFeedService(source, {
         symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+        logger: { warn: (m) => warnings.push(m) },
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(SYM);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.fundingRate).toBe(0.0001);
+      expect(snap!.spotPerpBasisBps).toBeNull();
+      expect(svc.pollErrorCount()).toBe(0); // history/ticker failures are not counted as poll errors
+      expect(warnings).toHaveLength(1);
+    });
+
+    it('calls fetchTicker with the SPOT form (BASE/QUOTE) even when the configured symbol is perp form (BASE/QUOTE:QUOTE) — the venue-facing spot/perp mixup this feed guards against', async () => {
+      const { clock } = mutableClock();
+      const PERP_SYM = symbolId('BTC/USDT:USDT');
+      let tickerSymbolArg: string | undefined;
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+        fetchTicker: (symbol: string) => {
+          tickerSymbolArg = symbol;
+          return Promise.resolve({ last: 100 });
+        },
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [PERP_SYM],
         pollIntervalMs: 60_000,
         clock,
       });
 
       await svc.pollAll();
 
-      expect(svc.latest(SYM)).toBeNull();
-      expect(svc.pollErrorCount()).toBe(1);
+      expect(tickerSymbolArg).toBe('BTC/USDT');
+    });
+
+    it('a fetchTicker rejection that happens to match the venue-unlisted message text does not misattribute a perp exclusion — the classifier only ever sees funding/OI rejections', async () => {
+      const { clock } = mutableClock();
+      const PERP_SYM = symbolId('BTC/USDT:USDT');
+      const warnings: string[] = [];
+      let fundingCalls = 0;
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () => {
+          fundingCalls += 1;
+          return Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 });
+        },
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+        fetchTicker: () =>
+          Promise.reject(new Error('binance does not have market symbol BTC/USDT:USDT')),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [PERP_SYM],
+        pollIntervalMs: 60_000,
+        clock,
+        logger: { warn: (m) => warnings.push(m) },
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(PERP_SYM);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.fundingRate).toBe(0.0001);
+      expect(svc.pollErrorCount()).toBe(0);
+      expect(warnings.some((w) => w.includes('excluding'))).toBe(false);
+
+      await svc.pollAll();
+      expect(fundingCalls).toBe(2); // still polled on the second cycle — never excluded via venueUnlisted
+    });
+
+    it('a fetchFundingRate rejection naming the perp symbol still marks it unlisted (regression guard — the real venue-unlisted case)', async () => {
+      const { clock } = mutableClock();
+      const PERP_SYM = symbolId('BTC/USDT:USDT');
+      const warnings: string[] = [];
+      let fundingCalls = 0;
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () => {
+          fundingCalls += 1;
+          return Promise.reject(new Error('binance does not have market symbol BTC/USDT:USDT'));
+        },
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [PERP_SYM],
+        pollIntervalMs: 60_000,
+        clock,
+        logger: { warn: (m) => warnings.push(m) },
+      });
+
+      await svc.pollAll();
+      await svc.pollAll();
+
+      expect(fundingCalls).toBe(1); // excluded after the first cycle — never retried
+      expect(svc.latest(PERP_SYM)).toBeNull();
+      expect(svc.pollErrorCount()).toBe(0); // unlisted exclusion is not counted as a poll error
+      expect(warnings.some((w) => w.includes('excluding'))).toBe(true);
+    });
+
+    it('a symbol with no spot market at all (e.g. perp-launched HYPE/KAITO, TRADE_FLOW_SPOT_SKIP precedent) still yields a usable snapshot carrying funding/OI, with spotPerpBasisBps null', async () => {
+      const { clock } = mutableClock();
+      const HYPE_PERP = symbolId('HYPE/USDT:USDT');
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0002, markPrice: 5, indexPrice: 5 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 999 }),
+        fetchTicker: () =>
+          Promise.reject(new Error('binance does not have market symbol HYPE/USDT')),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [HYPE_PERP],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(HYPE_PERP);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.fundingRate).toBe(0.0002);
+      expect(snap!.openInterest).toBe(999);
+      expect(snap!.spotPerpBasisBps).toBeNull();
+    });
+
+    it('a permanently-absent spot ticker (e.g. HYPE/KAITO, no spot listing at all) warns ONCE across repeated polls, not once per poll, and keeps yielding funding/OI snapshots', async () => {
+      const { clock } = mutableClock();
+      const HYPE_PERP = symbolId('HYPE/USDT:USDT');
+      const warnings: string[] = [];
+      let tickerCalls = 0;
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0002, markPrice: 5, indexPrice: 5 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 999 }),
+        fetchTicker: () => {
+          tickerCalls += 1;
+          return Promise.reject(new Error('binance does not have market symbol HYPE/USDT'));
+        },
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [HYPE_PERP],
+        pollIntervalMs: 60_000,
+        clock,
+        logger: { warn: (m) => warnings.push(m) },
+      });
+
+      await svc.pollAll();
+      await svc.pollAll();
+      await svc.pollAll();
+
+      expect(tickerCalls).toBe(1); // excluded after the first rejection — never retried
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('HYPE/USDT'); // logs the spot symbol actually queried
+      const snap = svc.latest(HYPE_PERP);
+      expect(snap).not.toBeNull();
+      expect(snap!.fundingRate).toBe(0.0002);
+      expect(snap!.openInterest).toBe(999);
+      expect(snap!.spotPerpBasisBps).toBeNull();
     });
 
     it('oiChangePct is null until a second sample lands, then reflects the percent change since the oldest retained sample', async () => {

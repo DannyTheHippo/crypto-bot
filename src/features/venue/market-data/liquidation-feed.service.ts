@@ -30,12 +30,15 @@ const ZERO_EVENT_WARN_MS = 30 * 60_000;
 export interface LiquidationEvent {
   readonly symbol: string;
   readonly side: string;
-  // Notional in quote currency (USDT) — ccxt's safeLiquidation computes this as contracts *
-  // contractSize * price when the market's contractSize is known; falls back to contracts * price
-  // when absent (see toNotionalUsd below).
-  readonly quoteValue?: number;
-  readonly contracts?: number;
-  readonly price?: number;
+  // string | number: constructed with `number: String` (CLAUDE.md rule 1), ccxt returns every parsed
+  // numeric as a string at runtime even though its .d.ts declares number — the same contract
+  // derivatives-feed.service.ts's DerivativesRestSource documents for its own REST fields. Notional in
+  // quote currency (USDT) — ccxt's safeLiquidation computes this as contracts * contractSize * price
+  // when the market's contractSize is known; falls back to contracts * price when absent (see
+  // toNotionalUsd below).
+  readonly quoteValue?: string | number;
+  readonly contracts?: string | number;
+  readonly price?: string | number;
   readonly timestamp?: number;
 }
 
@@ -62,8 +65,17 @@ function perpSymbolFor(symbol: SymbolId): string {
   return `${base}/${quote}:${quote}`;
 }
 
-function asFiniteNumber(v: number | undefined): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+// Reference-grade coercion for a venue liquidation field (string | number per LiquidationEvent's own
+// comment above), never a money path — mirrors trade-flow-feed.service.ts's own asFiniteNumber for
+// raw kline fields (same string-vs-number ccxt shape).
+function asFiniteNumber(v: string | number | undefined): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string') {
+    // eslint-disable-next-line no-restricted-syntax -- Number() coerces a venue liquidation field (reference/display data, never money — see the port's own header comment).
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 // Notional in quote currency for one event — prefers the venue/ccxt-computed quoteValue; falls back

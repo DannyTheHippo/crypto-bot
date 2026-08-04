@@ -36,6 +36,20 @@ function spotMarketIdFor(symbol: SymbolId): string {
   return `${base}${quote}`;
 }
 
+// BASE/QUOTE (e.g. 'BTC/USDT') — the SAME normalisation point a spot-form and a perp-form caller
+// both resolve to, mirroring LiquidationFeedService's own perpSymbolFor, which established the house
+// pattern for exactly this bug class: normalise storage AND lookup
+// through one function so both sides of the membership test agree. Idempotent on an already-spot
+// SymbolId (splitSymbol just discards any :settle suffix). Prior to this fix, storage kept the
+// spot-form key while every perp strategy instance queried with its own perp-form `this.symbol`
+// (e.g. 'BTC/USDT:USDT'), so latest() never matched: 0 of 1215 post-epoch perp
+// `agent_decisions.input_payload` rows ever carried a tradeFlow block (query run 2026-08-04, cutoff
+// 2026-07-21 11:21 UTC), while all 644 spot rows did.
+function spotSymbolFor(symbol: SymbolId): string {
+  const { base, quote } = splitSymbol(symbol);
+  return `${base}/${quote}`;
+}
+
 // Reference-grade coercion for a raw kline field (venue strings/numbers), never a money path.
 function asFiniteNumber(v: unknown): number | null {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -66,15 +80,26 @@ export interface TradeFlowFeedOptions {
  */
 @Injectable()
 export class TradeFlowFeedService implements TradeFlowFeedPort, OnModuleInit, OnModuleDestroy {
-  private readonly snapshots = new Map<SymbolId, TradeFlowSnapshot>();
+  // Keyed by spot-form string (see spotSymbolFor), never the branded SymbolId a caller passes in —
+  // a spot-form and a perp-form caller must resolve to the identical key.
+  private readonly snapshots = new Map<string, TradeFlowSnapshot>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastSuccessAt: EpochMs | null = null;
   private errorCount = 0;
+  // Spot-form subscription index (see spotSymbolFor), checked ahead of the `snapshots` lookup in
+  // latest(). Today `snapshots` is written only by pollOne over this SAME options.symbols list, so a
+  // `snapshots.get` miss already answers null on its own for an unconfigured symbol — this Set is
+  // defence-in-depth, not the thing preventing a fabricated snapshot: it keeps the membership check
+  // correct even if a future write path ever seeds/retains `snapshots` entries outside pollOne's loop
+  // (e.g. persistence, or a config change that shrinks options.symbols without clearing stale keys).
+  private readonly subscribed: Set<string>;
 
   constructor(
     private readonly source: TradeFlowRestSource,
     private readonly options: TradeFlowFeedOptions,
-  ) {}
+  ) {
+    this.subscribed = new Set(this.options.symbols.map((s) => spotSymbolFor(s)));
+  }
 
   onModuleInit(): void {
     this.start();
@@ -100,7 +125,18 @@ export class TradeFlowFeedService implements TradeFlowFeedPort, OnModuleInit, On
   }
 
   latest(symbol: SymbolId): TradeFlowSnapshot | null {
-    const snap = this.snapshots.get(symbol);
+    let spotKey: string;
+    try {
+      spotKey = spotSymbolFor(symbol);
+    } catch {
+      // Malformed symbol on a measurement path (never money/order, per the port's own header
+      // comment) fails OPEN: omit the block rather than throw into the caller.
+      return null;
+    }
+    // No spot-form subscription for this key (never configured, e.g. HYPE/KAITO) — omit the block
+    // rather than answer a fabricated snapshot for a symbol this feed never polls.
+    if (!this.subscribed.has(spotKey)) return null;
+    const snap = this.snapshots.get(spotKey);
     if (!snap) return null;
     const ageMs = this.options.clock.now() - snap.asOf;
     if (ageMs > this.options.pollIntervalMs * STALE_POLL_MULTIPLE) return null;
@@ -131,7 +167,7 @@ export class TradeFlowFeedService implements TradeFlowFeedPort, OnModuleInit, On
       );
       const snapshot = this.toSnapshot(raw);
       if (snapshot) {
-        this.snapshots.set(symbol, snapshot);
+        this.snapshots.set(spotSymbolFor(symbol), snapshot);
         this.lastSuccessAt = snapshot.asOf;
       }
     } catch (err) {

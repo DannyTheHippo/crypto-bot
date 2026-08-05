@@ -169,7 +169,7 @@ AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK=0.3 # sonnet-5 cache reads (~0.1x input)
 AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK=6 # sonnet-5 1h-TTL cache writes (~2x input)
 # Per-model override map so the Opus reflection path bills at Opus rates (fail-closed: unknown
 # models in cost rows price at the most expensive configured rates).
-AGENTIC_TOKEN_PRICES_JSON={"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}
+AGENTIC_TOKEN_PRICES_JSON={"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"},"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}
 # v3 §3.2/§3.3: ONE evidence epoch (the two v2 lane-split epochs — spot 2026-07-20T09:36:00Z, perp
 # 2026-07-20T10:42:00Z — collapsed at the v3 cutover). Stamped 2026-07-21T11:21:00Z at the
 # log-verified flat instant: fresh greenfield DB, both venues reconciling CLEAN

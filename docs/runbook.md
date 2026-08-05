@@ -400,7 +400,8 @@ select max(created_at) from agent_decisions
    and not starts_with(rationale, 'model_refusal:')
    and not starts_with(rationale, 'truncated_max_tokens:')
    and not starts_with(rationale, 'no_tool_use:')
-   and not starts_with(rationale, 'capability_violation:');
+   and not starts_with(rationale, 'capability_violation:')
+   and not starts_with(rationale, 'empty_tool_input:');
 ```
 
 Drop the `not starts_with` lines to see whether the model is answering but producing nothing usable:

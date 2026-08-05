@@ -3,6 +3,7 @@ import { MetricsWrappingAgentClient } from '../../../../src/features/trading/com
 import { DailyLlmBudget } from '../../../../src/features/strategy/agentic/agent-budget';
 import type { AgentMetricsRecorder } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
 import type { AgentDecideOutcome } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
+import { isDegradedDecideRationale } from '../../../../src/domain/strategy/types/decide-rationale';
 import {
   AgentProposeError,
   type AgentClientPort,
@@ -119,6 +120,19 @@ describe('MetricsWrappingAgentClient outcome classification — H4 rationale tag
       },
     });
     expect(outcome).toBe('hold');
+  });
+
+  // Pass 64: empty_tool_input: is a schema_rejected sibling — split out because an empty/absent
+  // tool-input payload is a DIFFERENT defect than a present-but-malformed one (see decide-rationale.
+  // ts's DEGRADED_DECIDE_RATIONALE_TAGS). Explicit branch, same 'hold' outcome as schema_rejected:.
+  it('empty_tool_input: rationale -> hold, and stays a degrade tag excluded from the WATCH-V4-8 liveness stamp', async () => {
+    const rationale = 'empty_tool_input: decisions: expected array, received undefined';
+    const outcome = await outcomeFor({
+      signals: [],
+      decision: { action: 'hold', confidence: 0, rationale },
+    });
+    expect(outcome).toBe('hold');
+    expect(isDegradedDecideRationale(rationale)).toBe(true);
   });
 
   it('budget_exhausted: rationale -> budget_blocked (reuses the pre-existing label)', async () => {

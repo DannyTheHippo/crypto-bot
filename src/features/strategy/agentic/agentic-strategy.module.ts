@@ -43,6 +43,10 @@ const DEFAULT_TOKEN_PRICE_OUTPUT_PER_MTOK = 15;
 // W4+W13: matches environment.config.ts's AGENTIC_TOKEN_PRICE_CACHE_*_PER_MTOK defaults.
 const DEFAULT_TOKEN_PRICE_CACHE_READ_PER_MTOK = 0.3;
 const DEFAULT_TOKEN_PRICE_CACHE_WRITE_PER_MTOK = 6;
+// Pass 64 MUST-FIX C: matches environment.config.ts's AGENTIC_FALLBACK_CONSULT_BARS schema default —
+// threaded into AnthropicAgentClientConfig.fallbackConsultBars so proposeBatch's whole-batch-discard
+// recovery clamp reads the SAME cadence agentic.strategy.ts's own forced-fallback logic uses.
+const DEFAULT_FALLBACK_CONSULT_BARS = 8;
 
 function intEnv(raw: string | undefined, fallback: number): number {
   return new Decimal(raw ?? fallback).toNumber();
@@ -271,6 +275,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_MAX_POSITION_FRACTION_SPOT: agentic.maxPositionFractionSpot,
     AGENTIC_MAX_POSITION_FRACTION_PERP: agentic.maxPositionFractionPerp,
     PERP_LEVERAGE_CAP: config.perp.leverageCap,
+    // Pass 64 MUST-FIX C: sourced off the validated config field (never raw process.env), same
+    // no-drift convention as every other schema-backed AGENTIC_* key in this map — selectAgentClient
+    // threads this into AnthropicAgentClientConfig.fallbackConsultBars.
+    AGENTIC_FALLBACK_CONSULT_BARS: String(agentic.fallbackConsultBars),
   };
 }
 
@@ -658,6 +666,12 @@ export function selectAgentClient(
       // still maps to an exit signal). See the close branch in anthropic-agent-client.ts's
       // buildProposalFromTradeDecision for the measured basis and failure direction.
       planAuthoritativeExits: env['AGENTIC_PLAN_AUTHORITATIVE_EXITS'] === 'true',
+      // Pass 64 MUST-FIX C: threaded through to AnthropicAgentClientConfig.fallbackConsultBars — see
+      // that field's own comment. Absent ⇒ DEFAULT_FALLBACK_CONSULT_BARS (matches the schema default).
+      fallbackConsultBars: intEnv(
+        env['AGENTIC_FALLBACK_CONSULT_BARS'],
+        DEFAULT_FALLBACK_CONSULT_BARS,
+      ),
     },
     fetch,
     new Logger('AnthropicAgentClient'),

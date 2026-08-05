@@ -65,9 +65,18 @@ const PROVES_CALL_COMPLETED_OUTCOMES: ReadonlySet<AgentDecideOutcome> = new Set(
 // measurement lie.
 const CAPABILITY_VIOLATION_KINDS = ['open_short_on_spot'] as const;
 // SCHEMA_REJECTION_KINDS: AnthropicAgentClientConfig.recordSchemaFailure's own signature pins this as
-// a closed four-member literal union (single/batch/element/missing_symbol) — genuinely enumerable,
-// unlike the open-ended `outcome`/`event` strings on the recorder's other methods.
-const SCHEMA_REJECTION_KINDS = ['single', 'batch', 'element', 'missing_symbol'] as const;
+// a closed literal union (single/batch/element/missing_symbol/batch_stringified_recovered) —
+// genuinely enumerable, unlike the open-ended `outcome`/`event` strings on the recorder's other
+// methods. 'batch_stringified_recovered' (Pass 64) is the salvage counterpart to 'batch': a
+// whole-batch parse that failed only because `decisions` arrived as a JSON string, recovered rather
+// than discarded — see anthropic-agent-client.ts's proposeBatch coercion.
+const SCHEMA_REJECTION_KINDS = [
+  'single',
+  'batch',
+  'element',
+  'missing_symbol',
+  'batch_stringified_recovered',
+] as const;
 
 // Pass 48 (2026-07-30): mirrors anthropic-agent-client.ts's own AgentClientLatchCause union exactly —
 // duplicated rather than imported, same boundaries-wall convention as the two sets above and
@@ -622,9 +631,10 @@ export class AgentMetricsRecorder {
     }
   }
 
-  // 2026-07-22 schema-hardening: the client zod layer calls this at each of its four schema-fail
-  // branches (single/batch/element/missing_symbol) — see AGENTIC_SCHEMA_REJECTIONS_COUNTER's own
-  // comment for what each kind means.
+  // 2026-07-22 schema-hardening: the client zod layer calls this at each of its five schema-fail
+  // branches (single/batch/element/missing_symbol/batch_stringified_recovered — the last added by
+  // Pass 64's stringified-decisions salvage) — see SCHEMA_REJECTION_KINDS' own comment above for what
+  // each kind means.
   recordSchemaFailure(kind: string): void {
     try {
       this.schemaRejectionsCounter.inc({ kind });

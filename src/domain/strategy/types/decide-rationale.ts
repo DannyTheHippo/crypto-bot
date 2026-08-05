@@ -21,6 +21,12 @@ export const DEGRADED_DECIDE_RATIONALE_TAGS = [
   'truncated_max_tokens:',
   'no_tool_use:',
   'capability_violation:',
+  // Pass 64 (2026-08-05): an empty/absent tool-input payload under a non-max_tokens stop, split out
+  // of schema_rejected: so the two live boot e423875b batches that motivated this pass — different
+  // root causes sharing one tag — become separately queryable. Still a "reached the model, came back
+  // with nothing usable" degrade, so it MUST stay in this list (isDegradedDecideRationale excludes
+  // it from WATCH-V4-8's liveness stamp exactly like the other six).
+  'empty_tool_input:',
 ] as const;
 
 // Absent rationale ⇒ NOT degraded. Every client branch that answers with an unusable body now stamps

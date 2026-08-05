@@ -223,6 +223,19 @@ export const tradePortfolioSchema = z.object({
     .max(DECISION_V2_BOUNDS.nextConsultBars.max),
 });
 
+// Pass 64: lets a whole-batch discard still recover the model's own nextConsultBars even though the
+// REST of the payload failed tradePortfolioSchema (e.g. a stringified `decisions` that doesn't
+// survive salvage) — same bound as the field above, deliberately re-declared rather than derived from
+// tradePortfolioSchema.shape so this stays a truly independent, narrower extraction and can never
+// accidentally re-widen the real schema.
+const nextConsultBarsOnlySchema = z.object({
+  nextConsultBars: z
+    .number()
+    .int()
+    .min(DECISION_V2_BOUNDS.nextConsultBars.min)
+    .max(DECISION_V2_BOUNDS.nextConsultBars.max),
+});
+
 // Only the envelope fields this client reads — not a full Messages-API response model.
 const anthropicResponseSchema = z.object({
   stop_reason: z.string().optional(),
@@ -392,7 +405,13 @@ export interface AnthropicAgentClientConfig {
   // import of the concrete recorder). Absent ⇒ the degrade itself (hold, self-describing
   // schema_rejected: rationale, see the four call sites below) still happens regardless — the counter
   // is observability, never a gate.
-  readonly recordSchemaFailure?: (kind: 'single' | 'batch' | 'element' | 'missing_symbol') => void;
+  // Pass 64: 'batch_stringified_recovered' is a FIFTH, distinct label — a whole-batch parse that
+  // failed only because `decisions` arrived as a JSON string and was salvaged back into an array (see
+  // proposeBatch's stringified-decisions coercion). Kept separate from 'batch' so the journal can
+  // distinguish "recovered" from "discarded" batch failures instead of conflating them.
+  readonly recordSchemaFailure?: (
+    kind: 'single' | 'batch' | 'element' | 'missing_symbol' | 'batch_stringified_recovered',
+  ) => void;
   // I1b (Design § Enriched model inputs): the composition root's batch-wide extras source
   // (agent-portfolio-block.ts's buildAgentPortfolioBlock, agent-budget.ts's DailyLlmBudget.
   // budgetBlock, macro-calendar.ts's loadMacroCalendar/filterUpcoming, and v3's per-venue free-cash
@@ -425,6 +444,15 @@ export interface AnthropicAgentClientConfig {
   // pre-feature (every 'close' maps to EXIT_LONG/EXIT_SHORT as before). See the close branch in
   // buildProposalFromTradeDecision for the gate, its measured basis, and its failure direction.
   readonly planAuthoritativeExits?: boolean;
+  // Pass 64 MUST-FIX C: the lane's own forced-fallback cadence (AGENTIC_FALLBACK_CONSULT_BARS,
+  // config.agentic.fallbackConsultBars — the SAME field agentic.strategy.ts's own fallback-bars
+  // constructor param reads, threaded here so the two can never drift onto two different numbers).
+  // Consumed ONLY by proposeBatch's whole-batch-discard recovery (see nextConsultBarsOnlySchema's
+  // call site): a recovered nextConsultBars is clamped to at most this many bars, so a discard can
+  // never adopt a scheduling gap wider than today's forced-fallback cadence out of a payload whose
+  // `decisions` the schema just rejected. Absent ⇒ DEFAULT_FALLBACK_CONSULT_BARS (mirrors
+  // AGENTIC_FALLBACK_CONSULT_BARS's own schema default, environment.config.ts).
+  readonly fallbackConsultBars?: number;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -467,6 +495,9 @@ const DEFAULT_MAX_POSITION_FRACTION_SPOT = '0.15';
 const DEFAULT_MAX_POSITION_FRACTION_PERP = '0.35';
 // Mirrors PERP_LEVERAGE_CAP's own schema default.
 const DEFAULT_PERP_LEVERAGE_CAP = '2';
+// Mirrors AGENTIC_FALLBACK_CONSULT_BARS's own schema default (environment.config.ts) — read only
+// when cfg.fallbackConsultBars is absent (a caller that never wired the real config value).
+const DEFAULT_FALLBACK_CONSULT_BARS = 8;
 
 // A1: taker-entry crossing buffer for the v2 client's OWN reference-price hint (mirrors
 // position-sizer.service.ts's EXIT_CROSS_BUFFER_BPS default of 25bps — same magnitude, an
@@ -606,6 +637,19 @@ const prefixedRationale = (prefix: string, summary: string): string => {
 };
 const schemaRejectedRationale = (summary: string): string =>
   prefixedRationale('schema_rejected: ', summary);
+// Pass 64: an EMPTY/absent tool-input payload (`{}`, `[]`, or undefined — isEmptyToolInput below
+// checks Object.keys().length, which reads 0 for an empty array too) from a non-max_tokens stop is a
+// DIFFERENT defect than a present-but-malformed payload (schema_rejected) or a max_tokens truncation
+// (truncated_max_tokens) — the two live boot e423875b batches that motivated this pass shared one tag
+// bucket despite having different root causes, and this was the one distinguishable purely from the
+// payload shape (no stop_reason involved). Checked BEFORE schema_rejected in schemaFailureRationale
+// below, mirroring the max_tokens check's own precedence.
+const emptyToolInputRationale = (summary: string): string =>
+  prefixedRationale('empty_tool_input: ', summary);
+const isEmptyToolInput = (input: unknown): boolean =>
+  input === undefined ||
+  input === null ||
+  (typeof input === 'object' && Object.keys(input).length === 0);
 // XA4 addendum (2026-07-31): a `stop_reason: 'max_tokens'` reaching a schema-FAILURE branch (a
 // tool_use block IS present, unlike the !toolBlock branch above) is the same truncation that branch
 // already names — the output budget ran out before valid arguments landed, so `toolBlock.input` is
@@ -621,10 +665,20 @@ const schemaRejectedRationale = (summary: string): string =>
 // (both tags are in PROVES_CALL_COMPLETED_OUTCOMES, neither in LATCHED_DECIDE_OUTCOMES, both alert
 // rules and the Grafana panel are label-agnostic — agent-metrics-recorder.service.ts:32-54) and pinned
 // by test/features/trading/composition/agent-decide-outcome-tags.spec.ts's schema_rejected:→'hold' case.
-const schemaFailureRationale = (stopReason: string | undefined, summary: string): string =>
-  stopReason === 'max_tokens'
-    ? prefixedRationale('truncated_max_tokens: ', summary)
-    : schemaRejectedRationale(summary);
+//
+// Pass 64: `toolInput` is the THIRD input, checked only after the max_tokens truncation branch above
+// it — an empty/absent payload under a genuine max_tokens truncation stays 'truncated_max_tokens:'
+// (that cause is already named and more specific), and only a non-max_tokens empty payload gets the
+// new 'empty_tool_input:' tag. Anything present-but-malformed still falls to schema_rejected.
+const schemaFailureRationale = (
+  stopReason: string | undefined,
+  summary: string,
+  toolInput: unknown,
+): string => {
+  if (stopReason === 'max_tokens') return prefixedRationale('truncated_max_tokens: ', summary);
+  if (isEmptyToolInput(toolInput)) return emptyToolInputRationale(summary);
+  return schemaRejectedRationale(summary);
+};
 // AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30): the self-describing rationale stamped when a
 // mid-trade 'close' is dropped because the position is still under its own declared plan — queryable
 // as `WHERE rationale LIKE 'plan_authoritative_close:%'`. The model's own thesis is preserved after
@@ -1016,6 +1070,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           rationale: schemaFailureRationale(
             envelope.data.stop_reason,
             firstIssueSummary(parsedTrade.error),
+            toolBlock.input,
           ),
         },
         usage,
@@ -1388,7 +1443,45 @@ export class AnthropicAgentClient implements AgentClientPort {
       );
     }
 
-    const tradePortfolioParsed = tradePortfolioSchema.safeParse(toolBlock.input);
+    let tradePortfolioParsed = tradePortfolioSchema.safeParse(toolBlock.input);
+    if (!tradePortfolioParsed.success) {
+      // Pass 64: a top-level parse failure used to discard EVERY decision in the batch even though
+      // tradePortfolioSchema declares `decisions: z.array(z.unknown())` precisely so a malformed
+      // INDIVIDUAL element degrades only that symbol via the per-element loop below — a top-level
+      // failure returned above that loop and never got the chance. One observed live failure mode:
+      // the model emits `decisions` as a JSON-STRING instead of an array. Revive it and re-parse with
+      // the SAME unchanged tradePortfolioSchema.
+      //
+      // FAILURE DIRECTION — CLOSED: an unparseable string, a non-array revival, or a still-failing
+      // re-parse all fall straight through to the discard branch below unchanged. This can only ever
+      // promote a hold-everything case into the normal per-element tradeElementSchema/open_short
+      // validation path below — it can never let an element bypass either.
+      const rawInput = toolBlock.input;
+      if (
+        rawInput !== null &&
+        typeof rawInput === 'object' &&
+        typeof (rawInput as Record<string, unknown>).decisions === 'string'
+      ) {
+        try {
+          const revivedDecisions: unknown = JSON.parse(
+            (rawInput as Record<string, unknown>).decisions as string,
+          );
+          if (Array.isArray(revivedDecisions)) {
+            const recovered = tradePortfolioSchema.safeParse({
+              ...(rawInput as Record<string, unknown>),
+              decisions: revivedDecisions,
+            });
+            if (recovered.success) {
+              this.cfg.recordSchemaFailure?.('batch_stringified_recovered');
+              tradePortfolioParsed = recovered;
+            }
+          }
+        } catch {
+          // Unparseable JSON string (e.g. the model's own thesis text broke quoting mid-array) —
+          // falls through to the discard branch below unchanged.
+        }
+      }
+    }
     if (!tradePortfolioParsed.success) {
       // Soft-hold like the malformed-envelope path above, but a SCHEMA failure (not a missing tool
       // block): meter it and stamp an explicit schema_rejected (or, if stop_reason=max_tokens,
@@ -1398,6 +1491,23 @@ export class AnthropicAgentClient implements AgentClientPort {
       this.logger.warn(
         `anthropic api: ${portfolioTool.name} payload failed schema validation (portfolio batch) — holding all — ${describeSchemaFailure(tradePortfolioParsed.error, toolBlock.input)}`,
       );
+      // Pass 64: the whole-batch discard used to throw away the model's OWN nextConsultBars along
+      // with everything else, resetting every symbol's schedule to the 8-bar forced_fallback cadence
+      // (agentic.strategy.ts:981 reads `proposal.nextConsultBars ?? null`). Extract it alone with a
+      // schema narrower than tradePortfolioSchema so it can survive even when `decisions` is what
+      // actually failed. It is a scheduling knob only, already bounded by
+      // DECISION_V2_BOUNDS.nextConsultBars — it cannot open, size, or close a position and never
+      // reaches Risk.
+      //
+      // FAILURE DIRECTION — OPEN toward a SOONER consult only: a recovered schedule can never widen
+      // the post-degrade blind window beyond AGENTIC_FALLBACK_CONSULT_BARS. The payload whose
+      // `decisions` the schema just rejected is not one this client trusts to EXTEND the consult
+      // gap, so the recovered value is clamped to at most cfg.fallbackConsultBars (Math.min below) —
+      // it can only shrink today's forced-fallback cadence, when the model's own request asked to be
+      // consulted sooner, never stretch it. Absent/invalid recovery still omits the field entirely —
+      // today's exact fallback behaviour, unchanged.
+      const recoveredNextConsultBars = nextConsultBarsOnlySchema.safeParse(toolBlock.input);
+      const fallbackConsultBars = this.cfg.fallbackConsultBars ?? DEFAULT_FALLBACK_CONSULT_BARS;
       return this.softHoldBatch(
         resolved,
         usage,
@@ -1413,8 +1523,12 @@ export class AnthropicAgentClient implements AgentClientPort {
           rationale: schemaFailureRationale(
             envelope.data.stop_reason,
             firstIssueSummary(tradePortfolioParsed.error),
+            toolBlock.input,
           ),
         },
+        recoveredNextConsultBars.success
+          ? Math.min(recoveredNextConsultBars.data.nextConsultBars, fallbackConsultBars)
+          : undefined,
       );
     }
     const { nextConsultBars } = tradePortfolioParsed.data;
@@ -1556,6 +1670,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     // named the malformed-envelope/missing-tool-block ones, WATCH-V4-8 the refusal) — the parameter
     // stays optional only so a future caller with no diagnosis to offer is not forced to invent one.
     decision?: AgentDecisionMeta,
+    // Pass 64: the model's own portfolio-level nextConsultBars, when the caller could still extract
+    // one from an otherwise-discarded payload — see the whole-batch schema-failure call site's own
+    // comment. Absent ⇒ omitted from every proposal, unchanged from pre-Pass-64 behaviour (the
+    // envelope-malformed/missing-tool-block/refusal callers have no parseable input to extract from
+    // and never pass this).
+    nextConsultBars?: number,
   ): AgentProposeBatchResult {
     const proposals = new Map<string, AgentProposal>();
     resolved.forEach((r, i) => {
@@ -1568,6 +1688,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         promptHash,
         inputPayload: r.inputPayload,
         consultId,
+        ...(nextConsultBars !== undefined ? { nextConsultBars } : {}),
         infoArm,
         thinkingArm,
       });

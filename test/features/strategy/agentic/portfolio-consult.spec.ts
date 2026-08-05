@@ -1102,14 +1102,16 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(recordSchemaFailure).toHaveBeenCalledWith('missing_symbol');
   });
 
-  // 2026-07-22 schema-hardening: the observed live failure — a fully-formed decisions array
-  // serialized as a quoted JSON string instead of an actual array — rejects tradePortfolioSchema at
-  // the TOP level (z.array(z.unknown()) never accepts a string), soft-holding the whole batch.
-  it('a whole-batch schema rejection (decisions serialized as a string, not an array) soft-holds every symbol with an explicit schema_rejected: hold decision and fires recordSchemaFailure(batch)', async () => {
+  // Pass 64: a top-level `decisions` string used to soft-hold the WHOLE batch even though the
+  // string, once revived, is a fully-formed array — the salvage coercion in proposeBatch now revives
+  // it and re-parses with the SAME unchanged tradePortfolioSchema, so the batch is validated
+  // per-element exactly as if `decisions` had arrived as a real array. BTC/USDT (present in the
+  // revived array) decodes normally; ETH/USDT (genuinely absent from it) still holds via the
+  // ordinary missing-symbol path — the salvage never bypasses per-element validation.
+  it('a whole-batch schema rejection (decisions serialized as a string, not an array) is salvaged — the revived array is validated normally per-element and recordSchemaFailure(batch_stringified_recovered) fires instead of discarding everything', async () => {
     const fetchFn = vi.fn();
-    const warn = vi.fn();
     const recordSchemaFailure = vi.fn();
-    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn);
     fetchFn.mockResolvedValue(
       apiResponse({
         stop_reason: 'tool_use',
@@ -1131,6 +1133,54 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
       buildInput('ETH/USDT', 'agentic-2'),
     ]);
 
+    const btc = result.proposals.get('BTC/USDT');
+    expect(btc?.signals).toHaveLength(1);
+    expect(btc?.signals[0]).toMatchObject({ kind: 'ENTER_LONG', symbol: 'BTC/USDT' });
+
+    const eth = result.proposals.get('ETH/USDT');
+    expect(eth?.signals).toEqual([]);
+    expect(eth?.decision).toMatchObject({ action: 'hold', confidence: 0 });
+    expect(eth?.decision?.rationale).toMatch(/^schema_rejected: /);
+
+    expect(recordSchemaFailure).toHaveBeenCalledWith('batch_stringified_recovered');
+    expect(recordSchemaFailure).not.toHaveBeenCalledWith('batch');
+    expect(recordSchemaFailure).toHaveBeenCalledWith('missing_symbol');
+  });
+
+  // Pass 64: the shape actually observed live (boot e423875b) — the model's thesis text closed with
+  // a stray `.'` and later keys used single quotes, so the stringified `decisions` is NOT valid JSON.
+  // JSON.parse throws inside the salvage's try/catch, which must fall straight through to the
+  // ordinary discard — CLOSED failure direction — never let a half-parsed string leak an element
+  // through.
+  it('a whole-batch schema rejection where the stringified decisions is NOT valid JSON (malformed inner JSON) still holds all — the salvage catch falls through unchanged', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: {
+              // Mirrors the live shape: a thesis value closed with `.'` and subsequent keys using
+              // single quotes instead of double quotes — not valid JSON.
+              decisions:
+                "[{'symbol': 'BTC/USDT', 'action': 'hold', 'thesis': 'range-bound chop.'}]",
+              nextConsultBars: 8,
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
     for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
       const proposal = result.proposals.get(symbol);
       expect(proposal?.signals, symbol).toEqual([]);
@@ -1139,6 +1189,71 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     }
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('holding all'));
     expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
+    expect(recordSchemaFailure).not.toHaveBeenCalledWith('batch_stringified_recovered');
+  });
+
+  // Pass 64 review MUST-FIX D: pins the `typeof rawInput.decisions === 'string'` precondition
+  // guarding the stringified-decisions salvage attempt — deleting it left 58/58 tests in this
+  // describe block green, because every OTHER fixture's `decisions` is either a real array or a
+  // string, never a bare number, so nothing exercised the guard's own false branch.
+  it('a whole-batch schema rejection with `decisions` as a NUMBER (not a string, not an array) fires recordSchemaFailure(batch) and never attempts the stringified-decisions salvage', async () => {
+    const fetchFn = vi.fn();
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 5, nextConsultBars: 8 },
+          },
+        ],
+      }),
+    );
+
+    await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
+    expect(recordSchemaFailure).not.toHaveBeenCalledWith('batch_stringified_recovered');
+  });
+
+  // Pass 64: the whole-batch discard used to throw away the model's OWN nextConsultBars along with
+  // everything else, resetting every symbol's schedule to the 8-bar forced_fallback cadence. A
+  // still-failing batch (decisions stays malformed) must still surface a structurally-valid
+  // nextConsultBars extracted independently of the failed `decisions` field.
+  //
+  // Pass 64 review MUST-FIX C: the recovered value (4) is deliberately BELOW the default
+  // AGENTIC_FALLBACK_CONSULT_BARS cadence (8, DEFAULT_FALLBACK_CONSULT_BARS) so this test stays a
+  // pure "survives" pin — the clamp itself (a value ABOVE the fallback getting capped) has its own
+  // dedicated tests right below.
+  it('nextConsultBars survives a whole-batch discard even when decisions itself is unrecoverable', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 'not json at all {{{', nextConsultBars: 4 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const proposal = result.proposals.get(symbol);
+      expect(proposal?.decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal?.nextConsultBars, symbol).toBe(4);
+    }
   });
 
   // XA4 addendum (2026-07-31): mirrors anthropic-agent-client.spec.ts's single-symbol XA4 truncation
@@ -1177,8 +1292,9 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
   it('a whole-batch schema rejection with stop_reason=end_turn (not max_tokens) still stamps schema_rejected: for every symbol — no regression from the truncation-tag branch', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
-    // Same 'decisions serialized as a string, not an array' shape as the schema_rejected test above
-    // (a genuine top-level schema failure), just with an explicit non-max_tokens stop_reason.
+    // A genuine top-level schema failure unrelated to the Pass 64 stringified-decisions salvage —
+    // nextConsultBars is simply absent — with an explicit non-max_tokens stop_reason. `decisions`
+    // stays a normal (non-string) array so the salvage coercion never engages.
     fetchFn.mockResolvedValue(
       apiResponse({
         stop_reason: 'end_turn',
@@ -1186,10 +1302,7 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
           {
             type: 'tool_use',
             name: 'submit_portfolio',
-            input: {
-              decisions: JSON.stringify([openLongElement('BTC/USDT')]),
-              nextConsultBars: 8,
-            },
+            input: { decisions: [openLongElement('BTC/USDT')] },
           },
         ],
       }),
@@ -1210,13 +1323,15 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
   it('a whole-batch schema rejection with stop_reason absent/unreadable falls back to schema_rejected: (fail-open) for every symbol without throwing', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    // A genuine top-level schema failure (nextConsultBars absent) unrelated to the Pass 64
+    // stringified-decisions salvage — `decisions` stays a normal (non-string) array.
     fetchFn.mockResolvedValue(
       apiResponse({
         content: [
           {
             type: 'tool_use',
             name: 'submit_portfolio',
-            input: { decisions: JSON.stringify([openLongElement('BTC/USDT')]), nextConsultBars: 8 },
+            input: { decisions: [openLongElement('BTC/USDT')] },
           },
         ],
       }),
@@ -1232,6 +1347,201 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
         /^schema_rejected: /,
       );
     }
+  });
+
+  // Pass 64 review MUST-FIX A: pins the empty_tool_input: PRODUCER branch (schemaFailureRationale's
+  // isEmptyToolInput check) itself. Every schema_rejected/truncated_max_tokens test above exercises a
+  // non-empty (but invalid) input — the only test naming the empty_tool_input: tag anywhere in this
+  // suite hands a hand-written literal straight to a downstream rationale-tag classifier, so nothing
+  // before this pinned that the client itself ever emits the prefix; deleting the producer branch left
+  // the whole 3835-test gate green.
+  it('a whole-batch schema rejection with an EMPTY tool-input object under a non-max_tokens stop stamps empty_tool_input: (not schema_rejected) for every symbol', async () => {
+    const fetchFn = vi.fn();
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', name: 'submit_portfolio', input: {} }],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.decision?.rationale, symbol).toMatch(
+        /^empty_tool_input: /,
+      );
+    }
+    expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
+  });
+
+  it('a whole-batch schema rejection with a PRESENT but malformed tool-input payload (nextConsultBars out of bounds) still stamps schema_rejected: (not empty_tool_input:) for every symbol', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'end_turn',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            // Present and non-empty (isEmptyToolInput must read false here) but structurally invalid:
+            // nextConsultBars is out of DECISION_V2_BOUNDS, so tradePortfolioSchema itself rejects.
+            input: { decisions: [openLongElement('BTC/USDT')], nextConsultBars: 999 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.decision?.rationale, symbol).toMatch(
+        /^schema_rejected: /,
+      );
+    }
+  });
+
+  // Pass 64 review MUST-FIX B: pins nextConsultBarsOnlySchema's OWN bounds (DECISION_V2_BOUNDS.
+  // nextConsultBars, currently {min:1,max:32}) — a drifted/loosened `.min()`/`.max()` on this
+  // standalone schema (e.g. a bare `z.number()`) would let an out-of-range recovered value through
+  // the discard-recovery path untouched while leaving the rest of the production gate green.
+  // `decisions` stays genuinely unrecoverable (same shape as the "nextConsultBars survives a
+  // whole-batch discard" test below) so the discard branch — and therefore nextConsultBarsOnlySchema
+  // — is the ONLY path that could produce a nextConsultBars here.
+  it.each([
+    [0, 'below the min'],
+    [-1, 'negative'],
+    [33, 'above the max'],
+    [1.5, 'non-integer'],
+  ])(
+    'a whole-batch discard REJECTS a recovered nextConsultBars of %s (%s) — the field is omitted, not adopted',
+    async (badValue) => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse({
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_portfolio',
+              input: { decisions: 'not json at all {{{', nextConsultBars: badValue },
+            },
+          ],
+        }),
+      );
+
+      const result = await client.proposeBatch([
+        buildInput('BTC/USDT', 'agentic-1'),
+        buildInput('ETH/USDT', 'agentic-2'),
+      ]);
+
+      for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+        expect(result.proposals.get(symbol)?.nextConsultBars, symbol).toBeUndefined();
+      }
+    },
+  );
+
+  it('a whole-batch discard ACCEPTS a recovered nextConsultBars of 1 (in-bounds, below the fallback) unclamped', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 'not json at all {{{', nextConsultBars: 1 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.nextConsultBars, symbol).toBe(1);
+    }
+  });
+
+  // Pass 64 review MUST-FIX C: pins the CLAMP itself (Math.min(recovered, cfg.fallbackConsultBars))
+  // — a deleted/loosened clamp would let a whole-batch discard adopt a model-requested nextConsultBars
+  // up to 32 bars (8h at 15m bars) instead of the lane's own AGENTIC_FALLBACK_CONSULT_BARS cadence,
+  // silently stretching the post-degrade blind window past the owner's 2h-floor finding
+  // (.env.app:108: "16 (4h) starved evidence pace — 2h floor").
+  it('a whole-batch discard clamps a recovered nextConsultBars of 32 (schema-valid, above the fallback) down to cfg.fallbackConsultBars — never adopts the wider value', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 'not json at all {{{', nextConsultBars: 32 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(8);
+  });
+
+  it('a whole-batch discard HONOURS a recovered nextConsultBars of 4 (below the fallback) unclamped — a sooner-consult request is safe', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 'not json at all {{{', nextConsultBars: 4 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(4);
+  });
+
+  it('a whole-batch discard clamp falls back to DEFAULT_FALLBACK_CONSULT_BARS (8) when cfg.fallbackConsultBars is absent', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn); // no fallbackConsultBars override
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: 'not json at all {{{', nextConsultBars: 32 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(8);
   });
 
   it('(c) the single portfolio-level nextConsultBars is stamped on EVERY proposal — resolved, malformed-element, and missing-symbol alike', async () => {
@@ -1372,6 +1682,46 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
       confidence: null,
       rationale: 'capability_violation:open_short_on_spot',
     });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('BTC/USDT'));
+  });
+
+  // Pass 64 review MUST-FIX E: the capability check above is structurally shared between the normal
+  // decisions[] path and the stringified-decisions salvage path (proposeBatch's Pass 64 coercion —
+  // see the batch_stringified_recovered tests earlier in this file), but nothing pinned it on the
+  // SALVAGE path specifically before this test.
+  it('a salvaged (stringified-decisions) element still runs the capability check — open_short on a spot symbol degrades to a named capability violation', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const recordCapabilityViolation = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordCapabilityViolation }), fetchFn, {
+      warn,
+    });
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: {
+              decisions: JSON.stringify([openLongElement('BTC/USDT', { action: 'open_short' })]),
+              nextConsultBars: 8,
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    const proposal = result.proposals.get('BTC/USDT');
+    expect(proposal?.signals).toEqual([]);
+    expect(proposal?.decision).toEqual({
+      action: 'error',
+      confidence: null,
+      rationale: 'capability_violation:open_short_on_spot',
+    });
+    expect(recordCapabilityViolation).toHaveBeenCalledWith('open_short_on_spot');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('BTC/USDT'));
   });
 

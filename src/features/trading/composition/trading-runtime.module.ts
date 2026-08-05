@@ -253,6 +253,12 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
       if (rationale.startsWith('truncated_max_tokens:') || rationale.startsWith('no_tool_use:')) {
         return 'truncated';
       }
+      // Pass 64: an empty/absent tool-input payload, split out of schema_rejected: (see
+      // decide-rationale.ts's DEGRADED_DECIDE_RATIONALE_TAGS). Explicit branch rather than the
+      // schema_rejected: fallthrough below purely so this new tag's classification is pinned by a
+      // test the same way every other named tag is — the outcome is 'hold' either way, same as
+      // schema_rejected:.
+      if (rationale.startsWith('empty_tool_input:')) return 'hold';
       if (rationale.startsWith('budget_exhausted:')) return 'budget_blocked';
       if (rationale.startsWith('off_menu:')) return 'off_menu';
       if (rationale.startsWith('client_latched:')) return 'client_latched';

@@ -639,7 +639,8 @@ function gather() {
           " and not starts_with(rationale, 'model_refusal:')" +
           " and not starts_with(rationale, 'truncated_max_tokens:')" +
           " and not starts_with(rationale, 'no_tool_use:')" +
-          " and not starts_with(rationale, 'capability_violation:')",
+          " and not starts_with(rationale, 'capability_violation:')" +
+          " and not starts_with(rationale, 'empty_tool_input:')",
         { cwd: REPO_ROOT },
       ),
     );

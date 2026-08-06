@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { DemoFillPollerService } from '../../../../src/features/trading/execution/demo-fill-poller.service';
 import type { OrderBookService } from '../../../../src/features/trading/execution/order-book.service';
@@ -453,5 +454,286 @@ describe('DemoFillPollerService', () => {
       const r = await poller.poll(venueId('unknown-venue'), [SYM]);
       expect(r).toEqual({ ingested: 0, skippedUnknown: 0 });
     });
+  });
+
+  // LIVE INCIDENT 2026-08-05/06: binanceusdm's userTrades endpoint threw ExchangeNotAvailable on
+  // ~29% of calls for ~10.7h; the unguarded fetchMyTrades in the per-symbol loop aborted the whole
+  // venue poll on ANY one symbol's throw, starving the algoSuspects -> recoverSymbol() loop for
+  // hours and leaving two venue-fired stop fills un-ingested (phantom local shorts). These pin the
+  // per-symbol isolation and its load-bearing watermark guard.
+  describe('per-symbol fetchMyTrades isolation (2026-08-05/06 incident)', () => {
+    const SYM_A = symbolId('BTC/USDT');
+    const SYM_B = symbolId('ETH/USDT');
+
+    // `string` covers a rejection that is not an Error — ccxt/network drivers reject with plain
+    // strings too (same non-Error-rejection shape the recoverSymbol/hasAlgoAnchor tests above pin).
+    type SymbolResponse = VenueFill[] | Error | string | (() => VenueFill[] | Error | string);
+
+    // Own fixture, not the top-level `build()`: that helper returns the SAME `trades` array for
+    // every symbol polled, which cannot express "this symbol throws, that one doesn't" or "this
+    // symbol's first call throws, its retry succeeds" (needed for the partial-poll-then-clean-poll
+    // case below). The ingestor fake dedupes on venueTradeId — mirroring FillIngestorService's own
+    // idempotency — so a trade re-fetched across polls (the watermark-guard's intended retry path)
+    // is provably ingested once, not just fetched once.
+    function buildIsolation(opts: {
+      bySymbol: Record<string, SymbolResponse>;
+      localOrders: OrderRecord[];
+      recovery?: AlgoStopRecoveryService;
+    }) {
+      const ingested: FillRecord[] = [];
+      const sinceCalls: number[] = [];
+      const seenTradeIds = new Set<string>();
+      const clock = { now: () => epochMs(T) };
+      const book = new Map<string, OrderRecord>(
+        opts.localOrders.map((o) => [String(o.clientOrderId), o]),
+      );
+      const orders = {
+        all: () => opts.localOrders,
+        get: (coid: ClientOrderId) => book.get(String(coid)),
+      } as unknown as OrderBookService;
+      const ingestor = {
+        ingest: (rec: OrderRecord, f: FillRecord): Promise<IngestResult> => {
+          if (seenTradeIds.has(f.venueTradeId)) {
+            return Promise.resolve({ applied: false, record: rec }); // duplicate — dedupe holds
+          }
+          seenTradeIds.add(f.venueTradeId);
+          ingested.push(f);
+          const next = { ...rec, cumQty: rec.cumQty.add(f.qty) } as OrderRecord;
+          book.set(String(rec.clientOrderId), next);
+          return Promise.resolve({ applied: true, record: next });
+        },
+      } as unknown as FillIngestorService;
+      const exchange = {
+        venue: V,
+        fetchMyTrades: (symbol: unknown, since: unknown) => {
+          sinceCalls.push(since as number);
+          const entry = opts.bySymbol[String(symbol)];
+          const resolved = typeof entry === 'function' ? entry() : entry;
+          if (resolved instanceof Error || typeof resolved === 'string') {
+            // Rejecting with a BARE STRING is the behaviour under test, not an oversight: the
+            // production catch renders `err instanceof Error ? err.message : String(err)`, and the
+            // `String(err)` arm is only reachable from a non-Error rejection. ccxt and the venue
+            // transport can both reject with a plain string, so this fixture reproduces a real
+            // shape. Satisfying the rule by wrapping in an Error would delete the only coverage of
+            // that arm and reopen the 100%-branch gap on src/features/trading/execution/** that
+            // this test exists to close.
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+            return Promise.reject(resolved);
+          }
+          return Promise.resolve(resolved ?? []);
+        },
+      } as unknown as ExchangePort;
+      const poller = new DemoFillPollerService(
+        clock,
+        exchange,
+        orders,
+        ingestor,
+        opts.recovery ?? stubRecovery(),
+      );
+      return { poller, ingested, sinceCalls };
+    }
+
+    it('one symbol throwing does not prevent the remaining symbols being polled, and their fills are still ingested', async () => {
+      const { poller, ingested } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: new Error('ExchangeNotAvailable: 502 Bad Gateway'),
+          [SYM_B]: [
+            fill({ clientOrderId: clientOrderId(VENUE_ID), venueTradeId: 'b1', symbol: SYM_B }),
+          ],
+        },
+        localOrders: [localOrder()],
+      });
+      const r = await poller.poll(V, [SYM_A, SYM_B]);
+      expect(r.ingested).toBe(1);
+      expect(ingested[0]?.venueTradeId).toBe('b1');
+    });
+
+    it('one symbol throwing does not prevent the algoSuspects recovery loop from running for symbols that did succeed', async () => {
+      const recoverSymbol = vi.fn().mockResolvedValue('triggered');
+      const recovery = stubRecovery({ hasAlgoAnchor: () => true, recoverSymbol });
+      const { poller } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: new Error('ExchangeNotAvailable: 502 Bad Gateway'),
+          [SYM_B]: [
+            fill({
+              clientOrderId: clientOrderId('other-venue-id'),
+              venueTradeId: 'b2',
+              symbol: SYM_B,
+            }),
+          ],
+        },
+        localOrders: [localOrder()],
+        recovery,
+      });
+      const r = await poller.poll(V, [SYM_A, SYM_B]);
+      expect(r.skippedUnknown).toBe(1); // SYM_B's unmatched fill is the phantom-position signature
+      expect(recoverSymbol).toHaveBeenCalledTimes(1);
+      expect(recoverSymbol).toHaveBeenCalledWith(SYM_B);
+    });
+
+    // Load-bearing: sinceByVenue is per-VENUE, so advancing it while SYM_A was skipped would move
+    // the window past trades SYM_A never got to report.
+    it('the watermark does NOT advance when any symbol was skipped', async () => {
+      const { poller, sinceCalls } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: new Error('ExchangeNotAvailable: 502 Bad Gateway'),
+          [SYM_B]: [
+            fill({
+              clientOrderId: clientOrderId(VENUE_ID),
+              venueTradeId: 'b3',
+              symbol: SYM_B,
+              venueTimestamp: epochMs(T + 500),
+            }),
+          ],
+        },
+        localOrders: [localOrder()],
+      });
+      poller.init(); // since = T
+      await poller.poll(V, [SYM_A, SYM_B]); // SYM_A throws, SYM_B sees a newer trade
+      sinceCalls.length = 0;
+      await poller.poll(V, [SYM_A, SYM_B]);
+      expect(sinceCalls).toEqual([T, T]); // still the boot anchor, not T + 500
+    });
+
+    // A rejected ccxt/network promise is not always an Error (drivers reject with plain strings and
+    // objects too) — the fetchMyTrades catch's `err instanceof Error ? err.message : String(err)`
+    // must survive that shape, same as the recoverSymbol/hasAlgoAnchor non-Error tests above.
+    it('fetchMyTrades rejecting with a non-Error value is still tolerated — remaining symbols still polled, watermark held', async () => {
+      const { poller, ingested, sinceCalls } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: 'ECONNRESET', // non-Error rejection
+          [SYM_B]: [
+            fill({
+              clientOrderId: clientOrderId(VENUE_ID),
+              venueTradeId: 'b5',
+              symbol: SYM_B,
+              venueTimestamp: epochMs(T + 700),
+            }),
+          ],
+        },
+        localOrders: [localOrder()],
+      });
+      poller.init(); // since = T
+      const r = await poller.poll(V, [SYM_A, SYM_B]);
+      expect(r.ingested).toBe(1); // SYM_B still polled and ingested despite SYM_A's non-Error rejection
+      expect(ingested[0]?.venueTradeId).toBe('b5');
+      sinceCalls.length = 0;
+      await poller.poll(V, [SYM_A, SYM_B]);
+      expect(sinceCalls).toEqual([T, T]); // watermark held at the boot anchor, not advanced to T + 700
+    });
+
+    it('the watermark DOES advance on a fully-swept poll', async () => {
+      const { poller, sinceCalls } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: [
+            fill({
+              clientOrderId: clientOrderId(VENUE_ID),
+              venueTradeId: 'a4',
+              symbol: SYM_A,
+              venueTimestamp: epochMs(T + 300),
+            }),
+          ],
+          [SYM_B]: [],
+        },
+        localOrders: [localOrder()],
+      });
+      poller.init();
+      await poller.poll(V, [SYM_A, SYM_B]);
+      sinceCalls.length = 0;
+      await poller.poll(V, [SYM_A, SYM_B]);
+      expect(sinceCalls).toEqual([T + 300, T + 300]);
+    });
+
+    it('a partial poll followed by a clean poll ingests the previously-missed trade exactly once (dedupe holds)', async () => {
+      const missedFill = fill({
+        clientOrderId: clientOrderId(VENUE_ID),
+        venueTradeId: 'missed-1',
+        symbol: SYM_A,
+        venueTimestamp: epochMs(T + 10),
+      });
+      let symAAttempts = 0;
+      const { poller, ingested } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: () => {
+            symAAttempts += 1;
+            if (symAAttempts === 1) throw new Error('ExchangeNotAvailable: 502 Bad Gateway');
+            return [missedFill];
+          },
+          [SYM_B]: [],
+        },
+        localOrders: [localOrder()],
+      });
+      poller.init();
+      const r1 = await poller.poll(V, [SYM_A, SYM_B]); // SYM_A throws — watermark held at boot
+      expect(r1.ingested).toBe(0);
+      const r2 = await poller.poll(V, [SYM_A, SYM_B]); // retried at the same `since` — recovers it
+      expect(r2.ingested).toBe(1);
+      const r3 = await poller.poll(V, [SYM_A, SYM_B]); // watermark now past it, but re-fetched anyway
+      expect(r3.ingested).toBe(0); // dedupe holds even if re-fetched
+      expect(ingested).toHaveLength(1);
+      expect(ingested[0]?.venueTradeId).toBe('missed-1');
+    });
+
+    // FIX 4 (adversarial review, 2026-08-06): the clamp log's "sweep watermark clamped to ${maxTs}"
+    // phrase used to fire unconditionally whenever clampedTrades > 0, even on a partial poll where
+    // maxTs was computed but the WATERMARK GUARD above never wrote it to sinceByVenue — naming a
+    // value that was never persisted. Pins the corrected, partial-poll branch of the wording (the
+    // fully-swept "clamped to" branch is already covered by the top-level 10-years-future test).
+    it('a partial poll logs "held at" the pre-poll watermark, never "clamped to" the discarded candidate', async () => {
+      const TEN_YEARS_MS = 10 * 365 * 86_400_000;
+      const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      try {
+        const { poller, sinceCalls } = buildIsolation({
+          bySymbol: {
+            [SYM_A]: new Error('ExchangeNotAvailable: 502 Bad Gateway'),
+            [SYM_B]: [
+              fill({
+                clientOrderId: clientOrderId(VENUE_ID),
+                venueTradeId: 'clamp-partial',
+                symbol: SYM_B,
+                venueTimestamp: epochMs(T + TEN_YEARS_MS),
+              }),
+            ],
+          },
+          localOrders: [localOrder()],
+        });
+        poller.init(); // since = T, never advances this poll (SYM_A failed)
+        await poller.poll(V, [SYM_A, SYM_B]);
+        expect(sinceCalls).toEqual([T, T]); // watermark held, confirming the log's claim
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(`sweep watermark held at ${T}`),
+        );
+        expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('clamped to'));
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
+  // FIX 4's other branch: a fully-swept poll must still name the value it actually wrote to the
+  // watermark ("clamped to" the ceiling), not the raw discarded venue stamp.
+  it('a fully-swept poll logs "clamped to" the value actually written to the watermark', async () => {
+    const TEN_YEARS_MS = 10 * 365 * 86_400_000;
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      const { poller } = build(
+        [
+          fill({
+            clientOrderId: clientOrderId(VENUE_ID),
+            venueTradeId: 'clamp-swept',
+            venueTimestamp: epochMs(T + TEN_YEARS_MS),
+          }),
+        ],
+        [localOrder()],
+      );
+      poller.init(); // since = T
+      await poller.poll(V, [SYM]);
+      const ceiling = T + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS;
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`sweep watermark clamped to ${ceiling}`),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

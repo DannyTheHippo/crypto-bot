@@ -50,6 +50,7 @@ import {
   describeRunTruncation,
   parseArgs,
   parsePlaybookInfoVersion,
+  primaryHorizonDeltaBps,
   renderTwoBars,
   resolveIncumbent,
   stripRetiredGuidance,
@@ -883,26 +884,48 @@ async function main() {
 
     // ── stage 5 ────────────────────────────────────────────────────────────────────────────────
     console.log('\nstage 5 — the two bars, side by side (they are NEVER the same bar)');
-    for (const d of score.deployment) {
+    // 2026-08-06 (Pass 65): this loop threw and cost the run EVERYTHING it had paid for. The run
+    // aborted on its $5 spend cap mid-replay, so every perHorizon cell was legitimately null;
+    // renderTwoBars then called .toFixed on one and threw out of main(). Stage 6 never ran, so a
+    // completed 348-call / $5.0015 / 630s scoring run logged ZERO rows to public.experiments and the
+    // day's single authoring slot was consumed for nothing. renderTwoBars is now total (proven by
+    // mutation in loop-authoring-core.spec.mjs), but that makes THIS block's failure merely unlikely
+    // rather than impossible — and the asymmetry is absolute: a lost console table is reprintable
+    // from score.json, a lost registry row is not (append-only, and the slot does not reopen).
+    // So printing is isolated from logging structurally, not just made correct today. Fails OPEN
+    // toward LOGGING: a render defect degrades the operator's table, never the evidence.
+    // NOTE: `shipping`/`winner` below stay OUTSIDE this guard on purpose — they are load-bearing for
+    // stage 7's mint, not presentation, and must not be silently skipped by a rendering failure.
+    try {
+      for (const d of score.deployment) {
+        console.log(
+          renderTwoBars({
+            arm: d.arm,
+            deployment: d,
+            research: score.research,
+            priorAttemptsOnCorpus,
+            run: scoringRun,
+          }),
+        );
+        console.log('');
+      }
+    } catch (err) {
       console.log(
-        renderTwoBars({
-          arm: d.arm,
-          deployment: d,
-          research: score.research,
-          priorAttemptsOnCorpus,
-          run: scoringRun,
-        }),
+        `  *** STAGE 5 RENDER FAILED (continuing to stage 6 so the evidence is still logged): ` +
+          `${err instanceof Error ? err.message : String(err)} — the scored numbers are intact in ` +
+          `${join(outDir, 'score.json')} ***`,
       );
-      console.log('');
     }
     const shipping = score.deployment.filter((d) => d.ships === true);
     // Best of the shipping candidates at the declared primary horizon. Ranking among SHIPPERS only:
     // "ranking is not passing", so a ranking never promotes a candidate that failed the bar.
-    const winner = shipping.slice().sort((a, b) => {
-      const ah = a.perHorizon.find((h) => h.h === a.primaryHorizon)?.deltaBps ?? -Infinity;
-      const bh = b.perHorizon.find((h) => h.h === b.primaryHorizon)?.deltaBps ?? -Infinity;
-      return bh - ah;
-    })[0];
+    // `shipping`/`winner` stay OUTSIDE the stage-5 try/catch above on purpose (load-bearing for stage
+    // 7's mint) — so the lookup itself, not a wrapping try, must be the thing that cannot throw.
+    // primaryHorizonDeltaBps applies the SAME Array.isArray + optional-chaining guard renderTwoBars
+    // was just hardened with, on this same `perHorizon` field (see that function's own header).
+    const winner = shipping
+      .slice()
+      .sort((a, b) => primaryHorizonDeltaBps(b) - primaryHorizonDeltaBps(a))[0];
     console.log(
       shipping.length === 0
         ? '  no candidate clears the deployment bar — the running playbook stays.'

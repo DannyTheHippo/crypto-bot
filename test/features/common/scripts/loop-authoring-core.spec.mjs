@@ -20,6 +20,7 @@ import {
   describeRunTruncation,
   parseArgs,
   parsePlaybookInfoVersion,
+  primaryHorizonDeltaBps,
   renderPriorAttempts,
   renderTwoBars,
   resolveIncumbent,
@@ -752,6 +753,34 @@ describe('loop-authoring reporting', () => {
       expect(reasons[0]).toContain('ABORTED on budget');
     });
 
+    it('carries spend and row coverage inline when the run supplies them — the 2026-08-06 shape', () => {
+      // The real defect run (research/loop/LOG.md, authoring-2026-08-06): $5.0015 across 348 calls,
+      // 108 of 150 requested rows covered before the cap tripped. "ABORTED on budget" alone told the
+      // operator neither number.
+      const reasons = describeRunTruncation({
+        voided: false,
+        aborted: true,
+        meter: { calls: 348, usd: '5.0015' },
+        rowsRequested: 150,
+        rowsCovered: 108,
+      });
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain('ABORTED on budget');
+      expect(reasons[0]).toContain('$5.0015');
+      expect(reasons[0]).toContain('108/150 rows scored');
+    });
+
+    it('drops the spend/coverage clauses rather than rendering $undefined or 0/0 when the run lacks them', () => {
+      // Same case as 'names an ABORTED run' above, restated as the negative to make the omission an
+      // assertion rather than an accident of what the fixture happens to carry.
+      const reasons = describeRunTruncation({ voided: false, aborted: true });
+      expect(reasons[0]).not.toContain('$undefined');
+      expect(reasons[0]).not.toContain('0/0 rows');
+      expect(reasons[0]).toBe(
+        'the scoring run ABORTED on budget — arms are truncated, not comparable',
+      );
+    });
+
     // REGRESSION for the must-fix: classifyMintGate refuses on unfaithfulCapsRows > 0 ("the replay
     // measured a different account") and, before this fix, describeRunTruncation had no idea that
     // blocker existed — a run with unfaithful capabilities and NEITHER voided NOR aborted rendered as
@@ -847,6 +876,307 @@ describe('loop-authoring reporting', () => {
     });
     expect(unfaithful).toContain('TRUNCATED');
     expect(unfaithful).toContain('measured a different account');
+  });
+
+  // ── the 2026-08-06 budget-abort regression (null-scored cells) ───────────────────────────────
+  //
+  // research/loop/LOG.md, authoring-2026-08-06: the day's slot (public.experiments id=21) drafted 2
+  // variants, ran 630s of replay, then hit the $5 spend cap mid-scoring and aborted. Every deployment
+  // cell was legitimately unscored — `armMean`/`incumbentMean`/`deltaBps: null` throughout — and
+  // renderTwoBars called `h.armMean.toFixed(1)` directly on that null and threw. The throw fired at
+  // stage 5, so stage 6 (buildScorecard → public.experiments) never ran: the whole paid run
+  // ($5.0015, 348 calls) left NO registry evidence at all. A `--dry-run` beforehand does not catch
+  // this — synthetic dry-run variants score non-null, so the abort path is never exercised.
+
+  function abortedNullDeployment(overrides = {}) {
+    return {
+      arm: 'draft_conservative',
+      incumbent: 'incumbent_v10',
+      primaryHorizon: 24,
+      perHorizon: [
+        { h: 1, armMean: null, incumbentMean: null, deltaBps: null, beats: false },
+        { h: 4, armMean: null, incumbentMean: null, deltaBps: null, beats: false },
+        { h: 8, armMean: null, incumbentMean: null, deltaBps: null, beats: false },
+        { h: 24, armMean: null, incumbentMean: null, deltaBps: null, beats: false },
+      ],
+      horizonsWon: 0,
+      horizonsCompared: 4,
+      ships: false,
+      halvesVerdict: undefined,
+      ...overrides,
+    };
+  }
+
+  const ABORTED_2026_08_06_RUN = {
+    voided: false,
+    aborted: true,
+    unfaithfulCapsRows: 0,
+    meter: { calls: 348, usd: '5.0015' },
+    rowsRequested: 150,
+    rowsCovered: 108,
+  };
+
+  it('REGRESSION: an aborted score object whose perHorizon cells are all-null renders without throwing', () => {
+    // MUTATION PROOF this test fails against unpatched code: reverting renderTwoBars's per-horizon
+    // loop to `h.armMean.toFixed(1)` (dropping formatBpsOrUnscored and the optional-chained `h?.`
+    // reads) reproduces exactly the 2026-08-06 crash — `TypeError: Cannot read properties of null
+    // (reading 'toFixed')` — and this assertion is what catches it (verified by hand against the
+    // pre-fix source before this test was added; see the PR's return summary for the transcript).
+    expect(() =>
+      renderTwoBars({
+        arm: 'draft_conservative',
+        deployment: abortedNullDeployment(),
+        research: null,
+        run: ABORTED_2026_08_06_RUN,
+      }),
+    ).not.toThrow();
+  });
+
+  it('REGRESSION: the same call shows the unscored marker on every null cell, not a fabricated number', () => {
+    const out = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: abortedNullDeployment(),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    // The trailing verdict reads `n/a`, NOT `loss`: an unscored cell carries beats:false, so the
+    // original `beats ? win : loss` reported a defeat that was never measured and rendered the
+    // self-contradicting row `n/a n/a n/a loss`. Tightened here rather than relaxed — the row now
+    // pins the verdict column too.
+    expect(out).toContain('h= 1  arm      n/a vs incumbent      n/a bps  Δ      n/a  n/a');
+    expect(out).toContain('h=24  arm      n/a vs incumbent      n/a bps  Δ      n/a  n/a');
+    // Never mistakable for a measured zero.
+    expect(out).not.toMatch(/arm\s+0\.0/);
+    expect(out).not.toMatch(/incumbent\s+0\.0/);
+    expect(out).not.toMatch(/Δ\s+0\.0/);
+  });
+
+  it('the abort banner leads the render and carries the spend and row coverage', () => {
+    const out = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: abortedNullDeployment(),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    expect(out).toContain('TRUNCATED');
+    expect(out).toContain('MAY NOT BE QUOTED');
+    expect(out).toContain('ABORTED on budget');
+    expect(out).toContain('$5.0015');
+    expect(out).toContain('108/150 rows scored');
+    // Leads the render: above the per-horizon rows it voids, same as the 2026-08-04 fix's own check.
+    const bannerLine = out.split('\n').findIndex((l) => l.includes('TRUNCATED'));
+    const firstHorizonLine = out.split('\n').findIndex((l) => l.includes('h='));
+    expect(bannerLine).toBeGreaterThanOrEqual(0);
+    expect(bannerLine).toBeLessThan(firstHorizonLine);
+  });
+
+  it('an unscored cell never renders as 0.0', () => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: abortedNullDeployment({
+        perHorizon: [{ h: 1, armMean: undefined, incumbentMean: undefined, deltaBps: undefined }],
+      }),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    expect(out).toContain('n/a');
+    expect(out).not.toContain('0.0');
+  });
+
+  // Number('') === 0, Number(false) === 0 and Number([]) === 0 are all FINITE, so a Number()-based
+  // guard renders them '0.0' — a fabricated zero indistinguishable from a measured one, which is the
+  // single thing this marker exists to prevent. Real scoring data is null, so this is defence
+  // against a future shape rather than an observed case.
+  it.each([
+    ['empty string', ''],
+    ['false', false],
+    ['empty array', []],
+  ])('a non-numeric %s renders as unscored, never as a fabricated 0.0', (_label, poison) => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: abortedNullDeployment({
+        perHorizon: [{ h: 1, armMean: poison, incumbentMean: poison, deltaBps: poison }],
+      }),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    expect(out).toContain('n/a');
+    expect(out).not.toContain('0.0');
+  });
+
+  // An unscored cell carries beats:false alongside its null means, so a bare `beats ? win : loss`
+  // printed a measured defeat that was never measured — and produced the self-contradicting row
+  // `n/a n/a n/a loss`. The verdict must key off the same means the bps columns key off.
+  it('an unscored cell renders no win/loss verdict, so the row cannot contradict itself', () => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: abortedNullDeployment({
+        perHorizon: [{ h: 1, armMean: null, incumbentMean: null, deltaBps: null, beats: false }],
+      }),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    const row = out.split('\n').find((l) => l.includes('h= 1'));
+    expect(row).toBeDefined();
+    expect(row).not.toContain('loss');
+    expect(row).not.toContain('win');
+  });
+
+  it('a fully scored cell still renders its win/loss verdict', () => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: abortedNullDeployment({
+        perHorizon: [{ h: 1, armMean: 10, incumbentMean: -2, deltaBps: 12, beats: true }],
+      }),
+      research: null,
+      run: ABORTED_2026_08_06_RUN,
+    });
+    expect(out.split('\n').find((l) => l.includes('h= 1'))).toContain('win');
+  });
+
+  it('renderTwoBars is TOTAL: never throws for any shape of deployment/perHorizon/research', () => {
+    const healthyRun = HEALTHY_RUN;
+    const cases = [
+      [
+        'missing deployment',
+        { arm: 'x', deployment: undefined, research: RESEARCH_FAIL, run: healthyRun },
+      ],
+      [
+        'missing perHorizon',
+        { arm: 'x', deployment: { arm: 'x' }, research: RESEARCH_FAIL, run: healthyRun },
+      ],
+      [
+        'empty perHorizon array',
+        {
+          arm: 'x',
+          deployment: { arm: 'x', perHorizon: [] },
+          research: RESEARCH_FAIL,
+          run: healthyRun,
+        },
+      ],
+      [
+        'empty/malformed per-horizon cells ("empty arms")',
+        {
+          arm: 'x',
+          deployment: { arm: 'x', perHorizon: [{}, null, undefined] },
+          research: RESEARCH_FAIL,
+          run: healthyRun,
+        },
+      ],
+      [
+        'a non-array perHorizon',
+        {
+          arm: 'x',
+          deployment: { arm: 'x', perHorizon: 'not-an-array' },
+          research: RESEARCH_FAIL,
+          run: healthyRun,
+        },
+      ],
+      [
+        'null research',
+        { arm: 'x', deployment: abortedNullDeployment(), research: null, run: healthyRun },
+      ],
+      [
+        'the exact 2026-08-06 abort shape',
+        {
+          arm: 'x',
+          deployment: abortedNullDeployment(),
+          research: null,
+          run: ABORTED_2026_08_06_RUN,
+        },
+      ],
+    ];
+    for (const [, args] of cases) {
+      expect(() => renderTwoBars(args)).not.toThrow();
+    }
+  });
+
+  // ── FIX 5 (2026-08-06 adversarial review): the winner-sort's own perHorizon guard ────────────────
+  //
+  // loop-authoring.mjs's stage-5/7 boundary keeps `shipping`/`winner` OUTSIDE the renderTwoBars
+  // try/catch on purpose (load-bearing for stage 7's mint). But the winner sort used to do
+  // `a.perHorizon.find(...)` unguarded on the SAME `perHorizon` field renderTwoBars was just hardened
+  // against one line above — so a `ships: true` candidate with a malformed `perHorizon` (the exact
+  // budget-cap shape formatBpsOrUnscored's header describes) reproduced the identical lost-registry-row
+  // defect one line below the render guard. primaryHorizonDeltaBps is the extracted, guarded lookup the
+  // sort now calls instead.
+  describe('primaryHorizonDeltaBps', () => {
+    it('returns the deltaBps of the cell matching the candidate primaryHorizon', () => {
+      const candidate = {
+        primaryHorizon: 24,
+        perHorizon: [
+          { h: 4, deltaBps: 5 },
+          { h: 24, deltaBps: 117 },
+        ],
+      };
+      expect(primaryHorizonDeltaBps(candidate)).toBe(117);
+    });
+
+    it('returns -Infinity when perHorizon has no cell for the primary horizon', () => {
+      const candidate = { primaryHorizon: 24, perHorizon: [{ h: 4, deltaBps: 5 }] };
+      expect(primaryHorizonDeltaBps(candidate)).toBe(-Infinity);
+    });
+
+    // MUTATION PROOF: reverting this function's body to the pre-fix
+    // `candidate.perHorizon.find((h) => h.h === candidate.primaryHorizon)?.deltaBps ?? -Infinity`
+    // (dropping the Array.isArray guard) throws `TypeError: Cannot read properties of undefined
+    // (reading 'find')` on each of the cases below.
+    it.each([
+      ['missing perHorizon', { primaryHorizon: 24 }],
+      ['null perHorizon', { primaryHorizon: 24, perHorizon: null }],
+      [
+        'non-array perHorizon (the malformed-cell shape)',
+        { primaryHorizon: 24, perHorizon: 'n/a' },
+      ],
+      ['empty perHorizon array', { primaryHorizon: 24, perHorizon: [] }],
+      ['null cells inside perHorizon', { primaryHorizon: 24, perHorizon: [null, undefined, {}] }],
+      ['undefined candidate', undefined],
+    ])('never throws — %s', (_label, candidate) => {
+      expect(() => primaryHorizonDeltaBps(candidate)).not.toThrow();
+      expect(primaryHorizonDeltaBps(candidate)).toBe(-Infinity);
+    });
+
+    it('a candidate with no data ranks LAST when sorting shippers, never throws the sort itself', () => {
+      const healthy = { arm: 'healthy', primaryHorizon: 24, perHorizon: [{ h: 24, deltaBps: 10 }] };
+      const malformed = { arm: 'malformed', primaryHorizon: 24, perHorizon: 'not-an-array' };
+      const shipping = [malformed, healthy];
+      let winner;
+      expect(() => {
+        winner = shipping
+          .slice()
+          .sort((a, b) => primaryHorizonDeltaBps(b) - primaryHorizonDeltaBps(a))[0];
+      }).not.toThrow();
+      expect(winner.arm).toBe('healthy');
+    });
+  });
+
+  it('PIN: a fully-scored, healthy run renders byte-identically to today’s output — no happy-path regression', () => {
+    // Generated off the ACTUAL patched output and pinned verbatim, so any future edit that changes a
+    // single space in the healthy path fails this test loudly rather than drifting unnoticed.
+    const out = renderTwoBars({
+      arm: 'draft_conservative',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      run: HEALTHY_RUN,
+    });
+    expect(out).toBe(
+      [
+        '  variant:          draft_conservative',
+        '  DEPLOYMENT bar    (beats the RUNNING playbook on the same corpus/metric/horizons):',
+        '    incumbent incumbent_v10, primary h=24, 4/4 horizons won ⇒ SHIPS',
+        '      h= 1  arm     -1.0 vs incumbent    -12.0 bps  Δ     11.0  win',
+        '      h= 4  arm      1.0 vs incumbent    -36.0 bps  Δ     37.0  win',
+        '      h= 8  arm     19.0 vs incumbent    -32.0 bps  Δ     51.0  win',
+        '      h=24  arm     47.0 vs incumbent    -70.0 bps  Δ    117.0  win',
+        '    chronological halves (h=24 only): BOTH_WON — wins BOTH chronological halves at the primary horizon.',
+        '    attribution: PROMPT-CONTROLLED',
+        '  ATTEMPTS ON THIS CORPUS: NOT COUNTED',
+        '  RESEARCH bar      (does an edge exist? mean AND CI lo > +13.0 bps under the family alpha):',
+        '    8/8 cells, 0 passes ⇒ NO_SURVIVOR',
+        '  These are NEVER the same bar. A research-bar FAIL is not a deployment veto (verdicts.md,',
+        '  owner ruling 2026-07-30); a deployment win is not an edge claim.',
+      ].join('\n'),
+    );
   });
 
   it('digests the whole-database read, naming the running version', () => {

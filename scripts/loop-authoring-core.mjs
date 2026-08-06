@@ -620,7 +620,22 @@ export function describeRunTruncation(run) {
     reasons.push('the scoring run is VOID (transport floor) — no verdict may be published from it');
   }
   if (run.aborted === true) {
-    reasons.push('the scoring run ABORTED on budget — arms are truncated, not comparable');
+    // Carries the spend and row coverage inline rather than leaving the reader to go find score.json:
+    // the 2026-08-06 abort (research/loop/LOG.md) spent $5.0015 across 348 calls and covered 108/150
+    // rows before the cap tripped, and "ABORTED on budget" alone answers neither "how much" nor "how
+    // much of the corpus" — both are already on `run` (run.meter, run.rowsCovered/rowsRequested), so
+    // omitting them here was a choice to under-report, not a data gap. Absent on either field ⇒ that
+    // clause is dropped rather than rendered as $undefined or 0/0, which would misstate a real number.
+    const usd = run.meter?.usd;
+    const spend = usd === undefined || usd === null || usd === '' ? '' : `, spent $${usd}`;
+    const { rowsCovered, rowsRequested } = run;
+    const coverage =
+      typeof rowsCovered === 'number' && typeof rowsRequested === 'number'
+        ? ` (${rowsCovered}/${rowsRequested} rows scored)`
+        : '';
+    reasons.push(
+      `the scoring run ABORTED on budget${spend}${coverage} — arms are truncated, not comparable`,
+    );
   }
   if ((run.unfaithfulCapsRows ?? 0) > 0) {
     reasons.push(
@@ -632,6 +647,41 @@ export function describeRunTruncation(run) {
 }
 
 /**
+ * A per-horizon bps figure, or an explicit "n/a" — never a fabricated number and never `0`.
+ *
+ * 2026-08-06 (research/loop/LOG.md, authoring-2026-08-06): a run that hit its $5 budget cap aborted
+ * mid-scoring, and every `perHorizon` cell of the candidate still being scored carried
+ * `armMean`/`incumbentMean`/`deltaBps: null` — legitimately unscored, not a data-loading bug. This
+ * function had assumed a number and called `.toFixed` directly, so the render itself threw
+ * (`renderTwoBars:672`) BEFORE the abort banner above it could ever print, which took the whole run's
+ * stage-6 registry logging down with it (buildScorecard never got called). `0` is refused as the
+ * marker for the same reason a `null` cell is refused elsewhere in this file: an unscored cell printed
+ * as `0.0` is indistinguishable from a measured zero.
+ */
+function formatBpsOrUnscored(value) {
+  // `typeof value === 'number'`, NOT Number(value): the coercion this replaces turned '', false and
+  // [] into a finite 0 and printed them as `0.0` — the exact marker this function exists to refuse,
+  // since a fabricated zero is indistinguishable from a measured one. Only a real number is scored.
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(1).padStart(8)
+    : 'n/a'.padStart(8);
+}
+
+// A verdict is only a verdict if the cell behind it was scored. `beats` is `false` on an aborted
+// run's unscored cell (the perHorizon shape carries beats:false alongside null means), so rendering
+// it as `loss` reported a measured defeat that was never measured — and printed the internally
+// contradictory row `n/a n/a n/a loss`. Keyed off the same means the bps columns are keyed off, so
+// the verdict can never disagree with the numbers beside it.
+function formatVerdictOrUnscored(cell) {
+  const scored =
+    typeof cell?.armMean === 'number' &&
+    Number.isFinite(cell.armMean) &&
+    typeof cell?.incumbentMean === 'number' &&
+    Number.isFinite(cell.incumbentMean);
+  return !scored ? 'n/a' : cell.beats ? 'win' : 'loss';
+}
+
+/**
  * The two verdicts side by side, never merged. verdicts.md's first standing verdict exists because
  * they were being conflated, so this renders both with their own labels even when they agree.
  *
@@ -639,6 +689,13 @@ export function describeRunTruncation(run) {
  * banner at all — the one production call site always passes it, so this only matters for a future
  * caller, and a fail-open default on a misquotation guard is exactly the shape this whole fix removes
  * everywhere else.
+ *
+ * TOTAL as of 2026-08-06: must never throw regardless of what shape `deployment` and its
+ * `perHorizon` entries carry — a render failure here is what turned one budget-capped run into a run
+ * that logged NOTHING to public.experiments (see formatBpsOrUnscored's header). `deployment.perHorizon`
+ * is read defensively (not just `?? []`, since a malformed non-array/non-nullish value would still
+ * throw on iteration) and each cell is read with optional chaining so a null or empty cell renders a
+ * row of "n/a" instead of aborting the whole table.
  */
 export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus, run }) {
   const truncation = describeRunTruncation(run);
@@ -667,10 +724,11 @@ export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus
                 : 'LOSES'
         }`,
     );
-    for (const h of deployment.perHorizon ?? []) {
+    const perHorizon = Array.isArray(deployment.perHorizon) ? deployment.perHorizon : [];
+    for (const h of perHorizon) {
       lines.push(
-        `      h=${String(h.h).padStart(2)}  arm ${h.armMean.toFixed(1).padStart(8)} vs incumbent ` +
-          `${h.incumbentMean.toFixed(1).padStart(8)} bps  Δ ${h.deltaBps.toFixed(1).padStart(8)}  ${h.beats ? 'win' : 'loss'}`,
+        `      h=${String(h?.h).padStart(2)}  arm ${formatBpsOrUnscored(h?.armMean)} vs incumbent ` +
+          `${formatBpsOrUnscored(h?.incumbentMean)} bps  Δ ${formatBpsOrUnscored(h?.deltaBps)}  ${formatVerdictOrUnscored(h)}`,
       );
     }
     // The third conjunct, on its own line and never folded into the horizon count: "wins h=24 only"
@@ -697,6 +755,28 @@ export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus
   );
   lines.push('  owner ruling 2026-07-30); a deployment win is not an edge claim.');
   return lines.join('\n');
+}
+
+/**
+ * The deltaBps for a candidate's PRIMARY horizon cell, or -Infinity when absent/malformed — the
+ * winner-selection sort's own "no data ⇒ ranks last, never throws" floor.
+ *
+ * 2026-08-06 adversarial review: loop-authoring.mjs's stage-5/7 boundary deliberately keeps
+ * `shipping`/`winner` OUTSIDE the renderTwoBars try/catch above (they are load-bearing for stage 7's
+ * mint, not presentation — a rendering failure must never silently skip logging). But the winner sort
+ * used to do `a.perHorizon.find(...)` unguarded on that SAME `perHorizon` field renderTwoBars was
+ * just hardened against one line above — so a `ships: true` candidate with a malformed
+ * `perHorizon` (the exact budget-cap shape formatBpsOrUnscored's own header describes) would throw
+ * the sort out of main() BEFORE stage 6 ever logs a row, reproducing the identical lost-registry-row
+ * defect the render guard exists to prevent, one line below it. Same defensive shape as that guard —
+ * `Array.isArray` + optional chaining, never `?? []` alone (a non-array, non-nullish `perHorizon`
+ * would still throw on `.find`) — so this stays a pure lookup callers can sort on without risking
+ * `main()` itself.
+ */
+export function primaryHorizonDeltaBps(candidate) {
+  const perHorizon = Array.isArray(candidate?.perHorizon) ? candidate.perHorizon : [];
+  const cell = perHorizon.find((h) => h?.h === candidate?.primaryHorizon);
+  return cell?.deltaBps ?? -Infinity;
 }
 
 // ── the registry scorecard ───────────────────────────────────────────────────────────────────────

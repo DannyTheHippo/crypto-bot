@@ -233,10 +233,11 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   const annotations = [];
   const probes = (cur && cur.probes) || {};
 
-  // Named probe failures (fail OPEN — never a pass, never a crash). `reconcile` is a per-venue map,
-  // not a single {ok,...} probe, so it is excluded here and walked separately below.
+  // Named probe failures (fail OPEN — never a pass, never a crash). `reconcile` and
+  // `reconcileHaltInBoot` are per-venue maps, not a single {ok,...} probe, so both are excluded here
+  // and walked separately below.
   for (const [name, res] of Object.entries(probes)) {
-    if (name === 'reconcile') continue;
+    if (name === 'reconcile' || name === 'reconcileHaltInBoot') continue;
     if (!res || res.ok !== true) {
       annotations.push({
         kind: 'probe_failed',
@@ -252,6 +253,20 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
         kind: 'probe_failed',
         venue,
         probe: 'reconcile',
+        detail: (res && res.error) || 'no result',
+      });
+    }
+  }
+  // reconcileHaltInBoot's own failures get the same uniform "this probe did not answer" annotation
+  // the alarm below duplicates on purpose (see that block's comment for why the duplication is
+  // intentional and cheap).
+  for (const venue of VENUES) {
+    const res = probes.reconcileHaltInBoot && probes.reconcileHaltInBoot[venue];
+    if (!res || res.ok !== true) {
+      annotations.push({
+        kind: 'probe_failed',
+        venue,
+        probe: 'reconcileHaltInBoot',
         detail: (res && res.error) || 'no result',
       });
     }
@@ -372,11 +387,108 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   // "latest row" read would let one venue's fresh CLEAN pass mask the other venue's HALT.
   for (const venue of VENUES) {
     const rec = probes.reconcile && probes.reconcile[venue];
-    if (rec && rec.ok === true && rec.value && rec.value.latestResult === 'HALT') {
+    const latestIsHalt = !!(
+      rec &&
+      rec.ok === true &&
+      rec.value &&
+      rec.value.latestResult === 'HALT'
+    );
+    if (latestIsHalt) {
       alarms.push({
         kind: 'reconcile_halt',
         venue,
         detail: `latest reconciliation result=HALT (${venue})`,
+      });
+    }
+
+    // BOOT-SCOPED HALT COUNT (2026-08-06 finding). The latest-row check above is blind to a halt
+    // STORM masked by any LATER clean/mismatch row: 2155 lifetime HALT rows across 8 boots produced
+    // ZERO reconcile_halt alarms this way, 427 of them on ONE current boot (binanceusdm,
+    // 2026-08-05T17:36:47Z -> 2026-08-06T03:11:49Z) while the kill switch engaged twice and the book
+    // sat HALTED for 7h07m — this instrument reported a clean bill of health throughout. This reads
+    // a count of HALT rows scoped to the CURRENT bootId (probes.reconcileHaltInBoot, built off the
+    // same resolved bootId gather() stamps onto `cur.bootId` — never derived from a timestamp
+    // window, §C.6: a restart resets process counters, so a boot-pinned count is the honest window).
+    // DELIBERATELY STICKY for the life of a boot: a halt is the most serious event class this system
+    // has (root CLAUDE.md hard rule 6), so it stays lit until the process that halted is gone — and
+    // boot-scoping, rather than a fixed lookback, is exactly what keeps this from becoming a
+    // PERMANENTLY wedged gate, because a redeploy clears it.
+    //
+    // FAILS CLOSED, like classifyVenueRejectRates above: an unread or unparseable count, or one that
+    // does not carry the CURRENT bootId (provenance-before-interpretation — the same guard
+    // diffCounters' deltas use), is its own named alarm and never reads as clean.
+    //
+    // One episode, one alarm kind: when the latest row IS the HALT (latestIsHalt above), that same
+    // row is already inside this boot's count and already surfaced via reconcile_halt — raising this
+    // kind too would just be the same episode under two names.
+    //
+    // ONE EXCEPTION TO FAIL-CLOSED (2026-08-06 adversarial review): an UNRESOLVED bootId is not read
+    // as unreadable-and-alarm here, even though it is the reason haltInBootReadable below evaluates
+    // false. resolveBootId (loop-sweep.mjs) deliberately returns null for the whole post-redeploy
+    // window in which Prometheus still serves the outgoing boot's `boot_info` series alongside the
+    // new one — and the operator playbook prescribes running a sweep in exactly that window. Left
+    // alone, that made EVERY routine redeploy sweep raise this alarm for BOTH venues: two blocking
+    // §3 defect investigations for a condition that resolves itself the moment the stale series ages
+    // out, with no remedy a pass could apply in the meantime.
+    //
+    // THIS IS NOT A LOOSENING of the fail-closed rule, because it answers a different question than
+    // the one that rule protects. "bootId resolved, but the boot-scoped count is unreadable" leaves
+    // "did THIS boot halt?" merely UNANSWERED — the boot is known, a later read (or a human) could
+    // still answer it, so it must keep alarming until someone does. "bootId itself unresolved" leaves
+    // that question UNASKABLE — there is no identified boot to ask it of, so no later read of THIS
+    // probe can ever resolve it either; only the redeploy finishing does. The playbook's own rule is
+    // that a condition whose cause is recorded, positively identified, and outside a pass's remedy is
+    // ANNOTATED for disclosure rather than re-investigated as a fresh defect (the same rule
+    // build_provenance_void and the probe_failed sites elsewhere in this file already follow) — so
+    // this branches to an annotation, keyed off the structured `cause` marker gather() attaches
+    // (loop-sweep.mjs), never off pattern-matching the error string. Every OTHER unreadable shape —
+    // a resolved bootId with a DB error, a NaN/negative count, a count carrying a stale boot's id —
+    // is UNCHANGED: still `reconcile_halt_in_boot_unreadable`, still a blocking alarm, still fails
+    // CLOSED exactly as before this pass.
+    const haltInBoot = probes.reconcileHaltInBoot && probes.reconcileHaltInBoot[venue];
+    const bootIdUnresolved = !!(
+      haltInBoot &&
+      haltInBoot.ok === false &&
+      haltInBoot.cause === 'boot_id_unresolved'
+    );
+    const haltInBootReadable =
+      haltInBoot &&
+      haltInBoot.ok === true &&
+      haltInBoot.value &&
+      Number.isFinite(haltInBoot.value.count) &&
+      haltInBoot.value.count >= 0 &&
+      haltInBoot.value.bootId === curBoot;
+    if (bootIdUnresolved) {
+      annotations.push({
+        kind: 'reconcile_halt_in_boot_boot_id_void',
+        venue,
+        detail:
+          `the boot-scoped HALT count for ${venue} could not be scoped because bootId itself is ` +
+          'unresolved this sweep — the known transient post-redeploy window in which Prometheus ' +
+          'still serves the outgoing boot alongside the new one (resolveBootId). Disclosed, not ' +
+          'alarmed: "did THIS boot halt?" is unaskable without an identified boot, not merely ' +
+          'unanswered, and the condition self-resolves once the stale series ages out — re-sweep ' +
+          'after the redeploy window closes',
+      });
+    } else if (!haltInBootReadable) {
+      alarms.push({
+        kind: 'reconcile_halt_in_boot_unreadable',
+        venue,
+        detail:
+          `the boot-scoped HALT count for ${venue} could not be read or does not carry this boot's ` +
+          `id (${(haltInBoot && haltInBoot.error) || 'no probe result'}) — this is a HEALTH probe ` +
+          'and it fails CLOSED: an unread count means nobody knows whether this boot halted, which ' +
+          'is not the same as knowing it did not',
+      });
+    } else if (haltInBoot.value.count > 0 && !latestIsHalt) {
+      alarms.push({
+        kind: 'reconcile_halt_in_boot',
+        venue,
+        detail:
+          `${haltInBoot.value.count} HALT reconciliation row(s) for ${venue} this boot, though the ` +
+          'latest reconciliation row is not HALT — a halt storm masked by a later CLEAN/MISMATCH row ' +
+          'would otherwise raise nothing at all (the exact 2026-08-06 shape: 427 HALT rows on the ' +
+          'current boot, zero reconcile_halt alarms)',
       });
     }
   }

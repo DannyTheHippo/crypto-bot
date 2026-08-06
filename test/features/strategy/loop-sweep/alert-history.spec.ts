@@ -294,6 +294,12 @@ const NOW = WM_TIME + EXPECTED_SWEEP_INTERVAL_MS;
 function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
   const reconcile: Record<string, unknown> = {};
   for (const venue of VENUES) reconcile[venue] = { ok: true, value: { count: 200 } };
+  // Boot-scoped HALT count (2026-08-06 finding) — zero this boot, tagged with this fixture's own
+  // bootId. Fails CLOSED (reconcile_halt_in_boot_unreadable) if omitted, same reasoning as every
+  // other fail-closed probe in this base bag.
+  const reconcileHaltInBoot: Record<string, unknown> = {};
+  for (const venue of VENUES)
+    reconcileHaltInBoot[venue] = { ok: true, value: { count: 0, bootId: 'boot-A' } };
   // errorScan moved INTO probes (adversarial review, 2026-07-30): gather() now assigns
   // probes.errorScan rather than a sibling top-level field, so the generic probe_failed loop
   // (Object.entries(probes)) actually covers a scan failure — a sibling field was invisible to it,
@@ -311,6 +317,7 @@ function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
       consultGate: { ok: true, value: { total: 50 } },
       fills: { ok: true, value: { count: 10 } },
       reconcile,
+      reconcileHaltInBoot,
       reconcileCleanStamp: { ok: true, value: { seconds: (NOW - 60_000) / 1000 } },
       killSwitch: { ok: true, value: { state: 'RUNNING' } },
       cost: { ok: true, value: { spendUsd: 0.1 } },

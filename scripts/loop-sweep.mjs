@@ -889,6 +889,52 @@ function gather() {
         })();
   }
 
+  // BOOT-SCOPED HALT COUNT (2026-08-06 finding — see the per-venue reconcile_halt block in
+  // loop-sweep-core.mjs for the full derivation and the fail-CLOSED direction). The row above only
+  // ever answers "what is the LATEST verdict", so a halt storm masked by any later CLEAN/MISMATCH row
+  // is invisible to it — 427 HALT rows on the current boot produced zero reconcile_halt alarms this
+  // way. Scoped to the CURRENT bootId (the SAME resolved `bootId` this function stamps onto the
+  // returned `cur.bootId` below) rather than any timestamp window (§C.6: a restart resets process
+  // counters, so a boot-pinned count is the honest one). The probe carries its own `bootId` alongside
+  // the count so the core can refuse to trust a reading that does not carry the boot it was read
+  // for — the same provenance-before-interpretation guard diffCounters' deltas use.
+  probes.reconcileHaltInBoot = {};
+  for (const venue of VENUES) {
+    if (!bootId) {
+      // `cause: 'boot_id_unresolved'` is a structured marker, not just prose in `error` — the core
+      // (loop-sweep-core.mjs) keys its ANNOTATION-vs-ALARM split off this field rather than pattern
+      // matching the error string, so a later reword of the message can never silently flip which
+      // path a read takes. See the core's own comment on that split for why an unresolved bootId
+      // (the known transient two-`boot_info`-series redeploy window, resolveBootId above) is refused
+      // as an ALARM and downgraded to a disclosure, while every OTHER unreadable shape here — a
+      // resolved bootId with a DB error, an unparseable count, a provenance mismatch — keeps failing
+      // CLOSED exactly as before.
+      probes.reconcileHaltInBoot[venue] = {
+        ok: false,
+        error: 'bootId unresolved — cannot scope the HALT count to a boot',
+        cause: 'boot_id_unresolved',
+      };
+      continue;
+    }
+    const row = parsePsqlRow(
+      psql(
+        `select count(*) from reconciliations where venue = '${venue}' and boot_id = '${bootId}' and result = 'HALT'`,
+        { cwd: REPO_ROOT },
+      ),
+    );
+    probes.reconcileHaltInBoot[venue] = !row.ok
+      ? row
+      : (() => {
+          const count = Number(row.value[0]);
+          return Number.isFinite(count)
+            ? { ok: true, value: { count, bootId } }
+            : {
+                ok: false,
+                error: `unparseable boot-scoped HALT count (${venue}): ${row.value[0]}`,
+              };
+        })();
+  }
+
   // The clean STAMP, which is a different question from the rows above: this gauge is
   // ReconciliationService's `lastCleanAt` (set only on an actionable-clean, unhalted pass) and it is
   // the precondition RecoveryCoordinatorService reads before auto-resuming the kill switch. The

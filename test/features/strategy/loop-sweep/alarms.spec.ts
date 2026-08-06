@@ -62,6 +62,18 @@ interface ReconcileProbe {
   ok: boolean;
   value: { count: number; latestResult: string };
 }
+// The boot-scoped HALT-count probe (2026-08-06 finding) — see loop-sweep-core.mjs's per-venue
+// reconcile_halt block. `bootId` is echoed back by the runner so the core can refuse a count that
+// does not carry the CURRENT boot's id (provenance-before-interpretation), never trust it as this
+// boot's episode. `cause` (adversarial review, 2026-08-06) is the structured marker gather()
+// (loop-sweep.mjs) attaches when bootId itself is unresolved — the core keys its ANNOTATION-vs-ALARM
+// split off this field, never off pattern-matching `error`.
+interface ReconcileHaltInBootProbe {
+  ok: boolean;
+  error?: string;
+  cause?: string;
+  value?: { count: number; bootId: string };
+}
 
 // Fixed-shape probe bag (not Record<string,...>) so noUncheckedIndexedAccess doesn't force every
 // mutation site below through an `undefined` check — each field is a known, always-present key.
@@ -88,6 +100,7 @@ interface Probes {
   consultGate: { ok: boolean; value: { total: number } };
   fills: { ok: boolean; value: { count: number } };
   reconcile: Record<string, ReconcileProbe>;
+  reconcileHaltInBoot: Record<string, ReconcileHaltInBootProbe>;
   reconcileCleanStamp: { ok: boolean; value: { seconds: number } };
   killSwitch: { ok: boolean; value: { state: string } };
   cost: { ok: boolean; value: { spendUsd: number; remainingUsd?: number } };
@@ -126,6 +139,17 @@ function baseReconcileByVenue(
   return out;
 }
 
+// Default: zero HALT rows this boot, correctly tagged with baseApp()'s own bootId ('boot-A') — the
+// clean reading, matched to the fixture that produces it (baseApp's bootId, not a hardcoded literal).
+function baseHaltInBootByVenue(
+  count: number,
+  bootId = 'boot-A',
+): Record<string, ReconcileHaltInBootProbe> {
+  const out: Record<string, ReconcileHaltInBootProbe> = {};
+  for (const venue of VENUES) out[venue] = { ok: true, value: { count, bootId } };
+  return out;
+}
+
 function baseOrderRejects(rejects: number, submits = 20): Record<string, unknown> {
   const byVenue: Record<string, unknown> = {};
   for (const venue of VENUES) byVenue[venue] = { submits, rejects };
@@ -141,6 +165,7 @@ function baseProbes(): Probes {
     consultGate: { ok: true, value: { total: 50 } },
     fills: { ok: true, value: { count: 10 } },
     reconcile: baseReconcileByVenue(200),
+    reconcileHaltInBoot: baseHaltInBootByVenue(0),
     // Stamped 1 min before the sweep reads it — comfortably fresh.
     reconcileCleanStamp: {
       ok: true,
@@ -390,6 +415,114 @@ describe('loop-sweep-core alarms', () => {
     const halts = alarms.filter((a) => a.kind === 'reconcile_halt');
     expect(halts).toHaveLength(1);
     expect(halts[0]?.venue).toBe(SPOT);
+  });
+
+  // 2026-08-06 finding: reconcile_halt above reads only the LATEST row's verdict, so a halt STORM
+  // followed by any later CLEAN row was completely invisible — 2155 lifetime HALT rows across 8
+  // boots produced ZERO reconcile_halt alarms, 427 of them on one current boot (binanceusdm) while
+  // the kill switch engaged twice and the book sat HALTED for 7h07m.
+  describe('reconcile_halt_in_boot — the boot-scoped HALT count the latest-row read cannot see', () => {
+    it('fires when the boot-scoped HALT count is > 0 but the latest row is CLEAN (the exact 2026-08-06 shape: 427 HALT rows, binanceusdm)', () => {
+      const app = baseApp();
+      app.probes.reconcile[PERP] = { ok: true, value: { count: 500, latestResult: 'CLEAN' } };
+      app.probes.reconcileHaltInBoot[PERP] = { ok: true, value: { count: 427, bootId: 'boot-A' } };
+      const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(alarms)).not.toContain('reconcile_halt');
+      const fired = alarms.find((a) => a.kind === 'reconcile_halt_in_boot');
+      expect(fired).toBeDefined();
+      expect(fired?.venue).toBe(PERP);
+      expect(fired?.detail).toContain('427');
+      expect(fired?.detail).toContain(PERP);
+    });
+
+    it('a HALT latest row raises the existing reconcile_halt and does NOT double-raise reconcile_halt_in_boot', () => {
+      const app = baseApp();
+      app.probes.reconcile[PERP] = { ok: true, value: { count: 500, latestResult: 'HALT' } };
+      // The current HALT row is itself inside this boot's count.
+      app.probes.reconcileHaltInBoot[PERP] = { ok: true, value: { count: 5, bootId: 'boot-A' } };
+      const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      const halts = alarms.filter((a) => a.kind === 'reconcile_halt' && a.venue === PERP);
+      expect(halts).toHaveLength(1);
+      expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot');
+    });
+
+    it('zero halts this boot raises neither reconcile_halt nor reconcile_halt_in_boot', () => {
+      const app = baseApp(); // baseProbes already carries reconcileHaltInBoot count 0, latest CLEAN
+      const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(alarms)).not.toContain('reconcile_halt');
+      expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot');
+    });
+
+    it('an unreadable or unparseable count raises reconcile_halt_in_boot_unreadable and never reads as clean', () => {
+      const badShapes: (ReconcileHaltInBootProbe | undefined)[] = [
+        undefined,
+        { ok: false, error: 'psql exited 2: connection refused' },
+        { ok: true, value: { count: Number.NaN, bootId: 'boot-A' } },
+        { ok: true, value: { count: -1, bootId: 'boot-A' } },
+      ];
+      for (const probe of badShapes) {
+        const app = baseApp();
+        app.probes.reconcileHaltInBoot[PERP] = probe as ReconcileHaltInBootProbe;
+        const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+        const unreadable = alarms.find(
+          (a) => a.kind === 'reconcile_halt_in_boot_unreadable' && a.venue === PERP,
+        );
+        expect(unreadable, `expected unreadable for ${JSON.stringify(probe)}`).toBeDefined();
+        // Never silently equivalent to a clean 0-halt boot.
+        expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot');
+      }
+    });
+
+    // 2026-08-06 adversarial review: resolveBootId returns null for the whole post-redeploy window
+    // where Prometheus still serves two `boot_info` series, and the playbook prescribes sweeping in
+    // exactly that window — so an unresolved bootId used to raise reconcile_halt_in_boot_unreadable
+    // on BOTH venues on every routine redeploy, each forcing a full §3 defect investigation for a
+    // condition that resolves itself once the stale series ages out.
+    it('an UNRESOLVED bootId (the post-redeploy window) is disclosed as an annotation, never raised as reconcile_halt_in_boot_unreadable', () => {
+      const app = baseApp();
+      app.probes.reconcileHaltInBoot[PERP] = {
+        ok: false,
+        error: 'bootId unresolved — cannot scope the HALT count to a boot',
+        cause: 'boot_id_unresolved',
+      };
+      const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot_unreadable');
+      expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot');
+      const disclosed = annotations.find(
+        (a) => a.kind === 'reconcile_halt_in_boot_boot_id_void' && a.venue === PERP,
+      );
+      expect(disclosed).toBeDefined();
+    });
+
+    // Every OTHER unreadable shape must keep failing CLOSED exactly as before — the annotation path
+    // above is reachable ONLY through the structured `cause: 'boot_id_unresolved'` marker, never
+    // through a resolved bootId that merely happens to carry an unreadable count.
+    it('a resolved bootId with an unreadable count still raises reconcile_halt_in_boot_unreadable, not the new annotation', () => {
+      const app = baseApp();
+      app.probes.reconcileHaltInBoot[PERP] = {
+        ok: false,
+        error: 'psql exited 2: connection refused',
+      };
+      const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(alarms)).toContain('reconcile_halt_in_boot_unreadable');
+      expect(annotations.some((a) => a.kind === 'reconcile_halt_in_boot_boot_id_void')).toBe(false);
+    });
+
+    it('halts belonging to a PREVIOUS boot do not raise on the current boot — a stale bootId is refused, never trusted as this boot', () => {
+      const app = baseApp(); // app.bootId stays 'boot-A' — the watermark's boot, i.e. no boot change
+      // A count that carries a DIFFERENT boot's id — e.g. a stale probe reused across a redeploy —
+      // must not be attributed to the current boot, whether the storm it describes is real or not.
+      app.probes.reconcileHaltInBoot[PERP] = {
+        ok: true,
+        value: { count: 427, bootId: 'boot-OLD' },
+      };
+      const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(alarms)).not.toContain('reconcile_halt_in_boot');
+      const unreadable = alarms.find(
+        (a) => a.kind === 'reconcile_halt_in_boot_unreadable' && a.venue === PERP,
+      );
+      expect(unreadable).toBeDefined();
+    });
   });
 
   // 2026-07-27 incident: perp reported MISMATCH on EVERY pass (adopt_non_adoptable on an order

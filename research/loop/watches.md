@@ -896,6 +896,42 @@ That is why a single observation is weak evidence here: the failure is rare per 
 
 **Status: UNFIRED** as of Pass 63.
 
+### WATCH-V4-20 — a rejected portfolio batch stops costing every symbol in it (2026-08-05, Pass 64)
+
+**Why.** Over the 7 days to 2026-08-05, **48 of 224 portfolio consults (21.4%) had their whole batch
+discarded** on a top-level schema failure — every symbol held, the model's output paid for and thrown
+away, ~$0.34/day. Shipped in `fbb3800`: salvage a string-encoded `decisions`, preserve a clamped
+`nextConsultBars`, and split `empty_tool_input:` out of `schema_rejected:`.
+
+**Expected-positive, four clauses.**
+
+1. `agentic_schema_rejections_total{kind="batch_stringified_recovered"}` increments on the first
+   cleanly-stringified payload, and those symbols journal real actions rather than a `schema_rejected` hold.
+2. `empty_tool_input:` rows carry an empty payload AND a non-`max_tokens` stop; genuine truncations keep
+   stamping `truncated_max_tokens:` with `output_tokens` 4096.
+3. Every `nextConsultBars` stamped by a whole-batch discard is **≤ `AGENTIC_FALLBACK_CONSULT_BARS`** (8).
+4. The sweep's `realDecides` count never counts a degraded row — guarded by `degrade-tag-mirrors.spec.ts`.
+
+**Named defect outcomes.**
+
+- `batch_stringified_recovered` stays 0 while `{kind="batch"}` keeps firing ⇒ the live shape is always
+  malformed-inner JSON (as boot `e423875b`'s own case was, where `JSON.parse` correctly threw), and the
+  salvage addresses a shape that does not actually occur — record it and stop claiming the recovery.
+- `empty_tool_input:` never fires while `schema_rejected:` does ⇒ the empty-payload case was a one-off and
+  the split bought diagnosability nobody needed.
+- A stamped `nextConsultBars` above the fallback bars ⇒ the clamp is not wired at the live call site.
+- `realDecides` jumping while decides are degraded ⇒ a mirror drifted again; the new spec should make this
+  unreachable, so it firing means the guard itself is wrong.
+
+**Baseline to read against** (boot `e423875b`, pre-fix): 1037 clean rows, 2 `truncated_max_tokens`, 1
+`schema_rejected`, 0 `empty_tool_input` (the tag did not exist). Both new counter children zero-seed at
+boot, so **a zero is a real absence, not a missing series**.
+
+**Deadline: 2026-08-09.** At ~32 consults/day the 21.4% rate implies ~7 discards/day, so four days is
+ample; a still-empty reading by then is itself the finding.
+
+**Status: UNFIRED** — shipped and deployed `fbb3800` at 2026-08-05T01:11:05Z, boot `90dbb484`.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

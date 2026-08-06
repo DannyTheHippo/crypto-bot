@@ -36,16 +36,20 @@
 > **silence, not health**. **`cost_breaker_proximity` CLEARED at the UTC day roll** — it read $2.72/$3.00 at Pass 60. The lane self-paces to almost exactly the cap, so expect it to re-fire late each UTC
 > day: recorded cost shape, not a leak.
 
-## ⚠ TWO REDEPLOY CARVE-OUTS AND ONE REFUTED PREMISE — all first measured Pass 63
+## ⛔ A FIFTH OF EVERY PORTFOLIO CONSULT WAS PAID FOR AND THROWN AWAY — FIXED Pass 64
 
-> **EVERY REDEPLOY FIRES A *CRITICAL* ALERT, AND IT IS NOT A DEFECT.** `ReconcilerStalled` fired **18:06:09Z–18:06:39Z, two samples, 8 s after the container started** and resolved on its own — the
-> reconciler had simply not run yet on a fresh boot (measured from Prometheus' `ALERTS` series, positive control passing). **Record this before §3 forces the next pass to investigate its own deploy:** a
-> resolved *critical* is normally a mandatory defect investigation. Same family as the zero clean-stamp / zero budget gauges.
->
-> **`BELOW_PASSIVE_BENCHMARK` IS FIRING ON A REAL COMPARISON, NOT A REFUSAL — #152's recorded premise is REFUTED by the instrument built to test it.** First reading:
-> `passive_benchmark_state{state="COMPUTED"} 1` (REFUSED 0, UNAVAILABLE 0), **FINITE** bar `passive_benchmark_pnl_usd = −1.695548852397436`, not the `+Inf` refusal sentinel — passive lost **$1.70** while
-> the book lost **$69.28**, so it blocks because the strategy is **~$67.6 worse than doing nothing**. **Whether Pass 62 mis-read it or the state changed CANNOT be distinguished** — no history, the series
-> is new. Do not re-assert either version without a second reading. `LOG.md` § Pass 63 soak.
+> **48 whole-batch discards against 224 consults over 7 days = 21.4%**, in 20 of 28 six-hour buckets, every day since 07-30; `increase()` under-counts a first-seen child so **48 is a FLOOR**. ~**$0.34/day**
+> (n=2 basis: the 2 live events cost $0.099215 for 3 lost symbol-decides). **The two causes are NOT the same defect** — eight of twenty-one non-empty buckets carry payload failures with ZERO truncations.
+> `output_tokens` **272** + non-`max_tokens` stop = the model emitting `decisions` as a JSON **string** (the tool schema is `strict:true` and has forbidden that since `651aa2a`, 10 days earlier — **no prompt
+> fix was left**); `output_tokens` **4096** = real truncation. **No retry existed**: a 200 carrying an invalid payload never throws, so `attemptWithRetry` never saw it. Shipped `fbb3800`. **PnL sign is
+> AMBIGUOUS — at 24% hit rate vs a 41.65% break-even, more recovered entries at a negative edge may worsen gross. Never quote this as a profitability gain.** WATCH-V4-20.
+
+## ⛔ L1 IS LIVE AND ITS PRIMARY SIGNATURE IS FALSIFIED — do not re-derive the wiring
+
+> `AGENTIC_OUTPUT_EFFORT=medium` traced **end-to-end across seven hops**, verified in the **compiled `dist` actually running**, the container env, and the boot's `config_snapshots` row (hash `89848501`).
+> Live in the client since **2026-08-04T08:00:23Z** (`prompt_hash` `46359ad3`→`aefafb3c`, `playbook_version` constant at 10, no code commits in window, `b2f7f53` touched only `.env.app`+`STATUS.md`).
+> **Truncation fired anyway 16h later at exactly 4096 output tokens.** WATCH-V4-12's expected-positive is **NOT met with the lever live**. Open + UNVERIFIED: whether `effort` is honoured for this model, or
+> whether the unconditional `thinking:{type:'adaptive'}` eats the budget ahead of tool JSON. **`stop_reason` is recorded NOWHERE** — inferable only from the rationale tag prefix; journaling it is the cheapest instrument.
 
 ## ⚠ Standing cautions — bodies live elsewhere; these are the facts, follow the pointer
 
@@ -69,11 +73,13 @@
 
 ## Current order & status
 
-- **Deployed `37587f6` (Pass 63), `build_info{git_sha="37587f6"}` confirmed live**, `kill_switch_state{state="RUNNING"}`, `agent_client_latch_cause` all three children 0.
-  **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 197 files / 3832 passed** (baseline 3805, +27); **`eval:agentic` 95 passed | 20 skipped, run BEFORE
-  the commits** — Pass 60's miss was running it after the deploy. Redeploy carve-outs (re-seeded `agentic_venue_stop_total`, reset RSS, zero clean-stamp and budget gauges,
-  ~15 min of legitimately zero decides = **bar phase, not a stall**) and the promtool trap: playbook §5.3, `LOG.md` § Pass 59. **Carve-out re-confirmed a THIRD time Pass 63:
-  a scrape within ~70s of boot reads `mode_info{effective="paper"}` — the safe default, taken BEFORE mode resolution runs. A mid-boot artifact, NOT a downgrade.**
+- **Deployed `fbb3800` (Pass 64), `build_info{git_sha="fbb3800"}` confirmed live**, boot `90dbb484`, `RestartCount` 0, `kill_switch_state{state="RUNNING"}`, `agent_client_latch_cause` all three 0.
+  **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 198 files / 3863 passed** (baseline 197/3835); **`eval:agentic` 95 passed | 20 skipped, run BEFORE the commits** — Pass 60's miss
+  was running it after the deploy. **REDEPLOY CARVE-OUTS, now TIMED (Pass 64, fifth confirmation) — every one of these is a mid-boot artifact, NOT a defect:** `mode_info{effective="paper"}` at +39s,
+  resolved to `testnet` by **+69s**; zero clean-stamp and zero budget gauge at +69s, both initialised by **+99s**; plus re-seeded `agentic_venue_stop_total`, reset RSS, ~15 min of legitimately zero decides
+  (**bar phase, not a stall**), and **a *critical* `ReconcilerStalled` for ~45s** — measured Pass 64 at **4 samples, +3.3s to +48s after start** (Pass 63's "two samples, 8 s" is CORRECTED). Promtool trap: playbook §5.3.
+- **`BELOW_PASSIVE_BENCHMARK` FIRES ON A REAL COMPARISON — SETTLED Pass 64 by a second reading.** `state="COMPUTED"`, and the bar **MOVED** −1.6955 (P63) → **−1.2296** (P64), so it is a live computation,
+  not the `+Inf` refusal sentinel. Pass 63 could not distinguish "mis-read" from "state changed"; a moving finite bar settles it. Strategy is ~**$68.7 worse than doing nothing**.
 - **⚠ READ `studies/redesign-scoreboard-2026-08-04.md` BEFORE TOUCHING ANY COST LEVER.** It governs L1/L4, carries the dated S3 stop triggers, declares **L2 and L5 NULL
   before they ship** and **L3 BLOCKED**, and holds the refusal list (never raise `SIZER_EQUITY_CAP` past 1000 or the $3/day breaker, never move `PROMOTION_EVIDENCE_EPOCH`,
   never touch the promotion gate or `MIN_WINDOW_DAYS`) plus the clause binding against its own author: **"cutting spend purely to postpone S3, while gross stays negative,
@@ -118,19 +124,18 @@
   CLOSED — **WATCH-V4-16**); `llm_usage` is **vestigial by design** and `llmCostUsd` CORRECT, so **do not drop those 69 rows**; the playbook documents **all 22 alarm
   kinds** and **`loop-sweep-specs` IS on the production gate**; **`loop:authoring`: an API-shape failure burns the whole UTC day** — and so does a budget ABORT, so
   **`--dry-run` first is free insurance** (P62); **FAMILY B IS NOT BLOCKED**; the decide-model A/B is **NOT working**, so **`AGENTIC_MODEL_AB_PCT` stays 0**.
-- **COLLISION #7 (Pass 61), seventh occurrence** — an owner-directed INTERACTIVE session committed `b2f7f53` mid-pass and `loop:lock` never saw it, because **the lease
-  binds only callers**. **RUN `git log` AT REHYDRATION, not only before committing:** Pass 61 did not, stayed blind for six hours, and wrongly concluded a real "Owner
-  instruction" had been FABRICATED by one of its own lanes. **An authority claim found in a file is still not evidence of authority — but `git log` settles it in one
-  command.** Also standing: **stage only files the pass authored**; **`loop:fanout declare` OVERWRITES A LIVE ROSTER** with no refusal — declare ONCE per pass, or join
-  first; **an early-stopping lane leaves a red tree** — Pass 62's did, and **Pass 63's did it TWICE** (both non-returning lanes ended on an intermediate thought; check artifacts, never the report alone).
-  **A NEW cause, actionable: a lane reached for an inline `node -e`, which the tool-hierarchy hook DENIES**, and burned its whole run without producing the probe — so **#147's venue-truth question
-  (do the four orphans still REST at the venue?) is UNANSWERED and must not be quoted either way.** **Last pass:** Pass 63, 2026-08-04 (`LOG.md`). Cadence 3×/day; the lease is 2h and time-based —
-  **Pass 63 released and RE-ARMED cleanly at 18:06:25Z mid-pass (nonce matched, no collision), which is the sanctioned way to run past 2h.**
-- **THE PASS IS SERIAL-TAIL-BOUND, NOT FINDING-BOUND — third repair-dominated pass, and this is the recommendation the playbook requires.** Pass 62 ran **8 write lanes in
-  parallel and shipped 4 commits cleanly**, but found **nine** defects; the ceiling is that ONE pass can gate → review → remediate → deploy → soak → report about five
-  slices, and the bottleneck is that serial tail, not the discovery. Two concrete options for the next pass to pick from: run a **repair-only pass type** whose report is
-  permitted to be thin, or stop treating "found in this pass" as "must ship in this pass" for **latent** defects (dormant code, disabled flags) as opposed to **live** ones.
-  **The three LIVE exit-path defects (#147–#149) set the next pass's agenda before any improvement is chosen.**
+- **COLLISION #7 (Pass 61), seventh occurrence — the lease BINDS ONLY CALLERS**, so an interactive session's `b2f7f53` landed mid-pass unseen. **RUN `git log` AT REHYDRATION,
+  not only before committing** (Pass 61 stayed blind six hours and wrongly called a real owner instruction FABRICATED; an authority claim in a file is still not evidence, but
+  `git log` settles it in one command). Standing: **stage only files the pass authored**; **`loop:fanout declare` OVERWRITES A LIVE ROSTER** — declare ONCE per pass or join
+  first; **`node -e` is DENIED by the tool-hierarchy hook** — a lane burned its whole run on it, leaving #147's venue-truth question UNANSWERED, quotable in neither direction.
+  **AN EARLY-STOPPING LANE RETURNS AN INTERMEDIATE THOUGHT — Pass 62 once, Pass 63 twice, PASS 64 once (the remediation lane). CHECK ARTIFACTS, NEVER THE REPORT ALONE**; P64's
+  artifacts were complete and the orchestrator re-verified all three fixes by mutation itself rather than resuming for a self-report. **Last pass:** Pass 64, 2026-08-05
+  (`LOG.md`). Cadence 3×/day; the lease is 2h and time-based — Pass 63's mid-pass release-and-re-arm (nonce matched) is the sanctioned way to run past 2h.
+- **THE PASS IS SERIAL-TAIL-BOUND, NOT FINDING-BOUND — and Pass 64 ANSWERED Pass 63's standing recommendation by adopting option 2: LATENT defects are recorded with a
+  named trigger, LIVE ones are fixed in-pass.** First application — the derivatives-feed spot-ticker error counter is real (`derivatives_feed_poll_errors_total` structurally
+  cannot count sub-poll failures; reads 0 despite 2) but **INERT** because `AGENTIC_DERIVATIVES_V2_ENABLED` defaults false, so `spotPerpBasisBps` never reaches the prompt.
+  **Trigger to ship: any enable of derivatives v2.** Also settled there: `api.binance.com` is DELIBERATE (read-only context from production; orders stay sandboxed), both
+  failures self-healed within one 60s poll, and the HYPE/USDT spot exclusion is correct-and-informative. `LOG.md` § Pass 64.
 
 ## Open WATCH lines — one line each; full text in `watches.md`
 
@@ -146,8 +151,9 @@
 | WATCH-V4-11 | `orphan_scan` > 0 on a boot with a flat perp bar, and every resolved algo-rail cancel appends `algo-hist:CANCELED` to `order_events` | **RE-READ Pass 58 — expected-positive CONFIRMED again**: `orphan_scan=2843 readopt=1 cancel=0 cancel_failed=0` on binanceusdm before the redeploy. Re-seeded to 0 by each redeploy, so it re-reads on the next flat perp bar |
 | WATCH-V4-12 | truncation degrades carry `truncated_max_tokens:` with `output_tokens` == 4096, not `schema_rejected:` | holds (Pass 53 confirmed; 8 more this boot, all pinned at exactly 4096). **Pass 59 PRICED IT: $0.6148/day = 20.5% of the breaker, 30.2% of decide spend, ~11 symbol-decides/day, all paid and discarded — running since 2026-07-23.** The named lever `output_config:{effort}` is now WIRED, flag-off (`ea68379`), awaiting a separate enable + $0 offline review. **Both alternatives stay refuted**: `budget_tokens` 400s on sonnet-5, raising `AGENTIC_MAX_TOKENS` breaks the 75s batch budget |
 | WATCH-V4-14 | a terminal-reject burst of ≥3 in 15m surfaces as a `prometheus_alert_firing_nonblocking` annotation naming `VenueTerminalRejectBurst` in the FIRST sweep after it, and agrees with the sweep's own rate alarm | **UNFIRED — and the recorded deadline framing was WRONG, corrected Pass 63.** Rejects are NOT absent: **46 in 7 days**, newest 2026-08-03T22:00:58Z. Exactly ONE 15-min bucket ever reached the ≥3 threshold — **2026-07-31T13:00Z with 12** — and it PREDATES the rule. The rule IS loaded and healthy at severity `warning` (25 rules, 0 firing, 0 unhealthy), which is the GOOD outcome for its third clause (it cannot wedge §3). **Correct status: untriggered because no qualifying burst has occurred since deployment — NOT "untested because nothing rejects"** |
-| WATCH-V4-18 | a restart re-arm over a position with resting protective orders reports `stop=…[resting-stop]` / `tp=…[resting-tp]`, never `[synthetic]`, and the re-armed `takeProfitPct` stops being exactly `0.02` | **NEW Pass 63 (#149 fix, `44792d9`), UNFIRED.** Named defects: all re-arms still `[synthetic]` ⇒ the perp registry re-adopt is not running (its only seeder with no active plan); a pct inside `DECISION_V2_BOUNDS` but outside the model's observed 0.012–0.04 ⇒ a stale order adopted (**known accepted residual** — premature exit, never unbounded loss); drift-cancel churn NOT falling ⇒ "#149 manufactures #148" is wrong. Deadline **2026-08-08** |
-| WATCH-V4-19 | no positioned symbol crosses a bar boundary with no protective stop resting; `placed` increments in the SAME bar as each `drift_cancel` | **NEW Pass 63 (#148 fix, `44792d9`), UNFIRED.** The `'placed'` emission on the TP replace path was itself a must-fix — without it ~36% of TP placements were invisible. Named defects: `drift_cancel` without a same-bar placement (EXPECTED when the `sideCollateral` guard fires — **measure how often**; common ⇒ the fix misses its own live scenario); duplicate resting orders ⇒ in-flight suppression insufficient; spot `InsufficientFunds` ⇒ the guard's condition is wrong. **Cannot be exercised on binance spot — zero submits since 2026-07-31, so a zero there is starvation, not health.** Deadline **2026-08-08** |
+| WATCH-V4-18 | a restart re-arm over a position with resting protective orders reports `stop=…[resting-stop]` / `tp=…[resting-tp]`, never `[synthetic]`, and the re-armed `takeProfitPct` stops being exactly `0.02` | **MET — FIRST READING Pass 64, expected-positive CONFIRMED.** Of 6 `forced_rearm` consults only **ZEC** lacked model directives and hit the fallback; it tagged **`[resting-stop]`/`[resting-tp]`**, never `[synthetic]`, and both pcts (**3.5015% / 3.0002%**) reproduce from ZEC's own pre-boot resting orders. `agentic_rearm_fallback_total=1`; `orphan_readopt=6` confirms the re-adopt it depends on is running. **No TP at exactly 0.02 across any of the 6.** Third named defect (drift-cancel churn falling) is **INCONCLUSIVE on n=1 post-fix boot — not scored either way** |
+| WATCH-V4-19 | no positioned symbol crosses a bar boundary with no protective stop resting; `placed` increments in the SAME bar as each `drift_cancel` | **MET on binanceusdm — FIRST READING Pass 64. 8/8 drift-cancels paired same-bar**, by `order_events` timestamps not totals: TP leg 4/4 (gaps **5–27 ms**), stop leg 4/4 (**0.25–0.50 s**, each journaling `algo-hist:CANCELED`). `placed`=5 = 4 replacements + 1 fresh KAITO scale-in. **The `sideCollateral` guard fired 0 of 4** — the compound path was the common case (n=4). **VOID/STARVATION on binance spot** as flagged: zero order activity of ANY kind since 2026-07-31T01:54Z, positive control returns real historical `InsufficientFunds` rows, so the zero is a real absence but proves nothing |
+| WATCH-V4-20 | a rejected portfolio batch stops costing every symbol in it: `batch_stringified_recovered` increments on the first cleanly-stringified payload; `empty_tool_input:` rows carry an empty payload AND a non-`max_tokens` stop; every discard-stamped `nextConsultBars` is ≤ `AGENTIC_FALLBACK_CONSULT_BARS` | **NEW Pass 64 (`fbb3800`), UNFIRED.** Named defects: `batch_stringified_recovered` stays 0 while `{kind="batch"}` fires ⇒ the live shape is always malformed-inner (as boot `e423875b`'s own case was) and the salvage addresses a shape that does not occur; `empty_tool_input:` never fires ⇒ the split bought diagnosability nobody needed; a stamped value above the fallback ⇒ clamp not wired. **Both counters ZERO-SEED at boot, so a zero is a real absence.** Baseline (pre-fix boot): 1037 clean / 2 truncated / 1 schema_rejected. Deadline **2026-08-09** |
 | WATCH-V4-13 | on the FIRST spot entry after `f5abf8a`, `agentic_venue_stop_total{venue="binance",event="stood_down"}` increments, `{venue="binance",event="placed"}` stays 0, and NO `InsufficientFunds` on a spot `reduce_only` SELL | **STILL VOID at Pass 58 — and now known to be STRUCTURALLY STARVED, not merely quiet.** All binance stop counters 0; zero binance submits of any kind for 3d 7h; 191 spot consults → 0 entries. This watch cannot be answered until the spot-suppression question (backlog 58) is settled — record it as BLOCKED-ON-EVIDENCE, not as holding |
 | WATCH-PLAN-AUTHORITY-1 | `plan_authoritative_close:` holds at ~the historical close rate AND the exit mix shifts toward venue stop/TP/max_hold | **FIRED.** Baseline −108.1 bps/trip at 17.4% hit; revert if positions storm to `max_hold` worse than that |
 | WATCH-PLAYBOOK-V10-1 | live entry forward return under v10 lands above `champion_v8`'s replayed −12.7/−36.3/−32.7/−70.1 bps | **RESTATED 2026-08-04 in two tiers (`watches.md` amendment); the FIRED-POWERED Pass-59 reading STANDS — do not re-derive.** Tier 1 (v10-live vs v8-live: h=1 −24.3, h=4 **+52.0**, h=8 **+16.2**, h=24 −31.2) is **CAPPED UNDERPOWERED FOREVER** — v8 is n=8/k=5 and accrues no new entries, so it carries NO deadline. Tier 2 is adjudicable NOW: market-neutral v10 excludes zero at h=4/h=8, and the raw live v10 cell does too (−45.3 [−122.0, −0.3], −52.8 [−134.9, −1.5]); **h=1 and h=24 straddle zero and are not adverse**. Filled-vs-unfilled re-reads at NOFILL n≥12 (~2026-08-09). **ROLLBACK REFUSED** — see § Current order |
@@ -158,15 +164,14 @@
 
 Resolved WATCH lines (V3-2, V3-3, V4-5, V4-6, V4-8, **V4-10 moved out Pass 54**) are kept in full in `watches.md` § Resolved — closed, not deleted; do not re-open one without new evidence.
 
-## Open defects — the three LIVE exit-path ones are FIXED AND DEPLOYED (Pass 63); the measurement three are fixed except one deliberate refusal
+## Open defects — the three LIVE exit-path ones are now CONFIRMED CLOSED FROM OUTSIDE THE TEST SUITE (Pass 64 first readings)
 
-**#147/#148/#149 SHIPPED `44792d9`, #150/#152 SHIPPED `37587f6`.** Pre-fix bodies stay in `watches.md` § Open defects #147–#152 as the record; the post-fix contracts are **WATCH-V4-18** (re-armed
-geometry) and **WATCH-V4-19** (no bare bar after a drift/qty cancel). **#151 was REFUSED on evidence, not deferred** — re-anchoring the cost read to the window start moved ONE of `netPnl`'s FOUR terms
-and would have erased $7.1553494 of inference while still counting $0.08740698 of fees and 9 fills over the same interval; it also moved both S3 arms later (1.37 d / 2.73 d) and would have broken
-`loop:llm-attrib` permanently into `LAG_UNRESOLVED`. The **neutral repair shipped instead** (publish `llmCostSinceMs` beside `llmCostCountedThroughMs`) — **the published book did not move.** The
-recorded **"25.2% / $7.72" figure does NOT reproduce: measured 23.35% / $7.1553494 of $30.6412913.** **STILL OPEN, seam named, not a priority argument:** #149's CLOCK half — `maxHoldBars: 96` and
-`barsElapsed: 0` are still hardcoded because **no reachable port carries the position's open time** (`Position`, `PortfolioSnapshot`, `AgentPositionSummary` all lack a timestamp; `intentStore` is
-narrowed to `loadIntentByClientOrderId` and a restart lost that coid); the seam is a new optional `AgenticStrategyDeps` closure wired in `trading-runtime.module.ts`, the `onAlgoStopGone` pattern.
+**#147/#148/#149 SHIPPED `44792d9`, #150/#152 SHIPPED `37587f6`; WATCH-V4-18 and WATCH-V4-19 both read MET at Pass 64** (table above) — the fixes are confirmed live, not merely deployed. Pre-fix bodies
+stay in `watches.md` § Open defects #147–#152. **#151 was REFUSED on evidence, not deferred** — re-anchoring the cost read moved ONE of `netPnl`'s FOUR terms, erasing $7.1553494 of inference while still
+counting $0.08740698 of fees and 9 fills over the same interval, moving both S3 arms later (1.37 d / 2.73 d) and breaking `loop:llm-attrib` into `LAG_UNRESOLVED`. Recorded **"25.2% / $7.72" does NOT
+reproduce: 23.35% / $7.1553494 of $30.6412913.** **CORRECTED Pass 64: the neutral repair published both bounds in the `evidence` OBJECT, not as metrics — there is NO `llm_cost_since` gauge, and the code
+comment is right because it scopes "published" to `evidence`. Adequate as-is (`llmCostSinceMs` is always `epochMs`, a static deploy constant); do not "fix" it.** **STILL OPEN, seam named:** #149's CLOCK
+half — `maxHoldBars: 96`/`barsElapsed: 0` hardcoded because **no reachable port carries the position's open time**; the seam is a new optional `AgenticStrategyDeps` closure in `trading-runtime.module.ts`.
 
 ## Backlog (open — improvements ONLY, never bugs; conventions in `charter.md`)
 

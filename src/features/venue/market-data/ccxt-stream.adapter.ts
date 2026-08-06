@@ -95,6 +95,17 @@ const WATCHDOG_CANDLE_STALL_THRESHOLD_MS = 1_200_000;
 // The v2 recreation cooldown below is therefore the sole knob that needed to change; this constant
 // and watchdogTick() are UNCHANGED (never weaken existing pacing/watchdog thresholds).
 const WATCHDOG_RECONNECT_COOLDOWN_MS = 120_000;
+// LIVE INCIDENT 2026-08-06: exchange.close() is a no-op on a never-connected instance (Exchange.js's
+// `clients` map is empty, so close() has nothing to iterate and mints no ExchangeClosedByUser) — 222
+// watchdog fires against a markets-wedged instance (see the pinned-ccxt-4.5.58 header comment)
+// produced zero recreations, because the watchdog's only lever was close() and close() on THIS wedge
+// class does nothing at all. After this many consecutive forced-reconnect ticks that still find the
+// same channels stalled (i.e. the prior close()/reload attempts yielded no data), the watchdog
+// escalates straight to instance recreation instead of repeating an inert close(). Small on purpose:
+// each unit costs one WATCHDOG_RECONNECT_COOLDOWN_MS (120s) cycle, so 3 is ~6 minutes of confirmed
+// silence before swapping the instance — long enough to rule out a slow-but-alive resubscribe,
+// short enough to not repeat the 2026-08-06 6.25h wedge three more times over.
+const WATCHDOG_ZERO_YIELD_ESCALATION_THRESHOLD = 3;
 
 // (Re)subscribe pacing: Binance closes a WS connection receiving >5 inbound messages/second with
 // code 1008 (policy violation). Every supervised loop (re)subscribes through one exchange, and an
@@ -134,6 +145,24 @@ const SUBSCRIBE_JITTER_MAX_MS = 100;
 // line per channel per interval keeps a persistent failure observable without a tight error loop
 // flooding the log.
 const LOOP_ERROR_LOG_INTERVAL_MS = 60_000;
+
+// See hasNoMarkets()/forceReloadMarkets() below and the pinned-ccxt-4.5.58 header comment (LIVE
+// INCIDENT 2026-08-06). Single-flighted across every concurrent handleLoopError caller AND
+// cooldown-gated on top: with ~90 supervised loops sharing one exchange instance, every one of them
+// can land on the wedge in the same beat, and exchangeInfo is weight-20 on binance spot — an
+// uncooled reload attempt per wedged loop-error would be a self-inflicted 418 ban, trading one outage
+// for a worse one.
+const MARKETS_RELOAD_COOLDOWN_MS = 15_000;
+
+// Per-(symbol,channel) retry backoff, replacing the old fixed 1000ms. The fixed delay meant ~90
+// loops retried an instantly-rejecting cached promise every second for the full 6.25h of the
+// 2026-08-06 wedge — loud in log volume, silent in meaning (every line said the same thing). Doubling
+// from a 1s base, capped at 60s, still recovers a genuinely transient blip in one retry (first wait is
+// unchanged at 1s) while a channel stuck failing for minutes backs off to a sane ceiling instead of
+// hammering the venue at 1/s the whole time. Reset to the base on the channel's next successful yield
+// (noteYield) — a recovered channel does not inherit its pre-recovery backoff.
+const CHANNEL_BACKOFF_BASE_MS = 1_000;
+const CHANNEL_BACKOFF_CAP_MS = 60_000;
 
 /**
  * Governs how often the wedged-instance recreation seam (see the pinned-ccxt-4.5.58 header
@@ -409,6 +438,32 @@ function isClosedByUser(err: unknown): boolean {
   return err.constructor?.name === 'ExchangeClosedByUser' || err.message.includes('closedByUser');
 }
 
+// ROOT CAUSE (LIVE INCIDENT 2026-08-06, 6.25h wedge, spot lane): pinned ccxt 4.5.58 memoises a
+// REJECTED markets-load promise and never clears it. Exchange.js:891-903 — `loadMarkets(reload)`
+// assigns `this.marketsLoading = this.loadMarketsHelper(reload, params).then(ok, err => {
+// this.reloadingMarkets = false; throw error; })`; the rejection handler (:897-899) resets ONLY
+// `reloadingMarkets`, never `marketsLoading` — that field is cleared to undefined exactly once, in
+// the constructor (:135). Every ccxt-pro watch* starts with `await this.loadMarkets()` at
+// reload=false (js/src/pro/binance.js:1848), so one failed load makes every LATER watch* return the
+// SAME already-rejected promise forever: instant rejection, zero network I/O, and (because
+// loadMarketsHelper only reaches setMarkets on success) `this.markets` never populates. Detected
+// STRUCTURALLY here (the market cache is empty) rather than by matching the surfaced error's
+// message — the surfaced error is an ordinary NetworkError indistinguishable from a real, still-live
+// outage, and message-matching would silently stop working the moment ccxt rewords it. Re-verify
+// these line numbers if the pinned ccxt version is ever bumped (bumping it already requires the
+// sandbox-URL + error-classifier regression tests per root CLAUDE.md).
+// Reads `exchange.symbols` (kept in lockstep with `exchange.markets` by ccxt's own setMarkets —
+// verified against the installed package: Exchange.js:3472 assigns `this.markets` immediately before
+// :3475 derives `this.symbols = Object.keys(...)` from that same assignment) rather than `.markets`
+// itself for two reasons: it is O(1) — `.length` on an already-materialized array, vs. allocating a
+// fresh ~3000-entry key array on Binance spot on EVERY non-checksum loop error (this file's own v2
+// header records an OOM in this lane); and it needs no cast — `symbols: Strings` (`string[] |
+// undefined`) is declared PUBLIC API on Exchange.d.ts, unlike the ws-internals reach-throughs
+// elsewhere in this file that ccxt does not declare at all.
+function hasNoMarkets(exchange: Exchange): boolean {
+  return !exchange.symbols || exchange.symbols.length === 0;
+}
+
 // ── CcxtExchangeStreamAdapter ────────────────────────────────────────────────
 
 @Injectable()
@@ -418,8 +473,21 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   // delivers a single event still trips the watchdog. Adapter-local on purpose: FeedHealthService's
   // channel map serves consumers; this map serves only the recovery decision.
   private readonly lastYieldAt = new Map<string, EpochMs>();
+  // Per-(symbol,channel) exponential retry backoff — see CHANNEL_BACKOFF_BASE_MS/CAP_MS. Absent key
+  // means "at base" (never failed, or reset by a successful yield).
+  private readonly channelBackoffMs = new Map<string, number>();
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private lastForcedReconnectAt = 0;
+  // Watchdog escalation counter — see WATCHDOG_ZERO_YIELD_ESCALATION_THRESHOLD.
+  private consecutiveZeroYieldReconnects = 0;
+  // The exact (symbol,channel) key set that was stalled at the last tick that found any stall — see
+  // watchdogTick's "same channels" comment. Empty means "no stall streak in progress".
+  private lastStalledKeys: Set<string> = new Set();
+  // Single-flight + cooldown state for the markets-wedge escape (see hasNoMarkets/forceReloadMarkets
+  // and MARKETS_RELOAD_COOLDOWN_MS). Mirrors the recreatePromise/nextRecreateAllowedAt shape below
+  // for the same reason: N concurrent handleLoopError callers must share one in-flight reload.
+  private marketsReloadPromise: Promise<void> | null = null;
+  private lastMarketsReloadAttemptAt = -Infinity;
   // One next-available-slot clock per lane (see SUBSCRIBE_LANE_COUNT). Index i's slot advances only
   // when lane i is claimed, so least-loaded-lane selection in subscribeSlot() naturally round-robins.
   private readonly laneNextSlotAt: number[] = new Array<number>(SUBSCRIBE_LANE_COUNT).fill(0);
@@ -827,8 +895,23 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     if (isClosedByUser(err) && this.exchangeFactory) {
       this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
       const recreated = await this.recreateExchange(this.exchangeFactory);
-      if (!recreated) await this.backoff();
+      if (!recreated) await this.backoff(key);
       return;
+    }
+    // Markets-wedge escape (see hasNoMarkets's header comment): every watch* on a wedged instance
+    // surfaces as an ordinary NetworkError, indistinguishable from a real outage, from THIS point
+    // in the branching — so the check is structural (the market cache itself), not keyed to a
+    // particular error class, and runs before the health state below is decided. CAVEAT (2026-08-06
+    // adversarial review): this is unreachable from the closedByUser branch above whenever
+    // recreateExchange resolves true (its eager loadMarkets already covers that path — duplicating it
+    // here would just double the exchangeInfo call), but NOT when it resolves false (cooldown active,
+    // cap exhausted, or the factory itself threw — see doRecreateExchange's three false-returning
+    // cases) — that branch `return`s unconditionally, so a markets-wedge coinciding with a DECLINED
+    // recreation goes unchecked for this one iteration. Fail-open, not fail-silent: the wedge, if
+    // real, resurfaces on the channel's very next handleLoopError call (no state is lost), so the
+    // cost is one extra retry cycle, never a missed recovery.
+    if (hasNoMarkets(this.exchange)) {
+      await this.forceReloadMarkets();
     }
     this.stateTracker.setHealth(
       this.venueId,
@@ -836,7 +919,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       channel,
       isTransient(err) ? 'DEGRADED' : 'GAP',
     );
-    await this.backoff();
+    await this.backoff(key);
   }
 
   // Single-flight swap of the wedged exchange instance for a fresh one. Every concurrent caller
@@ -879,6 +962,18 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     let fresh: Exchange;
     try {
       fresh = factory();
+      // Eager markets load, still inside this try, BEFORE the swap below — see hasNoMarkets's
+      // header comment (LIVE INCIDENT 2026-08-06). If the implicit lazy load a supervised loop's
+      // first watch* would trigger lands inside a still-live outage, ccxt memoises the rejection
+      // FOREVER and this brand-new instance is wedged before it ever serves a single event.
+      // Loading eagerly means a failed load costs only the swap we don't make — `this.exchange`
+      // stays on `stale`, which the existing recovery paths already know how to keep retrying —
+      // instead of silently handing every loop a poisoned "fresh" instance. NOT sufficient alone:
+      // a `fresh` instance that loads fine here can still wedge on its OWN first lazy load if the
+      // same outage is still live a beat later — hasNoMarkets/forceReloadMarkets in
+      // handleLoopError is the general cure for that case; this is only the recreation-time guard.
+      // No cast: loadMarkets(reload?, params?) is declared PUBLIC API on Exchange.d.ts.
+      await fresh.loadMarkets();
     } catch (err) {
       this.logger?.warn(
         `market-stream exchange recreate failed (fail-open, still wedged): ${String(err)}`,
@@ -983,6 +1078,39 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     );
   }
 
+  // The markets-wedge escape (see hasNoMarkets's header comment, LIVE INCIDENT 2026-08-06).
+  // loadMarkets(true) is the only way out: the guard in ccxt's loadMarkets is
+  // `(reload && !this.reloadingMarkets) || !this.marketsLoading` — the wedge's own rejection
+  // handler already reset reloadingMarkets to false, so reload=true re-enters loadMarketsHelper
+  // instead of returning the memoised rejection reload=false would. Single-flighted (every
+  // concurrent handleLoopError caller shares one in-flight reload, mirroring recreateExchange's
+  // shape above) AND cooldown-gated (MARKETS_RELOAD_COOLDOWN_MS): unlike recreateExchange this has
+  // no per-incident escalation, because a reload is cheap to retry on a fixed cadence and — unlike
+  // recreating the whole instance — carries no ws-teardown cost to pace against. Fails OPEN: a
+  // failing reload just leaves the wedge for the next round; it must NEVER throw into the calling
+  // supervised loop, which is why the promise itself never rejects.
+  private forceReloadMarkets(): Promise<void> {
+    if (this.marketsReloadPromise) return this.marketsReloadPromise;
+    const now = this.clock.now();
+    if (now - this.lastMarketsReloadAttemptAt < MARKETS_RELOAD_COOLDOWN_MS) {
+      return Promise.resolve();
+    }
+    this.lastMarketsReloadAttemptAt = now;
+    this.marketsReloadPromise = (async (): Promise<void> => {
+      try {
+        // No cast: loadMarkets(reload?, params?) is declared PUBLIC API on Exchange.d.ts.
+        await this.exchange.loadMarkets(true);
+      } catch (err) {
+        this.logger?.warn(
+          `market-stream markets reload failed (fail-open, wedge persists): ${String(err)}`,
+        );
+      }
+    })().finally(() => {
+      this.marketsReloadPromise = null;
+    });
+    return this.marketsReloadPromise;
+  }
+
   // See SUBSCRIBE_LANE_COUNT / SUBSCRIBE_LANE_SPACING_MS. Bounded-concurrency token bucket: the
   // least-loaded lane's slot is claimed synchronously before any await, so concurrent acquirers
   // fan out deterministically (ties break to the lowest lane index); the wait itself runs on wall
@@ -1016,6 +1144,8 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private noteYield(symbol: SymbolId, channel: string): void {
     this.lastYieldAt.set(`${symbol}|${channel}`, this.clock.now());
+    // A recovered channel does not inherit its pre-recovery backoff — see CHANNEL_BACKOFF_BASE_MS.
+    this.channelBackoffMs.delete(`${symbol}|${channel}`);
   }
 
   // Loop-start registration: anchors the watchdog clock AND creates the tracker's channel entry so
@@ -1034,12 +1164,29 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   // Fails OPEN: the watchdog is a recovery-only device — a broken watchdog must never block or
   // degrade the data path it guards, so every failure inside it is swallowed (logged at warn). Its
-  // only action is exchange.close(), which the supervised loops already recover from (pending watch
-  // futures reject → handleLoopError → backoff → re-watch = fresh subscription in the common case,
-  // or → recreateExchange() in the pinned-ccxt-4.5.58 closedByUser-wedge case — see the header
-  // comment). Deliberately NOT taught to recreate directly: handleLoopError's ExchangeClosedByUser
-  // branch already reacts within one watchdog-forced close(), so a second recreation path here
-  // would just be redundant surface area for the same recovery.
+  // default action is exchange.close(), which the supervised loops already recover from (pending
+  // watch futures reject → handleLoopError → backoff → re-watch = fresh subscription in the common
+  // case, or → recreateExchange() in the pinned-ccxt-4.5.58 closedByUser-wedge case — see the header
+  // comment). Escalation (below) is the one exception to "close() only, never recreate directly":
+  // LIVE INCIDENT 2026-08-06 found close() itself can be a no-op (a never-connected instance's
+  // `clients` map is empty, so close() has nothing to close and mints no ExchangeClosedByUser —
+  // handleLoopError's recreation branch is then never reached, because it is only ever entered FROM
+  // that error). 222 watchdog fires against exactly this wedge produced zero recreations. After
+  // WATCHDOG_ZERO_YIELD_ESCALATION_THRESHOLD consecutive ticks that still find the same channels
+  // stalled (proof the prior close()/reload attempts yielded no data), the watchdog calls
+  // recreateExchange() itself instead of repeating an inert close(). Escalation and close() are
+  // ADDITIVE, not exclusive (2026-08-06 adversarial review): recreateExchange() resolves false
+  // without acting whenever the existing gated RecreationPolicy declines (cooldown active, cap
+  // exhausted, or the factory itself threw — see doRecreateExchange), and a declined escalation must
+  // never leave the tick doing strictly nothing — that would be worse than the pre-escalation
+  // behavior, which always closed. So a declined recreation falls back to the same close() the
+  // else-branch below uses; only a SUCCESSFUL recreation skips it (the swap already forced every
+  // pending watch future to reject, so closing the brand-new instance right after would be
+  // counter-productive). The whole chain is wrapped in .catch(): doRecreateExchange has code after
+  // its own internal try/catch (recordForcedReconnect, the recreation-logged warn, hardDispose's
+  // client teardown, logCapExhausted's error log) that can itself reject, and this call sits inside a
+  // fire-and-forget `void` — an uncaught rejection here would be an unhandledRejection at the process
+  // level (main.ts's handler exits the process), turning a recovery device into a crash vector.
   private watchdogTick(): void {
     try {
       if (!this.running) return;
@@ -1054,26 +1201,69 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
           : WATCHDOG_STALL_THRESHOLD_MS;
         if (now - at > threshold) stalled.push(key);
       }
-      if (stalled.length === 0) return;
+      if (stalled.length === 0) {
+        this.consecutiveZeroYieldReconnects = 0;
+        this.lastStalledKeys = new Set();
+        return;
+      }
       this.lastForcedReconnectAt = now;
       this.stateTracker.recordForcedReconnect?.();
+      // Counts consecutive ticks that find the EXACT SAME channel set stalled, not just "any channel
+      // stalled" (2026-08-06 adversarial review): a single permanently-silent (symbol,channel) — a
+      // delisted symbol, a thin-tier trade channel — would otherwise keep stalled.length >= 1 on
+      // every tick forever, latching the counter above threshold and pinning the watchdog in
+      // escalation mode even while every OTHER channel is healthy and recovering normally. Any change
+      // in the stalled set (a channel newly joining OR a previously-stalled channel recovering) means
+      // this is not "the same incident continuing" and restarts the streak at 1.
+      const currentStalled = new Set(stalled);
+      const sameChannelsAsLastTick =
+        currentStalled.size === this.lastStalledKeys.size &&
+        [...currentStalled].every((k) => this.lastStalledKeys.has(k));
+      this.consecutiveZeroYieldReconnects = sameChannelsAsLastTick
+        ? this.consecutiveZeroYieldReconnects + 1
+        : 1;
+      this.lastStalledKeys = currentStalled;
       this.logger?.error(
         `market-stream watchdog: channel(s) past stall threshold (${WATCHDOG_STALL_THRESHOLD_MS}ms; ` +
           `candle ${WATCHDOG_CANDLE_STALL_THRESHOLD_MS}ms), forcing reconnect via ` +
           `exchange.close(): ${stalled.join(', ')}`,
       );
-      void Promise.resolve((this.exchange as unknown as { close(): Promise<void> }).close()).catch(
-        (err: unknown) => {
-          this.logger?.warn(`market-stream watchdog: close() failed (fail-open): ${String(err)}`);
-        },
-      );
+      const closeStale = (): Promise<void> =>
+        Promise.resolve((this.exchange as unknown as { close(): Promise<void> }).close()).catch(
+          (err: unknown) => {
+            this.logger?.warn(`market-stream watchdog: close() failed (fail-open): ${String(err)}`);
+          },
+        );
+      if (
+        this.consecutiveZeroYieldReconnects >= WATCHDOG_ZERO_YIELD_ESCALATION_THRESHOLD &&
+        this.exchangeFactory
+      ) {
+        this.logger?.error(
+          `market-stream watchdog: ${this.consecutiveZeroYieldReconnects} consecutive forced ` +
+            `reconnects yielded no data — exchange.close() is inert on this wedge (a ` +
+            `never-connected instance has no clients to close, see the pinned-ccxt-4.5.58 header ` +
+            `comment), escalating to instance recreation`,
+        );
+        void this.recreateExchange(this.exchangeFactory)
+          .then((recreated) => (recreated ? undefined : closeStale()))
+          .catch((err: unknown) => {
+            this.logger?.warn(
+              `market-stream watchdog: escalated recreation failed (fail-open): ${String(err)}`,
+            );
+          });
+      } else {
+        void closeStale();
+      }
     } catch (err) {
       this.logger?.warn(`market-stream watchdog: tick failed (fail-open): ${String(err)}`);
     }
   }
 
-  private async backoff(): Promise<void> {
-    await new Promise<void>((res) => setTimeout(res, 1000));
+  private async backoff(key: string): Promise<void> {
+    const current = this.channelBackoffMs.get(key) ?? CHANNEL_BACKOFF_BASE_MS;
+    const wait = Math.min(current, CHANNEL_BACKOFF_CAP_MS);
+    this.channelBackoffMs.set(key, Math.min(current * 2, CHANNEL_BACKOFF_CAP_MS));
+    await new Promise<void>((res) => setTimeout(res, wait));
   }
 
   /**

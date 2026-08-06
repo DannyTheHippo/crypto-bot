@@ -42,8 +42,21 @@ function makeTracker(): {
   return { tracker, setHealth, recordForcedReconnect };
 }
 
-function fakeExchange(caps: Record<string, boolean>, closeSpy = vi.fn(() => Promise.resolve())) {
-  return { id: 'binance', has: caps, close: closeSpy } as unknown as Exchange;
+// loadMarketsSpy defaults to a resolving fake — doRecreateExchange now awaits fresh.loadMarkets()
+// eagerly, before the swap (see the adapter's header comment), so every existing recreation test's
+// "healthy fresh instance" case needs a working loadMarkets by default. Spec (h) below overrides it
+// to reject, proving the eager-load guard actually blocks a poisoned swap.
+function fakeExchange(
+  caps: Record<string, boolean>,
+  closeSpy = vi.fn(() => Promise.resolve()),
+  loadMarketsSpy: ReturnType<typeof vi.fn> = vi.fn(() => Promise.resolve({})),
+) {
+  return {
+    id: 'binance',
+    has: caps,
+    close: closeSpy,
+    loadMarkets: loadMarketsSpy,
+  } as unknown as Exchange;
 }
 
 /**
@@ -525,5 +538,71 @@ describe('CcxtExchangeStreamAdapter v2 recreation cooldown/cap (2026-07-19 venue
     expect(clearPingInterval).toHaveBeenCalledTimes(1);
     expect(terminate).toHaveBeenCalledTimes(1);
     expect((stale as unknown as { clients: unknown }).clients).toEqual({}); // references dropped
+  });
+
+  // LIVE INCIDENT 2026-08-06 (see the adapter's hasNoMarkets header comment): a fresh instance can
+  // wedge on its OWN implicit lazy loadMarkets() just as easily as the one it replaced. Swapping it
+  // in anyway would hand every supervised loop a poisoned instance immediately after "recovering".
+  // doRecreateExchange now awaits fresh.loadMarkets() eagerly, inside the same try as factory(), and
+  // never swaps if that rejects — the stale instance is kept, and the very next attempt (paced by
+  // the unchanged cooldown/cap) gets a genuinely new instance instead.
+  it('(h) does not swap in a freshly-constructed instance whose eager loadMarkets() rejects — the stale instance is kept', async () => {
+    vi.useFakeTimers();
+    const clock: ClockPort = { now: () => epochMs(Date.now()) };
+
+    const stale = fakeExchange({ watchTicker: true });
+    const badFreshLoadMarkets = vi.fn(() => Promise.reject(new Error('exchangeInfo fetch failed')));
+    const badFresh = fakeExchange(
+      { watchTicker: true },
+      vi.fn(() => Promise.resolve()),
+      badFreshLoadMarkets,
+    );
+    const factory = vi.fn(() => badFresh);
+    const { tracker } = makeTracker();
+    const warn = vi.fn();
+
+    const seenExchanges: unknown[] = [];
+    let n = 0;
+    const watchSource: WatchSource = {
+      watchTicker: (exchange) => {
+        seenExchanges.push(exchange);
+        n++;
+        if (n === 1) return Promise.resolve({ symbol: SYM } as unknown as Ticker);
+        if (n === 2) return Promise.reject(new ExchangeClosedByUser('binance closedByUser'));
+        if (n === 3) return Promise.resolve({ symbol: SYM } as unknown as Ticker); // retry after the failed recreation attempt
+        return new Promise<never>(() => {}); // park — no runaway loop after the assertion is proven
+      },
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook: unused,
+    };
+    const adapter = new CcxtExchangeStreamAdapter(
+      clock,
+      watchSource,
+      stale,
+      V,
+      tracker,
+      { warn, error: vi.fn() },
+      () => 0,
+      factory,
+    );
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { ticker: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    if (first.done) throw new Error('expected a ticker event');
+
+    const secondP = iterator.next(); // triggers the wedge, then the failed recreation attempt
+    await vi.advanceTimersByTimeAsync(2_000); // 1s backoff (recreation failed) + subscribe-gate slot
+    const second = await secondP;
+    if (second.done) throw new Error('expected the channel to recover via retry, not recreation');
+
+    expect(factory).toHaveBeenCalledTimes(1); // one attempt, not a retry loop inside doRecreateExchange
+    expect(badFreshLoadMarkets).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recreate failed'));
+    expect(seenExchanges[2]).toBe(stale); // call #3 (the post-failure retry) landed on the ORIGINAL instance
+    expect(seenExchanges).not.toContain(badFresh); // the poisoned instance was never handed to a loop
+
+    await iterator.return?.();
   });
 });

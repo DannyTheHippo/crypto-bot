@@ -242,6 +242,67 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
     expect(String(errorLines[0]![0])).toContain('NetworkError');
   });
 
+  // Regression for the 2026-08-06 wedge incident: a FIXED 1000ms retry delay meant ~90 loops
+  // retried an instantly-rejecting cached promise every second for the full 6.25h outage — loud in
+  // log volume, silent in meaning. Backoff is now per-(symbol,channel), doubling from a 1s base and
+  // capped at 60s, and resets to the base on the channel's next successful yield.
+  it('backs off exponentially per channel (base 1s, doubling) and resets to the base after a successful yield', async () => {
+    vi.useFakeTimers();
+    const callTimes: number[] = [];
+    let n = 0;
+    const watchSource: WatchSource = {
+      watchTicker: () => {
+        callTimes.push(Date.now());
+        n++;
+        if (n === 5) return Promise.resolve({ symbol: 'BTC/USDT' } as Ticker); // one success, resets backoff
+        if (n <= 7) return Promise.reject(new NetworkError('socket hiccup'));
+        return new Promise<never>(() => {}); // park — bounded, no runaway loop past what this proves
+      },
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook: unused,
+    };
+    const stateTracker: ChannelStateTracker = {
+      setHealth: vi.fn(),
+      recordEvent: vi.fn(),
+      checkStaleness: vi.fn(),
+    };
+    const exchange = { id: 'binance', has: { watchTicker: true } } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(
+      timerClock,
+      watchSource,
+      exchange,
+      V,
+      stateTracker,
+      undefined,
+      () => 0, // zero jitter: the gaps below must be exact, not jitter-inflated
+    );
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { ticker: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await iterator.return?.();
+
+    // Call 8 also fires (then parks forever) — its own invocation still counts as a call even though
+    // it never resolves; only calls 1-7's gaps are asserted below.
+    expect(callTimes).toHaveLength(8);
+    const gaps = callTimes.slice(1).map((t, i) => t - callTimes[i]!);
+    // Calls 1-4 fail: backoff grows 1s → 2s → 4s → 8s (base, doubling on each retry). subscribeSlot's
+    // own lane-pacing gate contributes ~0 here — with SUBSCRIBE_LANE_COUNT=4 and backoffs already
+    // ≥1s, this single loop always finds a never-yet-used (or long-idle) lane by the time it retries.
+    expect(gaps[0]).toBe(1_000);
+    expect(gaps[1]).toBe(2_000);
+    expect(gaps[2]).toBe(4_000);
+    expect(gaps[3]).toBe(8_000);
+    // Call 5 succeeds; the immediate next call (6) skips the subscribe gate entirely (needsSlot only
+    // flips true on an error), so this gap is ~0 — not a backoff measurement.
+    expect(gaps[4]).toBe(0);
+    // Call 7 (a failure right after the reset) is back at the 1s base, not a continuation of the
+    // pre-success 8s→16s escalation — this is what proves the reset, not just a coincidentally short gap.
+    expect(gaps[5]).toBe(1_000);
+  });
+
   it('fails fast when a required capability is missing', () => {
     const watchSource = {} as WatchSource;
     const stateTracker: ChannelStateTracker = {

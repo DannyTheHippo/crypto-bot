@@ -1316,3 +1316,18 @@ unreproducible by construction. (151) `netPnlUsd` sums LLM cost over a **differe
 comparison, and no published series distinguishes the two. The other six published gauges
 **reproduce BYTE-EXACTLY** from raw fills/orders/agent_decisions/llm_usage/funding_payments — I3 was
 performed by hand Pass 62, which is what makes these three legible as defects rather than noise.
+
+## Quietly-holding WATCH lines — moved out of STATUS.md at Pass 65 for the 200-line cap
+
+These four were carrying no information in the hot file: each had held for many passes with a
+one-word status, so they cost a line every pass and told the next pass nothing. **They are still
+OPEN and still binding** — moved, not resolved, and not deleted. A pass that needs their current
+reading re-derives it from the named series; a pass that sees one BREAK promotes it back to
+STATUS.md immediately, because a break is exactly the information the one-word status was hiding.
+
+| id | expected-positive | status when moved |
+| --- | --- | --- |
+| WATCH-V4-2 | `reconciliation_mismatch_total{class="fill_overflow"}` stays 0 — one-shot by construction | holds — zero ever |
+| WATCH-V4-3 | a redeploy with a resting perp stop boots to RUNNING with no `perp pin:` line | holds |
+| WATCH-V4-7 | every digest carries an alerts-fired-and-resolved line and a warn-scan span at or above the alert lookback | holds |
+| WATCH-V4-9 | every replay-driven measurement reports `capsSource: 'recorded'` on 100% of rows | holds — standing check on the mint-time gates |

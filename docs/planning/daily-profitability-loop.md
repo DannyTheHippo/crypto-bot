@@ -1,15 +1,19 @@
 # Daily profitability loop — playbook (v4)
 
-> **v2 freeze: this playbook is maintenance-only until the v3 local demo cutover record appears in
-> `research/loop/archive/state-2026-07-30.md` § Strategic frame; from that record onward this v4
-> procedure is fully active — no further human gate.** As of this writing (that file's 2026-07-21
-> "v3 BUILD COMPLETE + VALIDATION GATE" record) the v3 build is done and gated but cutover has NOT
-> yet been recorded — the owner session still owes the Grafana overview row, the dashboard-regression
-> pass, and the stale-file cleanup before flipping the cutover switch. A pass that finds no cutover
-> record runs §1-§3 (rehydrate, sweep, incident gate) unchanged but treats §4 as MAINTENANCE-only
-> (critical fixes on the current build); once the cutover record lands, §4's full pass-type menu is
-> live with no further owner gate. (Both records live in that archive file since the 2026-07-30
-> state split; the cutover record is dated 2026-07-21 and IS present.)
+> **The v2 freeze is LIFTED and this v4 procedure is FULLY ACTIVE — §4's whole pass-type menu is
+> live, with no further human gate.** The condition the freeze named has been satisfied since
+> 2026-07-21: the cutover record is `research/loop/archive/state-2026-07-30.md:59`, which opens
+> "v3 LOCAL DEMO CUTOVER — LIVE (2026-07-21, owner session; this is the cutover record the …" and
+> continues past that line — with its pre-cutover gates all landed (Grafana Overview strip +
+> regression pass, `8014a1d`).
+>
+> Corrected Pass 65 (2026-08-06), because the banner had rotted into self-contradiction: its lead
+> text still said cutover "has NOT yet been recorded" and ordered every pass to treat §4 as
+> MAINTENANCE-only, while its own closing parenthetical said the record "IS present". A pass reading
+> top-to-bottom would have wrongly refused itself CANDIDATE and PROMOTION work — and passes 51-64 in
+> fact ran CANDIDATE throughout, so the text was not merely stale but contradicted by the loop's own
+> behaviour for six weeks. This is the §0 "a playbook is code that rots" rule applied to the
+> playbook's own first paragraph.
 
 Audience: a Claude session executing one pass. Cadence: 2-4 passes/day (owner 2026-07-10 — the
 loop runs on subscription, not a per-day API budget). Trigger (owner-run):
@@ -178,8 +182,8 @@ CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused an
 
 The sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
 authoritative list — re-verify against that file before citing, per this playbook's own standing
-rule). 22 kinds total as of this refresh (2026-08-03): the 10 liveness/venue alarms below, plus the
-12 DB-integrity kinds in their own group further down.
+rule). 24 kinds total as of this refresh (2026-08-06, Pass 65): the 12 liveness/venue alarms below,
+plus the 12 DB-integrity kinds in their own group further down.
 
 **Liveness and venue-health alarms:**
 
@@ -189,6 +193,18 @@ rule). 22 kinds total as of this refresh (2026-08-03): the 10 liveness/venue ala
 - `reconcile_halt` (per venue) — latest reconciliation `result=HALT` for that venue (never
   auto-flatten; spec §7). A HALT on one venue is never masked by the other venue's clean rows —
   the check is per-venue by construction, not a global "latest row" read.
+- `reconcile_halt_in_boot` / `reconcile_halt_in_boot_unreadable` (per venue, added Pass 65,
+  2026-08-06) — the current boot's COUNT of `result=HALT` rows, pinned to the resolved bootId.
+  `reconcile_halt` above is a point-in-time read of ONE row, so a halt followed by any CLEAN row is
+  invisible to it: **2155 lifetime HALT rows across 8 boots had produced exactly ZERO alarms**,
+  including 427 on the boot that was live when this was written, during which the kill switch really
+  did engage twice and the book was HALTED for 7h07m while the sweep reported a clean bill of health.
+  Fires only when the count is readable, provenance-matched, `> 0`, AND the latest row is not itself
+  the HALT — one episode raises one kind, never both. **Fails CLOSED** (health probe, not a
+  measurement/veto gate): unreadable, unparseable, or carrying a stale bootId all raise the
+  `_unreadable` kind rather than passing silently. Deliberately STICKY for the life of a boot — a
+  halt is the most serious event class in this system (hard rule 6) and a redeploy clears it; it is
+  boot-scoped precisely so it cannot wedge §3 permanently the way a fixed lookback would.
 - `cost_breaker_proximity` — spend ≥80% of the ONE unified `$3/day` breaker
   (`AGENTIC_DAILY_COST_BREAKER_USD`, `.env.app`'s `AGENTIC_DAILY_COST_STOP_USD`). NOT raised on a
   container younger than `BUDGET_GAUGE_INIT_GRACE_MS` (5 min) whose `remainingUsd` reads exactly 0 —
@@ -668,11 +684,11 @@ standing rule).
   (`research/loop/archive/state-2026-07-30.md`, 2026-07-21 record). Footprint
   verdict: e2-medium PASS — full 40-symbol dual-venue graph, live feeds, 15-min host paper boot: RSS
   plateau ~673MiB flat, health 200 throughout, `--max-old-space-size=1024` held.
-- **Cutover status: NOT YET RECORDED.** Remaining before the cutover record lands (owner,
-  2026-07-21): Grafana overview row + dashboard-regression pass, aggressive stale-file cleanup
-  (loop-core exempt). Until the cutover record appears in
-  `research/loop/archive/state-2026-07-30.md` § Strategic frame, treat every §4 pass as
-  MAINTENANCE-only per the freeze banner at the top of this document.
+- **Cutover status: RECORDED AND LIVE since 2026-07-21** (`research/loop/archive/state-2026-07-30.md:59`);
+  its pre-cutover gates — Grafana Overview strip and the dashboard-regression pass — landed in
+  `8014a1d`. The stale "NOT YET RECORDED" text that stood here was corrected Pass 65 (2026-08-06)
+  together with the freeze banner at the top of this document; both had been contradicted by the
+  loop's own CANDIDATE passes for six weeks.
 - **Evidence epoch:** `PROMOTION_EVIDENCE_EPOCH` is ONE knob now (no per-venue split); `.env.app`'s
   current value is explicitly marked "RE-STAMP AT CUTOVER — do not treat this value as final" — a
   pass must NOT walk the promotion scoreboard against it until the cutover re-stamp lands.

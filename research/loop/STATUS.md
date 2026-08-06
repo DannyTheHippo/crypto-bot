@@ -83,8 +83,8 @@
 
 ## Current order & status
 
-- **Deployed `5deaac5` (Pass 65), `build_info{git_sha="5deaac5"}` confirmed live**, boot at 2026-08-06T17:39:41Z, `RestartCount` 0, `kill_switch_state{state="RUNNING"}`, `agent_client_latch_cause` all
-  three 0. **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 199 files / 3922 passed** (baseline 199/3898); **`eval:agentic` 95 passed | 20 skipped**; **`test:cov` exit 0**
+- **Deployed `5deaac5` (Pass 65), `build_info{git_sha="5deaac5"}` confirmed live**, boot `815e01b8`, `kill_switch_state{state="RUNNING"}`, `agent_client_latch_cause` all three 0. **SOAK PASS — post-deploy
+  sweep reports 1 alarm, down from 82** (only the frozen `venue_reject_rate_high`, ages out 23:15Z); 91 staleness children, clean stamp fresh, **zero firing alerts**. **Gate at close:** format/lint/lint:md/typecheck/build clean; **`test` 199 files / 3922 passed** (baseline 199/3898); **`eval:agentic` 95 passed | 20 skipped**; **`test:cov` exit 0**
   (93.13/86.94/92.06/94.47 vs the 90/85/90/90 bar) — run because a review finding turned on it. Prometheus `--force-recreate`d (alerts.rules.yml is a single-file bind mount; plain `up -d` is a no-op).
 - **BOTH ADVERSARIAL REVIEWS RETURNED MUST-FIX ON WORK THAT HAD ALREADY PASSED EVERY GATE — green gates are not evidence.** 199 files / 3898 tests were green at the moment the new alert would have paged
   critical on every boot. **One defect was the ORCHESTRATOR'S OWN**; the other three sat in the watchdog escalation, the one component whose lane early-stopped before self-review — including a `void`

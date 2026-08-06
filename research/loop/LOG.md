@@ -1128,6 +1128,27 @@ Fan-out: **read-only roster COMPLETE — all 4 declared lanes returned** (halt-n
 position-drift, lane-silence). **Write roster COMPLETE — all 5 declared lanes returned** (feed-wedge,
 fill-poller, lane-liveness, sweep-halt, authoring-render).
 
+### Soak verdict — PASS, and it exercised two of the pass's own fixes in production
+
+Post-deploy `loop:sweep` on boot `815e01b8`, running build `5deaac5`: **1 alarm, down from 82** — and
+the one remaining is the frozen, documented `venue_reject_rate_high [binance]` that ages out at
+2026-08-06T23:15Z. Health at +17 min: `mode_info{effective="testnet"}` (carve-out resolved), kill
+switch RUNNING, clean stamp fresh at 17:56:12Z, budget gauge initialised at 2.090178, **91 staleness
+children live**, and **zero firing Prometheus alerts**.
+
+Two fixes verified in production rather than only in test:
+
+- **`agentic_last_gate_timestamp_seconds` read the BOOT INSTANT at +35 s** (17:39:41.920Z, age 35 s,
+  `AgenticLaneNotTicking` not firing) and then **advanced to 17:45:52Z** — a real consult-gate
+  evaluation at the 17:45 bar. So the seed works AND the series tracks real ticks. Unseeded it would
+  have read 0, and `time() - 0` ≈ 1.786e9 would have paged CRITICAL five minutes into this very
+  deploy. That is the review's MUST-FIX 1 confirmed in exactly the situation that would have fired it.
+- **Neither `reconcile_halt_in_boot_unreadable` nor `reconcile_halt_in_boot_boot_id_void` appeared** on
+  a post-redeploy sweep — the precise regression the review flagged (two blocking alarms on every
+  routine redeploy, wedging §3 on a step the playbook prescribes), verified absent against the live
+  two-`boot_info`-series window. `reconcile_halt_in_boot` correctly stayed silent on a boot with no
+  halt rows.
+
 ### Not defects — checked and closed rather than left open
 
 - **`venue_free_cash_usdt{binanceusdm}=281.57` vs a venue-reported 4941.61 free.** Correct by design:

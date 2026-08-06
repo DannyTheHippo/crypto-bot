@@ -268,6 +268,18 @@ export const AGENTIC_CONSULT_GATE_COUNTER = makeCounterProvider({
     'forced_fill / forced_move / forced_fallback / forced_rearm)',
   labelNames: ['outcome'] as const,
 });
+// 2026-08-06: the counter above freezes indistinguishably on a dead lane and on a live one that
+// just happens to be between scrapes — reading it needs an increase() window that couples to
+// consult cadence, and the 2026-08-06 market-feed-death incident showed that window can be hours
+// wide. This gauge is the cadence-independent mirror: set on EVERY gate evaluation regardless of
+// outcome (see recordConsultGate), so time() - it is the true age of the lane's last tick, not the
+// age of its last interesting tick. Distinct from agent_last_success_timestamp_seconds, which only
+// moves on a completed model round trip (~1 per 57 min) and so cannot tell a dead tick from a
+// sparse one for hours. Label-less: one lane, one gate.
+export const AGENTIC_LAST_GATE_GAUGE = makeGaugeProvider({
+  name: 'agentic_last_gate_timestamp_seconds',
+  help: 'Unix time of the last agentic consult-gate evaluation (any outcome) — lane tick liveness',
+});
 // W2: every silent exit in the reflection loop (onClosedTrade/runReflection/maybeAutoPromote) now
 // increments this with a closed-set outcome label — the loop's only prior mint was invisible from
 // outside a debugger (see reflection.service.ts's own header comment on the confirmed root cause).

@@ -1,7 +1,9 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import { getToken } from '@willsoto/nestjs-prometheus';
 import { register } from 'prom-client';
 import type { Counter, Gauge, Histogram } from 'prom-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ObservabilityModule } from '../../../../src/features/common/observability/observability.module';
 import {
   AGENT_DECIDE_COUNTER,
   AGENT_TOKENS_COUNTER,
@@ -10,6 +12,7 @@ import {
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
   AGENT_CLIENT_INFO_GAUGE,
   AGENTIC_CONSULT_GATE_COUNTER,
+  AGENTIC_LAST_GATE_GAUGE,
   AGENTIC_REFLECTION_OUTCOMES_COUNTER,
   AGENTIC_VENUE_TP_COUNTER,
   AGENTIC_VENUE_STOP_COUNTER,
@@ -26,6 +29,33 @@ import {
 } from '../../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
 
+// Shared with the FIX 1 boot-seed test below, which needs to recompile a fresh module under a
+// controlled clock rather than the real one beforeEach uses.
+const AGENTIC_PROVIDERS = [
+  AGENT_DECIDE_COUNTER,
+  AGENT_TOKENS_COUNTER,
+  AGENT_DECIDE_LATENCY_HISTOGRAM,
+  AGENTIC_PLAYBOOK_INFO_GAUGE,
+  PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+  AGENT_CLIENT_INFO_GAUGE,
+  AGENTIC_CONSULT_GATE_COUNTER,
+  AGENTIC_LAST_GATE_GAUGE,
+  AGENTIC_REFLECTION_OUTCOMES_COUNTER,
+  AGENTIC_VENUE_TP_COUNTER,
+  AGENTIC_VENUE_STOP_COUNTER,
+  FUNDING_PAYMENTS_INGESTED_COUNTER,
+  AGENTIC_ACTIVE_MENU_GAUGE,
+  AGENTIC_MENU_CHURN_COUNTER,
+  AGENTIC_BUDGET_REMAINING_GAUGE,
+  AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
+  AGENTIC_SCHEMA_REJECTIONS_COUNTER,
+  AGENTIC_REARM_FALLBACK_COUNTER,
+  AGENT_CLIENT_LATCHED_GAUGE,
+  AGENT_LAST_SUCCESS_GAUGE,
+  AGENT_CLIENT_LATCH_CAUSE_GAUGE,
+  AgentMetricsRecorder,
+];
+
 describe('AgentMetricsRecorder', () => {
   let moduleRef: TestingModule;
   let recorder: AgentMetricsRecorder;
@@ -33,29 +63,7 @@ describe('AgentMetricsRecorder', () => {
   beforeEach(async () => {
     register.clear();
     moduleRef = await Test.createTestingModule({
-      providers: [
-        AGENT_DECIDE_COUNTER,
-        AGENT_TOKENS_COUNTER,
-        AGENT_DECIDE_LATENCY_HISTOGRAM,
-        AGENTIC_PLAYBOOK_INFO_GAUGE,
-        PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
-        AGENT_CLIENT_INFO_GAUGE,
-        AGENTIC_CONSULT_GATE_COUNTER,
-        AGENTIC_REFLECTION_OUTCOMES_COUNTER,
-        AGENTIC_VENUE_TP_COUNTER,
-        AGENTIC_VENUE_STOP_COUNTER,
-        FUNDING_PAYMENTS_INGESTED_COUNTER,
-        AGENTIC_ACTIVE_MENU_GAUGE,
-        AGENTIC_MENU_CHURN_COUNTER,
-        AGENTIC_BUDGET_REMAINING_GAUGE,
-        AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
-        AGENTIC_SCHEMA_REJECTIONS_COUNTER,
-        AGENTIC_REARM_FALLBACK_COUNTER,
-        AGENT_CLIENT_LATCHED_GAUGE,
-        AGENT_LAST_SUCCESS_GAUGE,
-        AGENT_CLIENT_LATCH_CAUSE_GAUGE,
-        AgentMetricsRecorder,
-      ],
+      providers: AGENTIC_PROVIDERS,
     }).compile();
     recorder = moduleRef.get(AgentMetricsRecorder);
   });
@@ -65,7 +73,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all twenty agentic-lane metrics', async () => {
+  it('registers all twenty-one agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -75,6 +83,7 @@ describe('AgentMetricsRecorder', () => {
       'playbook_validator_rejections_total',
       'agent_client_info',
       'agentic_consult_gate_total',
+      'agentic_last_gate_timestamp_seconds',
       'agentic_reflection_outcomes_total',
       'agentic_venue_tp_total',
       'agentic_venue_stop_total',
@@ -354,6 +363,167 @@ describe('AgentMetricsRecorder', () => {
     }
   });
 
+  // 2026-08-06: the tick-liveness gauge must move on EVERY member of the outcome union, not just
+  // 'consulted' — the whole point is that a lane which only ever gets skipped_scheduled (the common
+  // case: most ticks decline to spend a call) must still read as alive. Covers all six.
+  it.each([
+    'consulted',
+    'skipped_scheduled',
+    'forced_fill',
+    'forced_move',
+    'forced_fallback',
+    'forced_rearm',
+  ] as const)(
+    'recordConsultGate(%s) sets agentic_last_gate_timestamp_seconds to the current unix time',
+    async (outcome) => {
+      const before = Date.now() / 1000;
+      recorder.recordConsultGate(outcome);
+      const after = Date.now() / 1000;
+      const metric = await register.getSingleMetricAsString('agentic_last_gate_timestamp_seconds');
+      // Skip the '# HELP'/'# TYPE' exposition lines — the sample line is the only one not starting
+      // with '#'.
+      const sampleLine = metric
+        .trim()
+        .split('\n')
+        .find((l) => !l.startsWith('#'));
+      const value = Number(sampleLine?.split(' ').at(-1));
+      expect(value, metric).toBeGreaterThanOrEqual(before);
+      expect(value, metric).toBeLessThanOrEqual(after);
+    },
+  );
+
+  // Failure-direction pin (recordConsultGate's own comment): the gauge is set in the SAME try as the
+  // counter, AFTER it — a throwing counter must leave the gauge UNCHANGED BY THIS CALL rather than
+  // freshening it on a lie about the counter having moved. Fail toward looking dead, never toward
+  // looking alive. The constructor's own boot seed (FIX 1) means the gauge is no longer literally
+  // untouched at this point — it carries the construction-time boot stamp — so this pins the call
+  // COUNT (exactly the one boot seed, none from recordConsultGate) rather than "never called".
+  it('recordConsultGate leaves agentic_last_gate_timestamp_seconds at its boot-seeded value when the counter throws, and swallows the error', () => {
+    const throwingCounter = {
+      inc: () => {
+        throw new Error('boom');
+      },
+    };
+    const gaugeSet = vi.fn();
+    const gauge = { set: gaugeSet };
+    const noop = {
+      inc: vi.fn(),
+      observe: vi.fn(),
+      labels: vi.fn(() => ({ set: vi.fn() })),
+      remove: vi.fn(),
+      set: vi.fn(),
+    };
+    const isolatedRecorder = new AgentMetricsRecorder(
+      noop as unknown as Counter<string>, // decideCounter
+      noop as unknown as Counter<string>, // tokensCounter
+      noop as unknown as Histogram<string>, // decideLatency
+      noop as unknown as Gauge<string>, // playbookInfoGauge
+      noop as unknown as Counter<string>, // validatorRejectionsCounter
+      noop as unknown as Gauge<string>, // clientInfoGauge
+      throwingCounter as unknown as Counter<string>, // consultGateCounter — THROWS
+      gauge as unknown as Gauge<string>, // lastGateGauge
+      noop as unknown as Counter<string>, // reflectionOutcomesCounter
+      noop as unknown as Counter<string>, // venueTpCounter
+      noop as unknown as Counter<string>, // venueStopCounter
+      noop as unknown as Counter<string>, // fundingIngestedCounter
+      noop as unknown as Gauge<string>, // activeMenuGauge
+      noop as unknown as Counter<string>, // menuChurnCounter
+      noop as unknown as Gauge<string>, // budgetRemainingGauge
+      noop as unknown as Counter<string>, // capabilityViolationsCounter
+      noop as unknown as Counter<string>, // schemaRejectionsCounter
+      noop as unknown as Counter<string>, // rearmFallbackCounter
+      noop as unknown as Gauge<string>, // clientLatchedGauge
+      noop as unknown as Gauge<string>, // lastSuccessGauge
+      noop as unknown as Gauge<string>, // latchCauseGauge
+    );
+
+    // Exactly one call — the constructor's boot seed. recordConsultGate's own .set() never runs
+    // because throwingCounter.inc() threw first, inside the same try.
+    expect(gaugeSet).toHaveBeenCalledTimes(1);
+
+    expect(() => isolatedRecorder.recordConsultGate('consulted')).not.toThrow();
+    // Still exactly one call after the throwing recordConsultGate — it added none.
+    expect(gaugeSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('recordConsultGate still swallows a throwing gauge (metrics must never throw into a trading path)', () => {
+    const noop = {
+      inc: vi.fn(),
+      observe: vi.fn(),
+      labels: vi.fn(() => ({ set: vi.fn() })),
+      remove: vi.fn(),
+      set: vi.fn(),
+    };
+    const throwingGauge = {
+      set: () => {
+        throw new Error('boom');
+      },
+    };
+    const isolatedRecorder = new AgentMetricsRecorder(
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Histogram<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Counter<string>, // consultGateCounter — succeeds
+      throwingGauge as unknown as Gauge<string>, // lastGateGauge — THROWS
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Counter<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Gauge<string>,
+      noop as unknown as Gauge<string>,
+    );
+
+    expect(() => isolatedRecorder.recordConsultGate('consulted')).not.toThrow();
+  });
+
+  // FIX 1 (adversarial review, 2026-08-06): a label-less gauge is materialised at 0 on registration
+  // (prom-client's Metric.reset()), so between boot and the first recordConsultGate call — up to ~15m,
+  // one tick per 15m bar — time() - 0 blew straight through AgenticLaneSilent's 2700s/`for: 5m` window
+  // on every boot. Pins both halves of the fix under a controlled clock: (1) the gauge already reads
+  // the boot instant, not 0, immediately after construction and before any recordConsultGate call, and
+  // (2) a later recordConsultGate call still overwrites it rather than freezing at the boot value.
+  // Recompiles its own module rather than reusing the shared `recorder` — the shared one is constructed
+  // in beforeEach under the REAL clock, before this test can install a fake one.
+  it('seeds agentic_last_gate_timestamp_seconds to the boot instant at construction, and a later recordConsultGate call still overwrites it', async () => {
+    vi.useFakeTimers();
+    try {
+      const bootMs = 1_800_000_000_000; // arbitrary instant, far from both the epoch and any real time
+      vi.setSystemTime(bootMs);
+
+      // Recompile under the fake clock — register.clear() first so this doesn't collide with the
+      // beforeEach module's own already-registered series.
+      await moduleRef.close();
+      register.clear();
+      const freshModuleRef = await Test.createTestingModule({
+        providers: AGENTIC_PROVIDERS,
+      }).compile();
+      const freshRecorder = freshModuleRef.get(AgentMetricsRecorder);
+
+      let metric = await register.getSingleMetricAsString('agentic_last_gate_timestamp_seconds');
+      expect(metric).toContain(`agentic_last_gate_timestamp_seconds ${bootMs / 1000}`);
+
+      const laterMs = bootMs + 900_000; // 15 minutes later — the real consult-gate cadence
+      vi.setSystemTime(laterMs);
+      freshRecorder.recordConsultGate('consulted');
+      metric = await register.getSingleMetricAsString('agentic_last_gate_timestamp_seconds');
+      expect(metric).toContain(`agentic_last_gate_timestamp_seconds ${laterMs / 1000}`);
+
+      await freshModuleRef.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('recordReflectionOutcome increments agentic_reflection_outcomes_total{outcome}', async () => {
     recorder.recordReflectionOutcome('minted');
     recorder.recordReflectionOutcome('validator_reject');
@@ -610,7 +780,11 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Gauge<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Gauge<string>,
-      throwing as unknown as Counter<string>,
+      throwing as unknown as Counter<string>, // consultGateCounter
+      // agentic_last_gate_timestamp_seconds: a `set` that throws too (throwing has no `set` at all,
+      // so the call throws a TypeError) — recordConsultGate must swallow it the same as every other
+      // provider here.
+      throwing as unknown as Gauge<string>, // lastGateGauge
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
@@ -699,6 +873,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       noop as unknown as Counter<string>, // validatorRejectionsCounter
       noop as unknown as Gauge<string>, // clientInfoGauge
       noop as unknown as Counter<string>, // consultGateCounter
+      noop as unknown as Gauge<string>, // lastGateGauge
       noop as unknown as Counter<string>, // reflectionOutcomesCounter
       noop as unknown as Counter<string>, // venueTpCounter
       noop as unknown as Counter<string>, // venueStopCounter
@@ -719,5 +894,22 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'element' }, 0);
     expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'missing_symbol' }, 0);
     expect(latchCauseSet).toHaveBeenCalledWith(0);
+  });
+});
+
+// The registration trap (see promotion-metrics.spec.ts's own version of this test): a gauge DECLARED
+// in metrics.service.ts but not listed in ObservabilityModule's providers array emits no series at
+// all on /metrics, silently — recordConsultGate's .set() calls would keep "succeeding" as no-ops.
+// Reads the real module's provider metadata rather than a local fixture provider list, so it catches
+// the composition root forgetting the gauge, and — the orchestrator's alert rule must match this
+// gauge byte-for-byte, so a duplicate registration is just as much a defect as a missing one — also
+// catches it being listed twice.
+describe('ObservabilityModule — agentic_last_gate_timestamp_seconds wiring', () => {
+  it('registers agentic_last_gate_timestamp_seconds exactly once', () => {
+    const providers = (Reflect.getMetadata('providers', ObservabilityModule) ?? []) as unknown[];
+    expect(providers.length).toBeGreaterThan(0);
+    const token = getToken('agentic_last_gate_timestamp_seconds');
+    const matches = providers.filter((p) => (p as { provide?: unknown })?.provide === token);
+    expect(matches).toHaveLength(1);
   });
 });

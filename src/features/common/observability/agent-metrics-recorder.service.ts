@@ -226,6 +226,8 @@ export class AgentMetricsRecorder {
     @InjectMetric('agent_client_info') private readonly clientInfoGauge: Gauge<string>,
     @InjectMetric('agentic_consult_gate_total')
     private readonly consultGateCounter: Counter<string>,
+    @InjectMetric('agentic_last_gate_timestamp_seconds')
+    private readonly lastGateGauge: Gauge<string>,
     @InjectMetric('agentic_reflection_outcomes_total')
     private readonly reflectionOutcomesCounter: Counter<string>,
     @InjectMetric('agentic_venue_tp_total')
@@ -311,6 +313,29 @@ export class AgentMetricsRecorder {
       // here either — 'false'/'none' (the structural-rejection shape) is the one child this recorder
       // can seed truthfully.
       this.validatorRejectionsCounter.inc({ banned_token: 'false', token: 'none' }, 0);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+
+    // Adversarial review (2026-08-06): agentic_last_gate_timestamp_seconds is label-less, so
+    // prom-client's Metric.reset() already materialises it at 0 on registration (Gauge.setValue with
+    // an empty label hash) — between that registration and the first recordConsultGate call,
+    // time() - 0 reads ~1.8e9s, blowing straight through the AgenticLaneSilent 2700s threshold within
+    // 5 minutes of every boot. recordConsultGate fires once per 15m bar for the whole ~40-symbol menu
+    // at once, so the real boot-to-first-tick gap can run up to ~15m — longer than the alert's
+    // `for: 5m` can absorb. Seed to the BOOT instant instead of 0, the same reasoning loop-sweep.mjs
+    // already applies to reconciliation_last_success_timestamp_seconds (ages a never-stamped gauge
+    // off the container's StartedAt rather than the epoch) — mirrored here in-process, since this
+    // gauge has no external sweep to do it for it. This does NOT claim a tick happened: it means "no
+    // tick since boot, and boot was just now", which buys a fresh process exactly one alert window of
+    // grace while a lane that never ticks at all still ages past the threshold and fires — REJECTED
+    // alternatives (adding `and gauge > 0` to the alert, or raising `for:`) either hide that exact
+    // never-ticked case or just add detection latency. Own try/catch, same fail-OPEN convention as
+    // every seed above: a throw here must never block boot. Unconditional (not max()-guarded like
+    // seedLastSuccessAt) — recordConsultGate's own set() is the sole later writer and always fires
+    // from a fresher tick than construction, so there is no earlier/later-source race to arbitrate.
+    try {
+      this.lastGateGauge.set(Date.now() / 1000);
     } catch {
       /* metrics must never throw into a trading path */
     }
@@ -537,6 +562,12 @@ export class AgentMetricsRecorder {
   recordConsultGate(outcome: ConsultGateOutcome): void {
     try {
       this.consultGateCounter.inc({ outcome });
+      // 2026-08-06: the tick-liveness gauge, set AFTER the counter — deliberately the same try, so a
+      // throwing counter leaves this gauge UNSET rather than freshening it on a lie about the counter
+      // having moved. Failure direction: fail toward looking dead, never toward looking alive — an
+      // unset/stale gauge under-reports liveness (safe: pages), a wrongly-freshened one would mask a
+      // dead lane (unsafe: the exact 2026-08-06 defect this gauge exists to catch).
+      this.lastGateGauge.set(Date.now() / 1000);
     } catch {
       /* metrics must never throw into a trading path */
     }

@@ -396,6 +396,72 @@ groups:
           summary: 'Zero agent_decide_total activity in 6h — the agentic strategy lane has gone silent'
           runbook: 'docs/runbook.md'
 
+      # 2026-08-06 (Pass 65): AgenticLaneSilent fired at 15:45:25Z for a silence that began at
+      # 09:45:25Z — exactly its 6h window — and the rule is NOT at fault. agent_decide_total moves
+      # only on a completed model round trip (18 in 17h05m live, one per ~57min), so any window
+      # shorter than a few hours would false-fire on ordinary consult sparsity. The defect is that
+      # agent_decide_total is the WRONG SERIES for tick liveness.
+      #
+      # What actually happened: a ccxt markets-cache wedge killed every market channel at 09:51:53Z.
+      # StrategyHost.drainMailboxes() has exactly one caller — inside the market-event `for await` —
+      # so no candles meant decide() was never invoked. The consult gate did not refuse and did not
+      # park; it was never REACHED. Measured live: agentic_consult_gate_total frozen at 1593 across
+      # two scrapes 151s apart while market_channel_staleness_seconds advanced +150.0, and all 40
+      # strategy_lifecycle{state="ACTIVE"} gauges read 1 throughout. Four health surfaces, none of
+      # which could tell "evaluated and stayed quiet" from "never asked".
+      #
+      # The consult gate is evaluated once per symbol per bar (40 instances x 15m = 160/h, guaranteed
+      # while the lane lives), so its timestamp detects a dead tick in BAR time rather than in CONSULT
+      # time. 2700s = 3 bar periods: two consecutive missed bars plus one bar of margin for a late or
+      # revised close. That is ~8x faster than AgenticLaneSilent, and it would also have caught the
+      # 5h45m gap of 2026-08-05T17:15Z which produced NO AgenticLaneSilent at all — it stopped 15
+      # minutes short of the 6h window.
+      #
+      # A gauge, not increase(): fires on the next scrape and clears on the next scrape, depending on
+      # no cadence at all — the same property the AgenticLaneSilent header above chose a gauge for.
+      # This does NOT replace AgenticLaneSilent, which still catches "ticking but never reaching the
+      # model" (a latched client, an exhausted budget) — a case this rule is blind to by construction.
+      #
+      # NO BOOT GUARD IN THIS EXPR, ON PURPOSE — the gauge is SEEDED AT BOOT to the boot instant, so
+      # `time() - it` is an age measured from boot rather than from the epoch. Without that seed this
+      # rule was a self-inflicted page: prom-client initialises a LABEL-LESS gauge to 0 at
+      # registration, so between module init and the first recordConsultGate the series reads 0 and
+      # `time() - 0` is ~1.786e9 — a CRITICAL firing 5 minutes after every boot, annotated "not
+      # evaluated in >45m" while the true computed age was ~56 years. The gate fires 40-at-once once
+      # per 15m bar, so the boot-to-first-tick gap reaches ~15 min and `for: 5m` cannot cover it;
+      # caught in adversarial review before this ever shipped. Same treatment the sweep already gives
+      # reconciliation_last_success_timestamp_seconds, which ages a never-stamped gauge off the
+      # container's StartedAt instead of the epoch. The seed does NOT claim a tick occurred: it means
+      # "the lane has not ticked since boot, and boot was just now", which grants exactly one alert
+      # window of grace and still fires if the lane never ticks at all.
+      # Two alternatives were REJECTED and must not be reintroduced: `and gauge > 0` (a lane that
+      # never ticks would then never alert — precisely the case this rule exists to catch, since the
+      # series is PRESENT at 0 so absent_over_time cannot cover it either), and raising `for:` past a
+      # bar period (adds detection latency and still leaves the age itself a lie).
+      #
+      # KNOWN GAP, accepted: if the lane wedges and the app THEN dies, the first arm empties at ~+5m
+      # while absent_over_time([15m]) does not turn 1 until +15m, plus for: 5m — roughly a 10-15 min
+      # stretch where a dead lane reads RESOLVED. TargetDown and the container-down rules cover that
+      # window in practice, which is why this is documented rather than widened here.
+      #
+      # Host-sleep flap ACCEPTED deliberately (Pass 65 decision). During a suspend no candles arrive,
+      # Prometheus is suspended in the same compose stack so no scrape happens, and on wake the gauge
+      # shows a large age that self-clears within one bar — a brief pending/firing/resolved flap per
+      # wake. The rejected alternative was gating this on market_channel_staleness_seconds so it fires
+      # only when the lane is dead for some OTHER reason; that would have suppressed it entirely on
+      # 2026-08-06, which is exactly backwards for a message whose point is "positions are unmanaged".
+      # A lane that is genuinely not ticking is worth a page even when the cause is the feed.
+      - alert: AgenticLaneNotTicking
+        expr: |
+          (time() - agentic_last_gate_timestamp_seconds) > 2700
+          or
+          absent_over_time(agentic_last_gate_timestamp_seconds[15m])
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Agentic consult gate not evaluated in >45m — the strategy lane is not being invoked (feed starvation, mailbox wedge, or lifecycle stall) and open positions are unmanaged'
+          runbook: 'docs/runbook.md'
+
       # agentic_budget_remaining_usd has a known stale/uninitialised-at-boot failure mode (a peer is
       # fixing it separately) — for: 5m, deliberately NOT 0m, so a fresh boot's transient 0 never
       # pages before the gauge is populated from a real budget read.

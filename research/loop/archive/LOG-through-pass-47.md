@@ -8595,3 +8595,241 @@ prediction.
 6. **`git log` belongs in the rehydration step, not just before committing.** The playbook already
    says to re-run it before commit; this pass shows the cost of not running it EARLY — a concurrent
    commit was invisible for six hours and produced a wrong conclusion about fabricated authority.
+
+---
+
+_Rotated from `LOG.md` at Pass 67 (2026-08-10), five-entry retention. Verbatim, chronological order preserved._
+
+## 2026-08-04 — Pass 62 (the loss is a hit-rate deficit, and four more surfaces reported health they never established)
+
+**Window:** 2026-08-04T08:07Z → 09:50Z. Lease `e990fcaebc706725` taken 08:07:38Z. Sweep clean apart
+from the frozen `venue_reject_rate_high [binance]`, re-verified rather than assumed: newest binance
+submit is still **2026-07-31T01:45:02Z**, unchanged, so the most-recent-N window cannot clear by
+dilution and the recorded 2026-08-06T23:15Z age-out stands. All four mandatory independent checks
+green — `kill_switch_state{RUNNING}=1`, clean stamp 90s old, `agentic_budget_remaining_usd` 1.9507,
+real decides on the live boot (08:00:41Z against a 07:55:35Z boot).
+
+**Pass type: CANDIDATE**, the first in three days. Defect repair ran on top of it and, as in the last
+two passes, dominated the pass — see § What this pass could not finish.
+
+### THE HEADLINE — the program's central unanswered question is answered, and the answer is unwelcome
+
+Every study in this repo so far measured COST. None explained the one fact that survives setting LLM
+spend to zero: the book is still about **−$36**. Decomposed this pass over the 50 closed round trips,
+mirroring `walkRoundTrips` as a recursive CTE so all money math stayed in `NUMERIC(38,18)`:
+
+| term | value |
+| --- | --- |
+| realised gross | **−$31.98** |
+| fees | −$3.64 |
+| funding | −$0.81 (55 rows, all binanceusdm) |
+| LLM | −$30.04 |
+| **bridge total** | **−$66.4746 vs the gate's published −66.474 — exact to 4dp** |
+
+**It is a HIT-RATE deficit, not an exit-geometry problem, and that kills the intuitive fix.** Winners
+are **1.40× LARGER** than losers (+300.33 bps on n=12 vs −214.35 bps on n=38). Break-even at that
+payoff needs **41.65%**; actual is **24.00%** (95% CI [12.2%, 35.8%], which excludes the break-even
+rate). Clearing the all-in bar needs **57.8%**. Expectancy is −90.83 bps/trip equal-weighted, −77.21
+notional-weighted.
+
+Everything else is second-order and is recorded so nobody re-derives it: execution slippage is a
+small **tailwind** (−3.08 bps on 216 entry fills, i.e. filled better than the decide-time reference),
+funding is **2.3%** of the loss, the bracket pair (venue stop + TP) nets **+$0.905**, and the loss is
+a broad bleed across 15 symbols — worst single trip −$4.09, worst three 32.9%, so there is no tail to
+excise and no symbol to blacklist. **84% of the gross loss exits through discretionary LLM closes,
+and the causal reading is the opposite of the obvious one**: those average −154.7 bps against −279.0
+bps for letting the bracket stop fire, so hand-cutting a broken thesis SAVES ~124 bps/trip. Do not
+"fix" discretionary closes.
+
+**Sizing is the only lever that touches the cost bar, and it is the one guaranteed to make things
+worse**: 87% of the 83.26 bps bar is LLM cost that scales with wall-clock, not notional, so sizing up
+12× would cut the bar to ~16.7 bps — and multiply a −77 bps gross edge into roughly −$390. **Gross
+must cross zero before any cost lever is worth pulling.**
+
+Two honest caveats, both from the lane itself. Its −77.21 bps notional-weighted figure does **not**
+reproduce the recorded −69.90; that figure was anchored at 48 trips / $3,996.15 on 2026-08-03T16:07Z
+and this one at 50 trips / $4,142.4 — different windows, not a contradiction, and neither may be
+quoted without its anchor. And **only the headline claim survives the sampling error**: the venue
+split (binance n=7), the exit-bucket ranking and the per-playbook-version cohorts rest on n=1–15 and
+are directional only.
+
+**The v1–v2 cohort carries 78% of the loss** (n=17, −166.5 bps, opened in a single 2-day window);
+the current v6–v10 regime is −18.4 bps notional-weighted with a 34.4% hit rate (11/32). That is 2–4×
+better than the blended headline — and still below the 41.65% gross break-even, so it changes no
+verdict.
+
+### CANDIDATE — MINT GATE: REFUSED, and the refusal's own reasons were wrong
+
+`loop:authoring --label authoring-2026-08-04` claimed the day slot (`public.experiments` **id=17**)
+and logged every scored variant: **id=18** `incumbent_v10`, **id=19** `draft_conservative`, **id=20**
+`draft_exploratory`. Both drafts validated against the real `validatePlaybook`; neither cleared the
+deployment bar; the research bar returned NO_SURVIVOR 0/8 for both.
+
+**Its printed numbers are VOID and this entry does not quote them as findings.** The run ABORTED on
+budget, so the arms are truncated. The tell was in the output the whole time: stage 7 reported the
+incumbent entering **1/67 = 1.5%** where a `--dry-run` of the same pipeline thirteen minutes earlier
+reported **41/150 = 27.3%**.
+
+The gate refused correctly and fails closed — but two of its three stated reasons were false, and
+that is now fixed (`1a0a54d`). It said "the incumbent was never scored on the same rows" while stage
+5 had printed the incumbent at all four horizons, because `classifyMintGate` receives
+`deployment: winner` and `winner` is selected only from candidates with `ships === true`. Review then
+found the same class twice more: `describeRunTruncation` mirrored only two of the gate's three
+run-level refusals, so a run whose replay **measured a different account** would print a full table
+with no banner at all; and stage 6 wrote an aborted run's numbers into the append-only registry with
+no truncation marker. **Rows 18/19/20 predate that field, carry no marker, and cannot be amended.
+This paragraph is the only thing that says they are void.**
+
+A dry-run first was worth it: it exercised stages 1–7 for free and confirmed the pipeline healthy
+before the day's single slot was spent.
+
+### Four more surfaces reporting health they never established — the through-line holds a SEVENTH pass
+
+- **Trade flow never reached perp.** Stored under SPOT-form keys, queried with PERP form, bare
+  `Map.get`: **0 of 1215** post-epoch perp consults ever carried the block against **644 of 644**
+  spot. 65% of LLM spend and the entire half of the book where all the shorting happens, deciding
+  without a block the deployment pays to poll. That it is a defect and not a spot-only design is
+  settled by `TRADE_FLOW_SPOT_SKIP`, which names the SPOT forms of two PERP-ONLY symbols and is
+  therefore unreachable dead code as wired.
+- **Liquidation notional could never be non-zero.** ccxt is built with `number: String`, so
+  `asFiniteNumber`'s `typeof v === 'number'` test rejected every real event and `toNotionalUsd` hit
+  its `0` fallback unconditionally — `max(liqNotionalUsd)` is 0 across 1858 payloads and
+  `longShareOfLiqs` was non-null zero times. The suite stayed green because every fixture used JS
+  number literals. **The first fix shipped for this was WRONG** — returning null for "uncomputable"
+  events would have classified 100% of real events as unpriced. Caught by the adversarial verifier,
+  reverted, re-done as a type widening. Recorded because the wrong fix looked entirely reasonable.
+- **Derivatives asked the SPOT client for the PERP ticker** and ccxt resolved it silently to the
+  futures market; latent only because `AGENTIC_DERIVATIVES_V2_ENABLED` is false.
+- **Four live prompt feeds had no metric at all.** Now instrumented, and the gauges came up populated
+  on the first boot: `fear_greed` 18.7s, `positioning` 18.3s, `trade_flow` 19.3s, poll errors 0,
+  `liquidation_stream_healthy` 1.
+
+### The menu pin, deferred by three passes on a blocker that was already false
+
+Four dust residuals ($0.036–$0.488) were permanent consult subscribers; measured **$0.27–$0.33/day**,
+10.7–13.2% of the lane's $2.5363/day. Justified on per-trip economics, not on budget headroom: over
+2026-08-01..08-04 those four symbols produced **121 consulted decisions whose action distribution is
+one row — `hold`, 121** — with zero orders and zero fills, against 67 orders and 70 fills for the
+rest of the book. The recorded blocker ("pending a durable round-trip-cycle reader") was refuted:
+`round-trip-evidence.reader.ts` already existed and already walked this exact knob, while a spec was
+actively pinning the defective behaviour in place.
+
+### Review found two must-fixes, and one was mine
+
+- The dust-pin comment declared it "fails toward keeping the consult (never toward losing one)".
+  False in the mirror case: `avgEntry` is the entry price, so a **risen** mark UNDERSTATES the
+  notional and a position genuinely above the bar can lose its pin. Comment corrected in both
+  directions rather than the flattering one; `Position` carries no mark, so the seam cannot do better.
+- **My own trade-flow fix would have told 12 perp symbols that spot flow was theirs.** The block is
+  measured on Binance SPOT klines; the system copy named no market. That is the same defect the same
+  commit fixes, pointed the other way. The prompt now says so explicitly.
+- Review also hit **my own two alert rules**: `> 0` on a poll-error counter pages on a single 5xx
+  (now `>= 5`, matching `MarketStreamReconnectStorm`'s precedent), and my `== -1` clause reproduced
+  exactly the trap I had cited for omitting the liquidation rule — a feed turned OFF pins −1 forever.
+  Dropped, with the reasoning recorded next to the rule.
+
+### WATCH readings
+
+- **WATCH-V4-15 FIRED for the first time and its expected-positive is CONFIRMED**: `stale_venue_open:1`
+  at 08:31:21Z on binanceusdm, result MISMATCH not HALT, next pass CLEAN at 08:32:16Z.
+- **WATCH-V4-1 holds, both clauses**: `adopt_non_adoptable:1` at 08:46:02Z, transient (next pass CLEAN),
+  and explained by five ACKs at 08:45:31–08:45:36Z inside the preceding pass interval.
+- **Pass 60's perp fill-backfill engaged for the first time** — `backfilled_fill:6` at 06:57:50Z.
+  STATUS recorded "the soak recorded no engagement"; it has now engaged.
+- **WATCH-V3-1 holds** — RSS 754.7 MiB against the ~900 MiB reference.
+- **WATCH-V4-12 (L1) is NOT read here.** Its pre-registered read is two full UTC days (~2026-08-06).
+  The post-enable hash cohort shows 0 truncations in 11 rows, which is n=11 and means nothing yet.
+
+### Gates, diff, deploy
+
+`format:check` · `lint` · `lint:md` · `typecheck` · `build` clean; **`test` 197 files / 3805 passed**.
+`9c47abe` venue feeds · `b26d18b` agentic (menu pin + btcBeta) · `f04a998` observability ·
+`1a0a54d` loop authoring. Deployed **`build_info{git_sha="1a0a54d"}`**, boot
+`b7b3d700-b324-4b77-be24-e5f906cd07a3`, healthy, `RestartCount` 0, `kill_switch_state{RUNNING}`,
+`mode_info{effective="testnet"}` after the known ~70s mid-boot `paper` artifact. Prometheus
+force-recreated (the rules file was touched): **25 rules**, up from 23.
+
+### What this pass could not finish — and the recommendation the playbook asks for
+
+**The exit-path lane was REVERTED, and the blocker is not "it was big".** It stopped mid-remediation
+returning an intermediate thought, leaving 4 red tests in `venue-stop-lifecycle.spec.ts` — there was
+no finished change to review, and the playbook mandates multi-lens adversarial review before any
+OMS-semantics commit. Shipping unreviewed exit-path surgery is worse than carrying the defect. Its
+576-line diff is quarantined at
+`scratchpad/exit-path-quarantine/exit-path-incomplete.patch`. **Its findings stand and are the
+highest-priority carry:**
+
+1. **Four orphaned reduce-only STOP_MARKETs from 2026-07-31 are still ACKED** — two on UNI at trigger
+   **4.177** while UNI is LONG 15 @ 3.888 with its own take-profit at 3.966. A rally to +7.4% — a
+   WINNING move — fires 26 units of market SELL against a 15-unit long. Two on KAITO, which has no
+   position row at all. `reconcileOrphanedAlgoStop` early-returns when a plan is active and `break`s
+   after the first match; the reconciler's open-orders axis cannot see the perp algo rail.
+2. **A take-profit drift-cancel strands the position with no venue stop until the next bar.** Observed
+   live at 08:30:35–08:44Z: HYPE, BTC and UNI — $195.59 of a $434 perp book — carried no protective
+   stop for ~15 minutes, with `PLAN_STOP_WATCH_ENABLED=false`. **It self-healed at the 08:45 bar**
+   (verified: all six positions carry a stop and a TP as of 08:59Z), so this is a recurring bounded
+   window, not an outage — but it recurs on the first managed bar after every restart.
+3. **Every restart replaces the model's declared exit geometry with a synthetic 5% stop / 2% TP** it
+   never authored — a 2.5:1 adverse risk/reward. ETH and SOL are on it right now (their resting
+   orders sit at exactly 1.05000 and 0.98000 of avg entry). `maxHoldBars: 96` = 24h against a ~9h
+   restart cadence, so the declared time-stop can never mature; only 3 of 43 trips ever exited via
+   `max_hold`.
+
+**Three promotion-gate measurement defects were also found and NOT fixed** (evidence is complete;
+they are the next carry): `llmCostUsd` still has no `asOfMs` bound after `4ef4153`, which fixed
+re-derivability only for the 37× smaller funding term; `netPnlUsd` sums LLM cost over a different
+interval than `windowDays` measures, so **25.2% of the published cost falls outside the published
+window**; and `BELOW_PASSIVE_BENCHMARK` is currently firing on a **refusal** (`CANNOT_COMPUTE`), not
+on a comparison, with no published series able to tell the two apart. The gate's six gauges otherwise
+**reproduce byte-exactly** from raw rows — I3 performed by hand.
+
+**The recommendation, which the playbook requires after consecutive repair-dominated passes.** This
+is the third. The constraint is not defect _volume_ — eight lanes shipped cleanly in parallel — it is
+that **one pass cannot gate, review, soak and report more than about five slices**, and this pass
+found nine. The bottleneck is the serial tail (gates → review → remediation → deploy → soak), not the
+finding. Concretely: either the loop runs a _repair-only_ pass type whose report is allowed to be
+thin, or it stops treating "found in this pass" as "must ship in this pass" for defects that are
+**latent** (dormant code, disabled flags) as opposed to **live**. The three exit-path findings above
+are live and should set the next pass's agenda before any improvement is chosen.
+
+**Process miss, recorded not smoothed: `STATUS.md` closes at 207 lines against its own 200-line cap.**
+Three bodies were moved out to the files that own them this pass (the bar and LLM-cost banner bodies to
+their studies, all six defect bodies to `watches.md` § Open defects #147–#152) and two Pass-60/61
+bullets compressed to pointers, which took it from 228 to 207. The remaining 7 were not worth eating
+into the post-deploy soak for, and trimming a fact to hit a line count is the one thing the rule
+forbids. The next pass should move the § Index table or the § Flagged bodies out rather than re-trim
+prose.
+
+### SOAK: PASS (`loop:sweep` 2026-08-04T09:59:02Z, 14 min after deploy)
+
+Container healthy, `RestartCount` 0, boot `b7b3d700`, `error=0 fatal=0` this boot. **One alarm — the
+frozen binance reject window, unchanged. No new alarm.** **25 Prometheus rules loaded, 0 firing**: the
+two rules added this pass are live and correctly quiet, since all three context feeds are fresh.
+
+**Three of this pass's fixes are confirmed working from the outside, not merely green in a test:**
+
+- `derivatives-feed: excluding HYPE/USDT from spot-ticker polling` appears **exactly once** in the
+  boot's warn set. That is the `spotUnlisted` guard added in remediation doing precisely its job — the
+  pre-fix behaviour would have emitted that line every 60s, ~2,880/day, for HYPE and KAITO both.
+- The four new context-feed gauges came up **populated on the first boot** rather than absent, which
+  is the zero-seed requirement holding.
+- `error=0` again, and the FIL/USDT filter-drift refusal that used to be the one error line per boot
+  stays gone.
+
+**One new warn to carry, not an alarm:** `fill poll failed for venue "binance": binance GET …` — a
+single occurrence on a venue with no activity since 2026-07-31. Recorded so the next pass sees it as
+pre-existing rather than new if it recurs; a single failed poll on an idle venue is not a finding yet,
+and calling it one on n=1 is the error this loop keeps writing down.
+
+**The book did not move and was not supposed to** — nothing shipped here was a profitability change:
+`windowDays=11.3571, roundTrips=50, netPnlUsd=−66.5305, llmCostUsd=30.0924, winRate=0.24, ready=false`,
+reasons unchanged. v10 h=8 forward return is now n=27 / clusters=9, mean **−39.6 bps** CI [−100.1,
++11.2], still excluding the +19.3 replay prediction — WATCH-PLAYBOOK-V10-1 unchanged in direction.
+
+Running build `1a0a54d`; working tree `7e75ad7` is this docs commit, a docs-only delta.
+
+**Correction, same pass:** the STATUS line claiming Pass 62's lease expired at 100 min was written
+before the fact and was wrong — the pass ran 113 minutes and released nonce `e990fcaebc706725`
+cleanly at 10:00:23Z, inside its 2h window. Corrected under a second short-lived lease
+(`40baf8e71c0a68ce`). Writing a prediction into the record as though it had happened is the same
+defect class this pass spent its day on, so it is fixed rather than left to age into fact.

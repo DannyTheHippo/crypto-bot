@@ -1183,3 +1183,20 @@ every case the artifacts were further along than the report. Checking `git statu
 the report, is what recovered them. One lane returned a **NEEDS_DECISION** rather than guessing at a
 missing port — it had proved that no port, service, in-memory map or table carried a live position's
 open time — and that halt was the correct outcome, not a failure.
+
+**A fourth orchestrator miss, caught by the instrument that exists for it.** The first deploy of this
+pass was run as a plain `docker compose up -d --build app`, omitting the `GIT_SHA=$(git rev-parse
+--short HEAD)` prefix the playbook § deploy step spells out. The image built and the container came up
+healthy — and `build_info{git_sha}` read **`"unknown"`**, because `${GIT_SHA:-unknown}` bakes the
+literal. **The playbook documents this exact failure mode**, and the deploy "succeeding" while being
+unverifiable by its own instrument is the pass's own through-line pointed back at itself. Redeployed
+with the prefix. **Never verify a deploy by container health alone; the sha is the verification.**
+
+**A scoping fact on #149's clock fix, recorded because it bounds where the fix is live.**
+`RoundTripEvidenceReader` — the concrete `RoundTripEvidencePort` the new closure reuses — hardcodes
+`DEMO_MODE = 'testnet'` (pre-existing, untouched, correct for the reflection-evidence job it was built
+for). So `openPositionOpenedAt` returns `null` for any position whose fills are recorded under
+`mode='paper'`, and the clock **fails open to `barsElapsed: 0` there — never worse than before, but
+inert.** This deployment's `mode_info` settles to `effective="testnet"` after the documented ~69 s
+boot transient and its fills carry `mode='testnet'`, so the fix **is** live here. If the lane is ever
+run in paper mode, this fix is a no-op until the reader's mode is threaded rather than hardcoded.

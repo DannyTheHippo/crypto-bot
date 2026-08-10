@@ -21,6 +21,7 @@ import { PortfolioStateService } from '../../../../src/features/trading/executio
 import { ReconciliationService } from '../../../../src/features/trading/execution/reconciliation.service';
 import {
   AdapterError,
+  type AlgoOrderState,
   type ExchangeOrderState,
   type ExchangePort,
   type VenueFill,
@@ -68,6 +69,11 @@ interface ExchangeScript {
   // adapter — the position axis must skip entirely, exactly the pre-Defect-A behavior.
   positions?: () => VenuePosition[];
   positionsThrow?: boolean;
+  // R2: absent (both undefined) leaves ExchangePort.fetchOpenAlgoOrders undefined, matching a
+  // spot/paper adapter — reconcileAlgoRailOrphans must skip entirely, mirroring the positions gate
+  // above.
+  algoOpen?: (symbol: string) => AlgoOrderState[];
+  algoOpenThrow?: boolean;
 }
 
 function build(
@@ -145,6 +151,14 @@ function build(
               : Promise.resolve(script.positions!()),
         }
       : {}),
+    ...(script.algoOpen !== undefined || script.algoOpenThrow
+      ? {
+          fetchOpenAlgoOrders: (symbol?: string) =>
+            script.algoOpenThrow
+              ? Promise.reject(new Error('algo open orders down'))
+              : Promise.resolve(script.algoOpen!(symbol ?? '')),
+        }
+      : {}),
   };
 
   const recon = new ReconciliationService(
@@ -201,6 +215,29 @@ function seedOpenOrder(
   return coid;
 }
 
+// R2: an ACKED, zero-cumQty algo-rail (STOP_MARKET) order the way a just-restarted process would
+// see it — the intent resolves ONLY through the durable write-ahead store (loadIntentByClientOrderId),
+// never through the in-memory in-flight map, matching the real four-row 2026-07-31-boot defect
+// (a post-restart, store-only anchor — see AlgoStopRecoveryService.candidateAlgoIntents' own
+// header). Deliberately does NOT call portfolio.addInFlight/openOrder: algo-rail orders are kept off
+// both by execution-gate/boot-recovery's own isAlgoRailIntent gating (reconcileOpenOrders' header).
+async function seedAlgoOrphan(
+  ctx: Ctx,
+  coid = makeIntent({ type: 'STOP_MARKET', triggerPrice: price('90') }).clientOrderId,
+  venueOrderId = 'algo-v1',
+): Promise<typeof coid> {
+  const intent = makeIntent({
+    clientOrderId: coid,
+    type: 'STOP_MARKET',
+    triggerPrice: price('90'),
+  });
+  ctx.orders.create(initialOrder(coid, intent.qty, '0.001', SYM));
+  ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+  ctx.orders.apply(coid, { type: 'ACK', venueOrderId });
+  await ctx.store.saveIntent(intent, { nonce: 'n', approvedAtMs: T, ttlMs: 60_000 } as never);
+  return coid;
+}
+
 const venueOrder = (coid: string, status: ExchangeOrderState['status']): ExchangeOrderState => ({
   clientOrderId: coid as ExchangeOrderState['clientOrderId'],
   venueOrderId: 'v1',
@@ -208,6 +245,20 @@ const venueOrder = (coid: string, status: ExchangeOrderState['status']): Exchang
   status,
   cumQty: '0',
   qty: '1',
+});
+
+// R2: a resting algo-rail (STOP_MARKET) order as fetchOpenAlgoOrders would report it — the venue
+// counterpart reconcileAlgoRailOrphans checks for before ever folding a coid.
+const algoOrder = (coid: string): AlgoOrderState => ({
+  algoId: 'a1',
+  clientAlgoId: coid,
+  symbol: SYM,
+  side: 'SELL',
+  type: 'STOP_MARKET',
+  qty: '1',
+  triggerPrice: '90',
+  status: 'NEW',
+  reduceOnly: true,
 });
 
 const trade = (coid: string, tradeId: string): VenueFill => ({
@@ -2040,6 +2091,266 @@ describe('ReconciliationService (§6.4)', () => {
       expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     });
   });
+
+  // R2 (2026-08-10): the repair for the four demo-fapi rows stuck ACKED since the 2026-07-31 boot —
+  // an algo-rail (STOP_MARKET) order with zero exposure that NO live path (AlgoStopRecoveryService's
+  // own fail-open retry, the strategy lane, HaltCoordinatorService) ever revisits once its venue
+  // algo-history entry stops answering conclusively. Fails CLOSED: every case below except the first
+  // asserts the row is left exactly as seeded.
+  describe('algo-rail orphan repair (R2, 2026-08-10)', () => {
+    const ORPHAN_COID = makeIntent({
+      type: 'STOP_MARKET',
+      triggerPrice: price('90'),
+    }).clientOrderId;
+
+    it('ACKED, zero cumQty, STOP_MARKET, absent from a successful read for driftPasses+1 consecutive passes ⇒ folds VENUE_EXPIRED under its own dedupe namespace, never halts', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      // balanceAxis:false isolates this block to the algo-rail axis alone — driftPasses:1 also
+      // shortens the balance-leak window to a single sample, which driftStrictlyGrowing (unrelated,
+      // pre-existing) treats as vacuously "growing" and would otherwise HALT on BALANCE_LEAK.
+      const ctx = build({ algoOpen: () => [] }, counter, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      const first = await ctx.recon.reconcile();
+      expect(first.halted).toBe(false);
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // streak=1, at the threshold — not yet
+      const second = await ctx.recon.reconcile();
+      expect(second.halted).toBe(false);
+      expect(ctx.orders.get(coid)?.state).toBe('EXPIRED'); // streak=2 > driftPasses(1) — folds
+      expect(
+        ctx.store.events.some(
+          (e) => e.clientOrderId === coid && e.dedupeKey === 'algo-orphan-repair:VENUE_EXPIRED',
+        ),
+      ).toBe(true);
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'algo_orphan_adopted' },
+        1,
+      ]);
+      expect(ctx.engages).toHaveLength(0); // adopted_terminal's own family — never a halt
+    });
+
+    it('fold refused mid-pass (race between the candidate snapshot and the fold freezes the order at RECONCILE_REQUIRED) ⇒ contained, no bump, no halt, order left exactly as frozen', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctxRef: { current?: Ctx } = {};
+      let pass = 0;
+      const ctx = build(
+        {
+          algoOpen: () => {
+            pass += 1;
+            // Fires inside the awaited fetchOpenAlgoOrders call — strictly AFTER
+            // candidatesBySymbol's synchronous snapshot (top of reconcileAlgoRailOrphans) already
+            // read ACKED/zero-cumQty, and strictly BEFORE this same pass's fold() re-reads
+            // this.orders.get(coid). Gated to the SECOND pass only — the one where streak already
+            // exceeds driftPasses and a fold is actually attempted; freezing on pass 1 would just
+            // make the order stop being a candidate before the debounce threshold is even reached.
+            // Same CANCEL_REQUESTED → CANCEL_REJECT_UNKNOWN → QUERY_INCONCLUSIVE chain the
+            // regular-rail axis's own "fold the reducer refuses" test above uses to freeze an order
+            // at RECONCILE_REQUIRED — VENUE_EXPIRED is illegal there (reducer.ts case
+            // 'RECONCILE_REQUIRED'), so fold's reduce() throws TransitionError.
+            if (pass === 2) {
+              const c = ctxRef.current!;
+              c.orders.apply(ORPHAN_COID, { type: 'CANCEL_REQUESTED' });
+              c.orders.apply(ORPHAN_COID, { type: 'CANCEL_REJECT_UNKNOWN' });
+              c.orders.apply(ORPHAN_COID, { type: 'QUERY_INCONCLUSIVE' });
+            }
+            return [];
+          },
+        },
+        counter,
+        undefined,
+        undefined,
+        { driftPasses: 1, balanceAxis: false },
+      );
+      ctxRef.current = ctx;
+      await seedAlgoOrphan(ctx, ORPHAN_COID);
+      const first = await ctx.recon.reconcile();
+      expect(first.halted).toBe(false); // streak=1, at the threshold — no fold attempted yet
+      expect(ctx.orders.get(ORPHAN_COID)?.state).toBe('ACKED');
+      const second = await ctx.recon.reconcile();
+      expect(second.halted).toBe(false); // refusal contained — never a halt (rule 6 untouched)
+      expect(ctx.orders.get(ORPHAN_COID)?.state).toBe('RECONCILE_REQUIRED'); // frozen, left alone
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).not.toContainEqual([
+        { class: 'algo_orphan_adopted' },
+        1,
+      ]);
+      expect(ctx.engages).toHaveLength(0);
+    });
+
+    it('a non-TransitionError from an algo-orphan fold still aborts the pass (rethrown past the refusal guard)', async () => {
+      const runs = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build({ algoOpen: () => [] }, undefined, runs, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile(); // streak=1, no fold attempt yet
+      // The refusal guard swallows only reducer refusals (TransitionError); an infrastructure
+      // throw (store down) must escape it and abort through the PASS_ERROR machinery — mirrors the
+      // regular-rail axis's own equivalent test above.
+      ctx.store.appendOrderEvent = () => {
+        throw new Error('store down');
+      };
+      await expect(ctx.recon.reconcile()).rejects.toThrow('store down');
+      expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
+        { venue: V, result: 'error' },
+      ]);
+    });
+
+    it('venue still lists the algo-rail counterpart ⇒ left ACKED, no bump, no fold', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build(
+        { algoOpen: () => [algoOrder(ORPHAN_COID)] },
+        counter,
+        undefined,
+        undefined,
+        {
+          driftPasses: 1,
+          balanceAxis: false,
+        },
+      );
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile();
+      await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).not.toContainEqual([
+        { class: 'algo_orphan_adopted' },
+        1,
+      ]);
+    });
+
+    it('cumQty > 0 (PARTIALLY_FILLED) ⇒ never a candidate — the position axis stays the fail-closed backstop for real exposure', async () => {
+      const ctx = build({ algoOpen: () => [] }, undefined, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      ctx.orders.apply(coid, { type: 'FILL', cumQty: new Decimal('0.5') });
+      await ctx.recon.reconcile();
+      await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('PARTIALLY_FILLED');
+    });
+
+    it('fetchOpenAlgoOrders throws ⇒ sweep_failure only, no fold, streak untouched', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build({ algoOpenThrow: true }, counter, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'sweep_failure' },
+        1,
+      ]);
+    });
+
+    it('below the debounce threshold (one absent pass, default driftPasses=3) ⇒ left ACKED', async () => {
+      const ctx = build({ algoOpen: () => [] });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+    });
+
+    it('present after being absent resets the streak — a later disappearance restarts the debounce', async () => {
+      let present = false;
+      const ctx = build(
+        { algoOpen: () => (present ? [algoOrder(ORPHAN_COID)] : []) },
+        undefined,
+        undefined,
+        undefined,
+        { driftPasses: 1, balanceAxis: false },
+      );
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile(); // absent, streak=1
+      present = true;
+      await ctx.recon.reconcile(); // present — streak reset
+      present = false;
+      await ctx.recon.reconcile(); // absent again, streak=1 (not carried over) — still no fold
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+      await ctx.recon.reconcile(); // absent, streak=2 > driftPasses(1) — folds
+      expect(ctx.orders.get(coid)?.state).toBe('EXPIRED');
+    });
+
+    it('fetchOpenAlgoOrders undefined (spot/paper adapter) ⇒ axis skipped entirely, byte-identical to no repair existing', async () => {
+      const ctx = build({}, undefined, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      const r = await ctx.recon.reconcile();
+      expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+    });
+
+    it('ACKED, zero cumQty, but a non-STOP_MARKET intent (regular LIMIT order) ⇒ never a candidate', async () => {
+      const ctx = build({ algoOpen: () => [] }, undefined, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      const coid = makeIntent({ type: 'LIMIT' }).clientOrderId;
+      ctx.orders.create(initialOrder(coid, qty('1'), '0.001', SYM));
+      ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+      ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
+      await ctx.store.saveIntent(makeIntent({ clientOrderId: coid, type: 'LIMIT' }), {
+        nonce: 'n',
+        approvedAtMs: T,
+        ttlMs: 60_000,
+      } as never);
+      await ctx.recon.reconcile();
+      await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+    });
+
+    it('ACKED, zero cumQty, but NO resolvable intent anywhere (neither in-flight nor durable) ⇒ never a candidate — the nullish chain falls all the way through to undefined', async () => {
+      const ctx = build({ algoOpen: () => [] }, undefined, undefined, undefined, {
+        driftPasses: 1,
+        balanceAxis: false,
+      });
+      // A local row with no backing intent at all — a genuinely orphaned book entry (corruption, or
+      // an intent row lost to a gap) this repair must never paper over by assuming STOP_MARKET.
+      const coid = makeIntent().clientOrderId;
+      ctx.orders.create(initialOrder(coid, qty('1'), '0.001', SYM));
+      ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+      ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
+      await ctx.recon.reconcile();
+      await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // left exactly alone
+    });
+
+    it('fetchOpenAlgoOrders resolves to a nullish, non-array read ⇒ the defensive `?? []` fallback treats it identically to an empty array', async () => {
+      const ctx = build(
+        { algoOpen: () => undefined as unknown as AlgoOrderState[] },
+        undefined,
+        undefined,
+        undefined,
+        { driftPasses: 1, balanceAxis: false },
+      );
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile(); // streak=1, at the threshold — not yet
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(ctx.orders.get(coid)?.state).toBe('EXPIRED'); // streak=2 > driftPasses(1) — same as `[]`
+    });
+
+    it('a candidate that stops being a candidate between passes (a fill arrives) leaves its stale streak entry for the cleanup pass to sweep — it never lingers under a coid that can no longer resurface', async () => {
+      const ctx = build({ algoOpen: () => [] }, undefined, undefined, undefined, {
+        balanceAxis: false,
+      });
+      const coid = await seedAlgoOrphan(ctx, ORPHAN_COID);
+      await ctx.recon.reconcile(); // absent, streak=1 recorded
+      // A fill arrives between passes — no longer zero-cumQty, so the NEXT pass's candidatesBySymbol
+      // snapshot never re-adds it, and the stale streak entry from the pass above (present in
+      // algoOrphanStreak, absent from THIS pass's stillCandidate) is swept by the cleanup loop.
+      ctx.orders.apply(coid, { type: 'FILL', cumQty: new Decimal('0.5') });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(ctx.orders.get(coid)?.state).toBe('PARTIALLY_FILLED'); // untouched by this axis
+    });
+  });
 });
 
 // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. This block
@@ -2804,5 +3115,124 @@ describe('ReconciliationService — venue-axis symbol/position filtering (§1.5 
     const perpRow = store.reconciliations.filter((r) => r.venue === PERP).at(-1)!;
     expect(perpRow.mismatches).toBe(0);
     expect(perpRow.detail).toBe('clean');
+  });
+
+  // R2 close-out: reconcileAlgoRailOrphans' own venue filter (venueForSymbol(rec.symbol) !==
+  // exchange.venue) is unreachable off the single-venue build() fixture for the same reason every
+  // other case in this describe block is — there is only ever one exchange.venue to compare against.
+  it("an algo-rail orphan candidate on a DIFFERENT venue's symbol is filtered before ever reaching this venue's own algo sweep (venueForSymbol(rec.symbol) !== exchange.venue)", async () => {
+    const PERP_SYM = symbolId('BTC/USDT:USDT');
+    const spotAlgoOpen = vi.fn().mockResolvedValue([]);
+    const perpAlgoOpen = vi.fn().mockResolvedValue([]);
+    const ports = new Map([
+      [SPOT, fakePort(SPOT, { fetchOpenAlgoOrders: spotAlgoOpen })],
+      [PERP, fakePort(PERP, { fetchOpenAlgoOrders: perpAlgoOpen })],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { store, orders, recon } = buildMultiVenue(ports, registry);
+    // ACKED, zero cumQty, STOP_MARKET — a candidate by every OTHER criterion — but on a PERP symbol.
+    const coid = makeIntent({
+      type: 'STOP_MARKET',
+      triggerPrice: price('90'),
+      venue: PERP,
+      symbol: PERP_SYM,
+    }).clientOrderId;
+    orders.create(initialOrder(coid, qty('1'), '0.001', PERP_SYM));
+    orders.apply(coid, { type: 'SUBMIT_SENT' });
+    orders.apply(coid, { type: 'ACK', venueOrderId: 'algo-v1' });
+    await store.saveIntent(
+      makeIntent({
+        clientOrderId: coid,
+        type: 'STOP_MARKET',
+        triggerPrice: price('90'),
+        venue: PERP,
+        symbol: PERP_SYM,
+      }),
+      { nonce: 'n', approvedAtMs: T, ttlMs: 60_000 } as never,
+    );
+
+    await recon.reconcile();
+
+    // SPOT's own pass never calls fetchOpenAlgoOrders at all — venueForSymbol(PERP_SYM) resolves to
+    // PERP, so SPOT's candidatesBySymbol snapshot stays empty for this coid.
+    expect(spotAlgoOpen).not.toHaveBeenCalled();
+    // PERP's own pass DOES see it as a candidate — proof this is the venue filter, not a missing
+    // candidate (a false-negative "not called" would pass just as happily with the filter deleted).
+    expect(perpAlgoOpen).toHaveBeenCalledWith(PERP_SYM);
+  });
+
+  it("algo-rail orphan streaks are tracked independently per venue — one venue's cleanup pass skips another venue's own streak key (key.startsWith(streakPrefix), false arm)", async () => {
+    const PERP_SYM = symbolId('BTC/USDT:USDT');
+    const ports = new Map([
+      [SPOT, fakePort(SPOT, { fetchOpenAlgoOrders: () => Promise.resolve([]) })],
+      [PERP, fakePort(PERP, { fetchOpenAlgoOrders: () => Promise.resolve([]) })],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { store, orders, recon } = buildMultiVenue(ports, registry);
+
+    const spotCoid = makeIntent({
+      type: 'STOP_MARKET',
+      triggerPrice: price('90'),
+      venue: SPOT,
+      symbol: SYM,
+    }).clientOrderId;
+    orders.create(initialOrder(spotCoid, qty('1'), '0.001', SYM));
+    orders.apply(spotCoid, { type: 'SUBMIT_SENT' });
+    orders.apply(spotCoid, { type: 'ACK', venueOrderId: 'spot-algo-v1' });
+    await store.saveIntent(
+      makeIntent({
+        clientOrderId: spotCoid,
+        type: 'STOP_MARKET',
+        triggerPrice: price('90'),
+        venue: SPOT,
+        symbol: SYM,
+      }),
+      { nonce: 'n', approvedAtMs: T, ttlMs: 60_000 } as never,
+    );
+
+    const perpIntentId = intentId('0190ffff-3333-7abc-89ab-0123456789ab');
+    const perpCoid = makeIntent({
+      intentId: perpIntentId,
+      type: 'STOP_MARKET',
+      triggerPrice: price('90'),
+      venue: PERP,
+      symbol: PERP_SYM,
+    }).clientOrderId;
+    orders.create(initialOrder(perpCoid, qty('1'), '0.001', PERP_SYM));
+    orders.apply(perpCoid, { type: 'SUBMIT_SENT' });
+    orders.apply(perpCoid, { type: 'ACK', venueOrderId: 'perp-algo-v1' });
+    await store.saveIntent(
+      makeIntent({
+        intentId: perpIntentId,
+        clientOrderId: perpCoid,
+        type: 'STOP_MARKET',
+        triggerPrice: price('90'),
+        venue: PERP,
+        symbol: PERP_SYM,
+      }),
+      { nonce: 'n', approvedAtMs: T, ttlMs: 60_000 } as never,
+    );
+
+    // CFG.driftPasses is 3 (the legacy cfg both venues derive from — venueReconConfig only overrides
+    // balanceAxis/positionAxis/sweepSymbols, never driftPasses), so 4 consecutive absent-successful
+    // reads are needed before either folds. Both venues' streaks live in the SAME shared
+    // this.algoOrphanStreak map every pass — if the cleanup loop's key-prefix filter were missing,
+    // one venue's cleanup could delete or corrupt the other's still-live streak count, folding early
+    // or never.
+    for (let i = 0; i < 3; i++) {
+      const r = await recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(orders.get(spotCoid)?.state).toBe('ACKED');
+      expect(orders.get(perpCoid)?.state).toBe('ACKED');
+    }
+    await recon.reconcile();
+    expect(orders.get(spotCoid)?.state).toBe('EXPIRED'); // both fold on exactly the 4th pass —
+    expect(orders.get(perpCoid)?.state).toBe('EXPIRED'); // proof neither venue's count was disturbed
   });
 });

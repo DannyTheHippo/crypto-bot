@@ -25,6 +25,7 @@ import {
   AdapterError,
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
+  type AlgoOrderState,
   type ExchangeOrderState,
   type ExchangePort,
   type VenueFill,
@@ -76,6 +77,11 @@ type MismatchClass =
   | 'adopt_non_adoptable' // suspicious: venue status inconsistent with absence from open orders
   | 'fill_overflow' // halting: I4 — backfilled fills exceed the order's qty + one step
   | 'fill_fold_failed' // suspicious: the fill row committed but its fold threw (row without a fold)
+  | 'algo_orphan_adopted' // benign: R2 repair — an ACKED algo-rail (STOP_MARKET) order with zero
+  // cumQty, absent from a SUCCESSFUL fetchOpenAlgoOrders read for `driftPasses` consecutive passes,
+  // adopted VENUE_EXPIRED. Same "adopted venue terminal truth" family as adopted_terminal — one-shot
+  // per coid, never re-fires once folded. See reconcileAlgoRailOrphans' own header for the failure
+  // direction (fails CLOSED: anything ambiguous is left alone).
   | 'sweep_failure'; // transient: a per-symbol open-orders/trades/balances sweep threw
 
 // Pass 47 (2026-07-29): the full MismatchClass enumeration, used only to seed each class's zero
@@ -97,6 +103,7 @@ const ALL_MISMATCH_CLASSES: readonly MismatchClass[] = [
   'adopt_non_adoptable',
   'fill_overflow',
   'fill_fold_failed',
+  'algo_orphan_adopted',
   'sweep_failure',
 ];
 
@@ -194,6 +201,12 @@ const NON_ACTIONABLE_CLASSES: ReadonlySet<MismatchClass> = new Set<MismatchClass
   // excludes exactly four class names by regex (verified 2026-08-03) — this one is not among them,
   // so it pages while never blocking recovery.
   'foreign_twin_coid',
+  // R2: same "adopted venue terminal truth" family as adopted_terminal — a one-shot repair of a
+  // permanently-orphaned local row, not an ongoing divergence. NOT among the four names
+  // observability/alerts.rules.yml's ReconciliationMismatch excludes, so — like foreign_twin_coid
+  // above — it still pages once per repaired row (visible-by-design) while never blocking the clean
+  // stamp.
+  'algo_orphan_adopted',
 ]);
 
 // Counts only mismatches that represent a real, unexplained divergence. This NEVER feeds `halted`,
@@ -301,6 +314,13 @@ export class ReconciliationService {
   // fetchOpenOrders result, so a resolved race can never accumulate toward the escalation threshold
   // across passes.
   private readonly staleVenueOpenStreak = new Map<string, number>();
+  // R2 (2026-08-10): keyed `${venue}|${coid}` — mirrors staleVenueOpenStreak's own per-coid
+  // consecutive-pass counter, but for the ALGO rail's orphan repair (reconcileAlgoRailOrphans). A
+  // coid is bumped every pass it is a live ACKED/zero-cumQty algo-rail candidate AND a successful
+  // fetchOpenAlgoOrders read does not list it; reset (deleted) the instant it is seen resting again
+  // or stops being a candidate at all (cleanup block inside reconcileAlgoRailOrphans, mirroring
+  // reconcileOpenOrders' own streakPrefix reset below).
+  private readonly algoOrphanStreak = new Map<string, number>();
   // Task C4: keyed `${venue}:${axis}` — rate-limits the diagnostic WARN below, never the counter
   // (which is per-event so alerting cannot lose an increment to this throttle).
   private readonly lastAxisErrorLogAt = new Map<string, EpochMs>();
@@ -658,6 +678,12 @@ export class ReconciliationService {
     let passError: unknown;
     try {
       await this.reconcileOpenOrders(exchange, cfg, acc);
+      // R2: sibling of the axis above, not a widening of it — reconcileOpenOrders stays
+      // regular-rail-only by construction (see its own header). Gated on method presence exactly
+      // like the position axis below (spot/paper adapters lack fetchOpenAlgoOrders).
+      if (exchange.fetchOpenAlgoOrders !== undefined) {
+        await this.reconcileAlgoRailOrphans(exchange, cfg, acc);
+      }
       await this.reconcileTrades(exchange, cfg, acc);
       if ((cfg.positionAxis ?? true) && exchange.fetchPositions !== undefined) {
         await this.reconcilePositions(exchange, cfg, acc);
@@ -807,9 +833,14 @@ export class ReconciliationService {
   // sees an algo clientOrderId — no adopt_query_failure spam off this axis) nor UNKNOWN_OURS/
   // FOREIGN classification ever has an algo order to misclassify. A venue-side algo cancel/expiry
   // is the STRATEGY's own reconcile concern (AgenticStrategy.manageVenueStopPerp's
-  // fetchOpenAlgoOrders scan, plus HaltCoordinatorService's registry sweep — Push 3 P7f fix 7),
-  // never this service's — the algo rail's boot truth lives there, not in this axis or in
-  // boot-recovery's regular-rail restore.
+  // fetchOpenAlgoOrders scan, plus HaltCoordinatorService's registry sweep — Push 3 P7f fix 7) —
+  // for a LIVE algo stop. R2 (2026-08-10) carves out one narrow exception to "never this service's":
+  // reconcileAlgoRailOrphans below is a SIBLING axis, not a widening of this one — this axis's own
+  // venueOpen/localOpen sets and their regular-rail-only construction are untouched — that closes the
+  // one class none of those live-order paths ever revisit: a zero-exposure ACKED algo-rail row that
+  // outlives every retry (a stopped-trading symbol, or a venue algo-history entry that has rolled
+  // off). The algo rail's LIVE boot truth still lives in the strategy lane and HaltCoordinatorService,
+  // never here.
   private async reconcileOpenOrders(
     exchange: ExchangePort,
     cfg: ReconConfig,
@@ -863,6 +894,107 @@ export class ReconciliationService {
       if (venueCoids.has(lo.clientOrderId)) continue;
       if (failedSymbols.has(lo.symbol)) continue;
       await this.adoptTerminal(exchange, lo.clientOrderId, lo.symbol, acc);
+    }
+  }
+
+  // R2 (2026-08-10) — algo-rail orphan repair. reconcileOpenOrders above is REGULAR-RAIL ONLY by
+  // construction (its own header) and no LIVE path ever revisits an algo-rail order once it stops
+  // being resting AND stops being fresh: AlgoStopRecoveryService's own recoverIntent fails OPEN
+  // (retries forever) whenever fetchAlgoOrderStatus answers UNKNOWN/RESTING — including a
+  // permanently-UNKNOWN answer for an order whose venue algo-history entry has rolled off, or a
+  // symbol no longer in this.tradingSymbols (AlgoStopRecoveryService.sweep's boot-only driver never
+  // visits it again). That geometry — four demo-fapi rows stuck ACKED since the 2026-07-31 boot,
+  // measured 2026-08-10 — is what this axis exists to clear.
+  //
+  // FAILURE DIRECTION, stated because this is a repair path on the money-adjacent order book: FAILS
+  // CLOSED. Every ambiguous read is left alone, never folded:
+  //   - not ACKED, or cumQty != 0 (any possible exposure) ⇒ not a candidate at all — the position
+  //     axis (Defect A backstop) is the fail-closed path for a real venue/local divergence, and this
+  //     axis must never race or duplicate it.
+  //   - intent unresolvable, or resolved but not STOP_MARKET ⇒ not our candidate, skip.
+  //   - fetchOpenAlgoOrders THROWS for the symbol ⇒ inconclusive, sweep_failure, no fold, streak
+  //     untouched (a transient outage must neither advance nor reset progress toward the repair).
+  //   - the coid IS listed (still resting) ⇒ definitively not orphaned, streak reset.
+  //   - listed as ABSENT from a SUCCESSFUL read, but for fewer than `driftPasses + 1` consecutive
+  //     passes ⇒ recorded, not yet acted on (mirrors escalateStaleVenueOpen's own debounce — a single
+  //     absent read cannot rule out a transient venue/pagination gap; only a fold this axis issues
+  //     is destructive, unlike the read-only halt escalation it mirrors).
+  // Only "ACKED, zero exposure, resolved STOP_MARKET intent, absent from `driftPasses + 1`
+  // consecutive successful reads" adopts VENUE_EXPIRED — the same honest ACKED-terminal fold
+  // AlgoStopRecoveryService.foldVenueTerminal already uses for CANCELED/EXPIRED history, reused here
+  // (via `fold`, under its own `algo-orphan-repair` dedupe namespace so a re-run can never collide
+  // with that service's `algo-hist:` journal keys) because zero cumQty makes the two events
+  // indistinguishable in effect — there is nothing to lose either way.
+  private async reconcileAlgoRailOrphans(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
+    const candidatesBySymbol = new Map<SymbolId, OrderRecord[]>();
+    for (const rec of this.orders.all()) {
+      if (rec.state !== 'ACKED' || !rec.cumQty.isZero() || rec.symbol === undefined) continue;
+      if (venueForSymbol(rec.symbol) !== exchange.venue) continue;
+      const intent =
+        this.portfolio.inFlightIntent(rec.clientOrderId) ??
+        (await this.store.loadIntentByClientOrderId?.(rec.clientOrderId)) ??
+        undefined;
+      // type === 'STOP_MARKET', not isAlgoRailIntent: mirrors AlgoStopRecoveryService's own
+      // candidateAlgoIntents discriminator — a store-rehydrated intent never carries triggerPrice
+      // (the column isn't persisted/restored), which would make isAlgoRailIntent silently false for
+      // every candidate that actually needs this repair (a post-restart, store-only anchor).
+      if (intent === undefined || intent.type !== 'STOP_MARKET') continue;
+      const list = candidatesBySymbol.get(rec.symbol) ?? [];
+      list.push(rec);
+      candidatesBySymbol.set(rec.symbol, list);
+    }
+
+    const stillCandidate = new Set<string>();
+    for (const [symbol, recs] of candidatesBySymbol) {
+      let openAlgo: readonly AlgoOrderState[];
+      try {
+        openAlgo = (await exchange.fetchOpenAlgoOrders!(symbol)) ?? [];
+      } catch (err) {
+        // Reuses the 'openOrders' axis label — this is the algo-rail half of the same "what does the
+        // venue consider open" question, and adding a fifth ReconAxis member would need its own
+        // RECON_AXIS_ERROR_COUNTER zero-seed (constructor above) for zero added signal.
+        this.logAxisError(exchange.venue, 'openOrders', err);
+        this.incAxisErrorCounter(exchange.venue, 'openOrders', err);
+        bump(acc, 'sweep_failure'); // could not confirm — surfaced, re-checked next pass; streak untouched
+        for (const rec of recs) stillCandidate.add(rec.clientOrderId);
+        continue;
+      }
+      const openIds = new Set(openAlgo.map((o) => o.clientAlgoId));
+      for (const rec of recs) {
+        stillCandidate.add(rec.clientOrderId);
+        const key = `${exchange.venue}|${rec.clientOrderId}`;
+        if (openIds.has(rec.clientOrderId)) {
+          this.algoOrphanStreak.delete(key); // resting again — definitively not orphaned
+          continue;
+        }
+        const streak = (this.algoOrphanStreak.get(key) ?? 0) + 1;
+        this.algoOrphanStreak.set(key, streak);
+        if (streak <= cfg.driftPasses) continue; // debounced — same threshold shape as escalateStaleVenueOpen
+        try {
+          await this.fold(rec.clientOrderId, { type: 'VENUE_EXPIRED' }, 'algo-orphan-repair');
+        } catch (err) {
+          // A fold the reducer refuses (rec transitioned between the snapshot above and here) is
+          // this one order's problem, never the pass's — mirrors adoptTerminal's own containment.
+          if (!(err instanceof TransitionError)) throw err;
+          continue;
+        }
+        bump(acc, 'algo_orphan_adopted');
+        this.algoOrphanStreak.delete(key);
+      }
+    }
+
+    // Streak cleanup, mirroring reconcileOpenOrders' own streakPrefix reset: a coid that stops being
+    // a live ACKED/zero-cumQty/STOP_MARKET candidate for ANY reason (a fill arrived, a cancel landed,
+    // it was just adopted above) must not leave a stale counter that a later, unrelated reuse of the
+    // same clientOrderId could resume counting from.
+    const streakPrefix = `${exchange.venue}|`;
+    for (const key of this.algoOrphanStreak.keys()) {
+      if (!key.startsWith(streakPrefix)) continue;
+      if (!stillCandidate.has(key.slice(streakPrefix.length))) this.algoOrphanStreak.delete(key);
     }
   }
 
@@ -1459,13 +1591,21 @@ export class ReconciliationService {
   }
 
   // Journal-before-commit (I1), then commit only if the journal accepted the row (replay-safe),
-  // then retire the order from the in-flight reserve and open-order set.
-  private async fold(coid: ClientOrderId, event: OrderEvent): Promise<void> {
+  // then retire the order from the in-flight reserve and open-order set. `dedupeNamespace` defaults
+  // to this axis's own historical key so every pre-existing call site stays byte-identical; R2's
+  // algo-rail orphan repair passes its own namespace so its journal key can never collide with
+  // reconcileOpenOrders' `reconcile:` key or AlgoStopRecoveryService's `algo-hist:` key for the same
+  // coid.
+  private async fold(
+    coid: ClientOrderId,
+    event: OrderEvent,
+    dedupeNamespace = 'reconcile',
+  ): Promise<void> {
     // fold is only reached for a local open order, which is always present in the book.
     const next = reduce(this.orders.get(coid)!, event);
     const { applied } = await this.store.appendOrderEvent({
       clientOrderId: coid,
-      dedupeKey: `reconcile:${event.type}`,
+      dedupeKey: `${dedupeNamespace}:${event.type}`,
       event,
       derivedState: next.state,
       cumQty: next.cumQty.toFixed(),

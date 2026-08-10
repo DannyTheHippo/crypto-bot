@@ -7,15 +7,15 @@
 
 ## ⛔ THE THREE STANDING ECONOMIC FINDINGS — headlines only; **bodies moved to their studies Pass 65 for the 200-line cap, nothing dropped**
 
-> **1. THE BAR EVERY STUDY IS SCORED AGAINST WAS NEVER DERIVED AND IS WRONG IN BOTH DIRECTIONS.** **GROSS bar +8.3619 bps, CI95 [6.2010, 10.7616], n=48/12 clusters — EVIDENCE**; **ALL-IN ≈ +78.80**. The
-> asserted **+13.0 sits ABOVE the gross CI's upper bound**; **+24.2 is UNDERIVABLE**. **SUPERSEDED FORWARD ONLY** — no completed study is re-adjudicated, the three code constants UNCHANGED.
-> `verdicts.md` § Addendum 2026-08-04; `studies/break-even-bar-derivation-2026-08-04.md`.
-> **2. THE LLM BILL IS THE DOMINANT PER-TRIP COST AND "TRADE LESS TO SAVE MONEY" IS REFUTED.** **$0.5871/trip**, **8.13× the fees**, **45% of the deficit**, and **the marginal cost of one more trip is
-> ≈ $0** (518 cadence-only consults spent $17.81 with no trade attached). Only per-trip notional and the timing knobs move it. `studies/llm-cost-attribution-2026-08-04.md`.
+> **1. THE BAR EVERY STUDY IS SCORED AGAINST WAS NEVER DERIVED AND IS WRONG IN BOTH DIRECTIONS.** **GROSS +8.3619 bps, CI95 [6.2010, 10.7616], n=48/12 clusters — EVIDENCE**; **ALL-IN ≈ +78.80, and it is
+> a FUNCTION of trips/notional/spend, never a constant.** The asserted **+13.0 sits ABOVE the gross CI's upper bound**, **+24.2 is UNDERIVABLE**, and both are **SUPERSEDED FORWARD ONLY** — no completed
+> study is re-adjudicated and the three code constants are UNCHANGED. `studies/break-even-bar-derivation-2026-08-04.md`.
+> **2. THE LLM BILL IS THE DOMINANT PER-TRIP COST AND "TRADE LESS TO SAVE MONEY" IS REFUTED.** **$0.5871/trip, 8.13× the fees, 45% of the deficit**, and **the marginal cost of one more trip is ≈ $0**
+> (518 cadence-only consults spent $17.81 with no trade attached). Only per-trip notional and the timing knobs move it. `studies/llm-cost-attribution-2026-08-04.md`.
 > **3. THE LOSS IS A HIT-RATE DEFICIT, NOT AN EXIT PROBLEM, AND NO AVAILABLE LEVER CLOSES IT.** Winners are **1.40× LARGER** than losers ⇒ **exit geometry is fine and every fix aimed at exit sizing is
-> aimed at the wrong organ**. Break-even **41.65%** vs actual 24.00% (**31.58% on the 19 most recent trips, still short** — Pass 66 banner); all-in needs **57.8%**. Slippage is a **TAILWIND**; the loss is
-> a broad bleed over 15 symbols with no tail to excise. **84% of gross loss exits via discretionary LLM closes — they SAVE ~124 bps/trip. Do not "fix" them.** **Sizing multiplies a negative edge; gross
-> must cross zero before any cost lever is worth pulling.** **−77.21 bps notional-weighted does NOT reproduce −69.90 — never quote either without its anchor.** Bridge: `LOG.md` § Pass 62.
+> aimed at the wrong organ**. Break-even **41.65%** vs 24.00% (**31.58% on the 19 most recent trips, still short**); all-in needs **57.8%**. Slippage is a **TAILWIND**; a broad bleed over 15 symbols, no
+> tail to excise. **84% of gross loss exits via discretionary LLM closes — they SAVE ~124 bps/trip. Do not "fix" them.** **Sizing multiplies a negative edge.** **−77.21 bps notional-weighted does NOT
+> reproduce −69.90 — never quote either without its anchor.** Bridge: `LOG.md` § Pass 62.
 
 ## ⛔ THE THREE PASS-65 BLIND SPOTS — all fixed, all with the same shape: a surface reporting health it never established
 
@@ -60,24 +60,13 @@
 > **WATCH-V4-12's own "all pinned at exactly 4096" is ALSO FALSE** — 33% of prefix rows pre-enable, 58% post, are not at the ceiling, so two different events have been aggregated under it since it opened.
 > Bodies: `studies/redesign-scoreboard-2026-08-04.md` § L1/L4, `watches.md` § WATCH-V4-12.
 
-## ⚠ Standing cautions — bodies live elsewhere; these are the facts, follow the pointer
+## ⚠ Standing cautions — the prohibitions only; full text moved to `watches.md` § Standing cautions at Pass 66
 
-> **THE LANE IS WORSE THAN DOING NOTHING, BY A WIDER MARGIN THAN RECORDED** — the strategy owns **≈$62 of the deficit**, not the basket (beta ≈ −$5.21 at the measured $204.44 time-weighted gross exposure);
-> `BELOW_PASSIVE_BENCHMARK` is **logically entailed** by `NON_POSITIVE_NET_PNL`; the dispersion pair *"worst −11.15%, best +17.19%"* **reproduces on no bar pair — do not re-quote it**.
-> `studies/passive-benchmark-truth-2026-08-04.md`.
->
-> **THE MICROSTRUCTURE SEARCH IS A NULL, AND THE STANDING VERDICT IS NOT LOCALIZED** — 64 pre-registered cells, 7 cleared power, **all 7 failed the placebo** (family-wise **p = 0.3781**); an anchor-lag
-> confound puts the artifact ceiling at ~9.1 bps against observed 9.7–10.7. **Git-attested freeze `c48085e`** carries the prereg with Results EMPTY, so `git diff c48085e` IS the results.
-> `studies/payload-microstructure-prereg-2026-08-04.md`.
->
-> **`entryVwap` IS BUY-SIDE ONLY ⇒ the anchor is the COVER price on every SHORT trip**; biases Arm2/Arm3, **not fixed on purpose** (`studies/frame-audit-2026-08-03.md`). **THE HORIZON GRID FLATTERS EVERY
-> RESULT — re-read any prior finding before quoting it** (`verdicts.md`). **TWO LIVE BEHAVIOUR CHANGES SHIPPED 2026-07-30, NEITHER CREDITABLE ALONE** — v10 `inverted` (**never quote +47.6 as an edge**) and
-> `AGENTIC_PLAN_AUTHORITATIVE_EXITS`, same boot, no control arm. **THE LLM LANE IS FUNDED — do not investigate a latch** (any cause but `insufficient_credit` IS an incident).
-> **`POSITION_DRIFT` HALTS THIS SYSTEM ROUTINELY — the old "has never halted" line is FALSIFIED (top banner: 2138 of 2155 lifetime halts).** The `streak>=2` debounce (`1ff1fc7`) works as designed (P65: 429
-> mismatches − 427 halts = exactly 2 first-strike passes) and a halt DOES engage the kill switch and suppress all trading. **The through-line has now held ELEVEN passes** (`config_snapshots`, `fee_ledger`,
-> P58's alarm text, P59's `error_class`, P60's dead perp axis, P61's liquidation feed, **and P65's five:
-> the sweep blind to 2155 halts, a lane reporting ACTIVE while dead, `audit_log` blind by construction until 07-27, a healthcheck documented as "the final rung" that cannot fail, and an authoring runner
-> that cannot print its own abort**): *a surface reporting health it never established.*
+> **Do NOT re-quote, re-derive or re-investigate any of these.** The lane is **worse than doing nothing** and owns ≈$62 of the deficit, not the basket. The **microstructure search is a NULL** (7 cells
+> cleared power, all 7 failed the placebo, p = 0.3781; artifact ceiling ~9.1 bps vs observed 9.7–10.7). **`entryVwap` is BUY-SIDE ONLY** — the anchor is the COVER price on every SHORT trip, biased on
+> purpose. **THE HORIZON GRID FLATTERS EVERY RESULT — re-read any prior finding before quoting it.** **v10 `inverted` and `AGENTIC_PLAN_AUTHORITATIVE_EXITS` shipped the same boot with no control arm —
+> NEITHER is creditable alone and +47.6 is NEVER an edge.** **The LLM lane is FUNDED — any latch cause but `insufficient_credit` IS an incident.** **`POSITION_DRIFT` halts this system routinely** (2138
+> of 2155 lifetime halts); the `streak>=2` debounce works as designed and a halt DOES engage the kill switch. Dispersion pair *"worst −11.15%, best +17.19%"* **reproduces on no bar pair.**
 
 ## Current order & status
 
@@ -186,8 +175,11 @@ Rows **48** (vol-ranked symbol rotation, DESIGN-GATED) and **58** (retire/re-sco
   after 2026-08-11T12:00Z**, then 08-18 and 08-25 per scoreboard § 2.5. (3) **L1's `stop_reason` read, due 2026-08-17** (banner above). **The 2026-08-31 verdict cites** the derived bars, the ENTRIES verdict,
   forward-return as-of close, E1/E2 watch outcomes, OOS-arm seals scored by then, the mint-trigger history, and the successor charter. **If S3 fires, record it as a triggered criterion — never quietly extend.**
 - **SUCCESSOR CHARTER DRAFT — `docs/planning/successor-charter-draft-2026-08-10.md`.** Owner-approved at or before the 08-31 verdict or it is nothing; **it adopts nothing and claims no authority.** Its
-  load-bearing idea: **70.44 of the 78.80 bps all-in bar is LLM amortization at API metering**, so a successor moving decide inference to subscription-scale economics collapses the bar toward the +8.3619
-  gross bar — **with deployed-model fidelity and an explicit ToS/fair-use review named as BLOCKING gates.**
+  premise stands — **70.44 of the 78.80 bps all-in bar is LLM amortization** — but **⛔ ITS LOAD-BEARING ROUTE IS DEAD: Gate 2 (ToS/fair-use) was REVIEWED AND REFUSED 2026-08-10** (owner delegated the
+  call; only the live flip stays owner-reserved). A **consumer-subscription / Claude-Code-session decide backend** is an unattended loop using a subscription as an **unmetered API**; **a Claude Agent SDK
+  build is NOT what was refused** (it bills through the API), and the session route fails Gate 1 independently. **Nothing subscription-backed is built, wired, flag-gated or prototyped — not to "size the
+  prize"**; overturning needs a dated amendment and **not** a re-derivation of the arithmetic. **What survives cannot reach the gross bar** — fewer cadence decides, a prescreen tier, cache discipline;
+  **the batch API is a RESEARCH-cost lever only** (a 15-min bar cannot wait on an async queue). Full ruling: the draft's § Gate 2.
 - **ONE `.env.app` edit hook-blocked** — `:153` spot/`STOP_LOSS_LIMIT` FALSE since `f5abf8a`. **`:159` `AGENTIC_PLAYBOOK_AB_PCT=40` must NOT be zeroed** (cancels the mint override). **The daily mint
   produced ZERO candidates in 10 days — CAUSE FOUND AND FIXED Pass 66**: every run declared ~$6.47 against a $5.00 cap, so it aborted after burning the UTC slot. Anthropic funded, Moonshot presumed suspended.
 - **Concurrent passes / lease** — **SEVEN** collisions; the lease **binds only callers** and **fails OPEN**, so a dead holder is undetectable: P56's was 46.6h stale and **P64's 2398 min stale with its

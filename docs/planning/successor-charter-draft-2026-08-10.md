@@ -181,10 +181,14 @@ exposure is **$204.44**. And scaling turnover by `k` multiplies the dollar loss 
 book by the same `k`: the scoreboard's own worked case at `k = 2.5` improves the ratio to 39.87 bps
 and **fires the S3 stop twelve days earlier**.
 
-**So a successor attacks the numerator.** Moving decide inference onto subscription-scale economics —
-an Agent-SDK / Claude-Code-session decide backend, the batch API, aggressive prompt-cache
-maximisation — collapses the bar toward the **gross** bar rather than shaving it. The consequence is
-not a better number; it is a different *kind* of problem:
+**So a successor attacks the numerator** — and **one of the three mechanisms this draft originally
+listed has since been REFUSED on the merits** (owner delegated the call 2026-08-10; ruling in Gate 2
+below). The refused one was "subscription-scale economics": a **Claude-Code-session or other
+consumer-subscription decide backend**. What survives is the legitimate numerator work — **prompt-cache
+maximisation, fewer decides per trip, and a cheap prescreen tier** — which shaves the term rather than
+collapsing it. **The collapse-to-the-gross-bar framing below is therefore an ILLUSTRATION of what the
+cost structure dominates, not a route this program has.** Read it as the reason entry policy is worth
+attacking at all, never as an available lever:
 
 - **Against +78.80** (at 48 trips / 10.85 d / $83.2531), a book realising −69.9016 bps/trip is
   **148.70 bps short** and the gate is unreachable — no entry-quality improvement the record can
@@ -253,11 +257,33 @@ hypothetical caution; the record already carries the mechanism:
 different system and re-earns the record.** There is no third option, and "close enough" is the
 failure this gate exists to refuse.
 
-**Gate 2 — an explicit Terms-of-Service / fair-use review, before any such backend ships. Fails
-CLOSED. This is a hard gate, not a footnote.** No subscription-backed or session-backed decide path is
-built, wired, flag-gated or prototyped against live rows until that review returns and clears it.
-**If the review does not clear it, the axis is dead** — and the successor then needs a different cost
-structure, of which the record already names three candidates and one measured target:
+**Gate 2 — Terms-of-Service / fair-use. REVIEWED AND REFUSED 2026-08-10. The gate did not clear, so
+per its own terms THE AXIS IS DEAD.**
+
+_The owner delegated this call ("your call; ONLY live flip is my call"). It is decided here, not
+deferred, and it is decided against.*
+
+**The ruling.** A **Claude Agent SDK** implementation is legitimate and is not what was refused — it
+bills through the API like any other client. What is refused is a **consumer-subscription or
+Claude-Code-session decide backend**: an unattended trading loop issuing on the order of a hundred
+inference calls a day on a 15-minute bar schedule is **not interactive developer use**, and routing it
+through a subscription product is using that product as an **unmetered API**. That is circumvention of
+usage-based pricing. **The fact that it is the only thing that makes the arithmetic work is the motive
+the rule exists to catch, not a mitigating circumstance** — and this program's own standing discipline
+already refuses conclusions reached by choosing the frame that flatters them.
+
+**It also fails Gate 1 independently**, which is worth stating so nobody re-opens it on a ToS
+technicality: a session is not a credential the runtime can hold, meter against
+`AGENTIC_DAILY_COST_STOP_USD`, or latch on. Even if the licensing question vanished, the thing could
+not be wired without becoming a different, unmeasured system.
+
+**Nothing subscription-backed or session-backed is built, wired, flag-gated, or prototyped against
+live rows. Not as an experiment, not behind a flag, not "to size the prize."** A future owner may
+overturn this; overturning it requires a dated amendment that states what changed, and it may not be
+overturned by re-deriving the arithmetic — the arithmetic was never the disputed part.
+
+**So the successor needs a different cost structure**, and the record already names the candidates —
+all of which shave the numerator honestly and **none of which reaches the gross bar**:
 
 - **Fewer decides per trip.** Of 667 post-epoch consults, **518 were pure cadence** — 1,008 rows,
   zero trade actions — spending **$17.81, 61.9% of the entire LLM bill, with no trade attached**. That
@@ -269,6 +295,21 @@ structure, of which the record already names three candidates and one measured t
   has already admitted. **This has no derived magnitude in the record and would need one before it
   ships** — a lever with no declared magnitude cannot fail, and a thing that cannot fail is not a
   measurement.
+- **A cheap prescreen tier gating which symbols reach the expensive decide.** The seam already exists
+  rather than needing invention: `agent_decisions.model` already carries `prescreen` and
+  `plan-executor` alongside `claude-sonnet-5`. Same magnitude requirement as the row above — **derive
+  it or do not ship it.**
+- **Prompt-cache maximisation.** Measured split (scoreboard § 3.3): of $23.76 sonnet decide spend the
+  per-symbol payload rides the **input** class at **$12.96 (54.5%)**, while the shared system prompt
+  and playbook ride cache-read and cache-write. **Cache WRITE is the expensive class** — a template or
+  playbook that churns re-pays it. **`TRADE_TEMPLATE_VERSION` moved v4 → v6 this pass, which is
+  exactly such a churn**, so the honest first measurement here is how often the cache is being
+  re-written and why, not an assumed saving.
+- **The batch API does NOT fit the decide path, and this is a latency fact rather than a policy one.**
+  The lane decides on a 15-minute bar; an asynchronous batch queue cannot answer inside that bar. It
+  **does** fit the offline research harnesses (`candidate-model-eval`, `playbook-space-replay`), whose
+  spend the charter's own `$0` clause already concedes is real API spend. **So batch is a research-cost
+  lever, never a decide-cost lever** — do not carry it as one.
 
 **The binding clause from the scoreboard applies to this entire section and is not softened here:**
 *"cutting spend purely to postpone S3, while gross stays negative, is gerrymandering the stop."* The
@@ -421,11 +462,19 @@ stop pre-empts.
   martingale) and net −21.07 bps, i.e. exactly the fee**. Against that, six of eight live playbook
   versions were never powered enough to read. **Whether the eighth thing to try is different in kind
   from the first seven is precisely what this draft cannot establish.**
-- **The cost-inversion axis is UNPRICED until the ToS review returns.** No dollar figure, no bps
-  figure and no S3-headroom figure for a subscription-scale decide backend appears anywhere above, and
-  that is deliberate: a magnitude declared before the mechanism is permitted is a number that cannot
-  fail, and this program's standing rule is that a lever with no derivable magnitude is **BLOCKED, not
-  shipped-and-watched**.
+- **The cost-inversion axis is DEAD, not unpriced — and the successor is worse off for it, honestly.**
+  The ToS/fair-use gate was reviewed and **refused** 2026-08-10 (Gate 2). No dollar, bps or
+  S3-headroom figure for a subscription-scale decide backend appears anywhere above, and now none ever
+  will. **What remains cannot reach the gross bar.** The surviving numerator levers — fewer cadence
+  decides, a prescreen tier, cache discipline — shave a term whose measured size is $17.81 of pure
+  cadence spend against a gap of ~88.8 bps/trip to the all-in bar. **They do not turn the unreachable
+  bar into a reachable one; they make it slightly less unreachable.** A successor charter that
+  pretends otherwise is doing the thing this program exists to refuse.
+- **So the honest statement of the successor's problem is harder than this draft's § (iii) originally
+  implied:** it must find entry quality good enough to clear an **all-in** bar, on API economics, or
+  it must find capital — the one input the program does not control and the only other denominator in
+  the identity. **Neither is a lever; both are preconditions.** Whether that is worth attempting at
+  all is the owner's call at the 08-31 verdict, and this draft deliberately does not pre-empt it.
 - **It proposes no promotion threshold, and cannot.** § (iv) gives a derivation shape; the numbers it
   would produce depend on an accrual rate measured on rows a successor has not yet generated. A gate
   asserted here would repeat the exact defect it is written to correct.

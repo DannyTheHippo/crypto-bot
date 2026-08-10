@@ -1452,3 +1452,22 @@ STATUS.md immediately, because a break is exactly the information the one-word s
 | WATCH-V4-4 | `fills` rows carry a same-venue clientOrderId and sum to `orders.cum_qty` on every terminal order | holds — **and is no longer hand-checked**: the I2 sweep invariant (2026-08-03) compares `cum_qty` to summed fills in exact SQL `NUMERIC` on every terminal order, every pass, failing CLOSED. 439 terminal orders, 0 mismatches |
 | WATCH-V4-11 | `orphan_scan` > 0 on a boot with a flat perp bar, and every resolved algo-rail cancel appends `algo-hist:CANCELED` to `order_events` | **RE-READ Pass 58 — expected-positive CONFIRMED again**: `orphan_scan=2843 readopt=1 cancel=0 cancel_failed=0` on binanceusdm before the redeploy. Re-seeded to 0 by each redeploy, so it re-reads on the next flat perp bar |
 | WATCH-DEPLOY-HALVES-1 | the first authoring run under the amended bar reports a `halvesVerdict` at h=24 with a non-null `halvesSplitAtMs`, THE SAME for every arm | **NEW Pass 52, SAMPLE ZERO.** Named defects: every candidate `UNDETERMINED` (clause decorative) or a per-arm `halvesSplitAtMs` (split not shared). The frozen recorded-incumbent path reads UNDETERMINED by construction and that is accepted, not a defect. **An unrun check is not a passing one** |
+
+## Standing cautions — moved here from STATUS.md at Pass 66 for the 200-line cap, verbatim, nothing dropped
+
+> **THE LANE IS WORSE THAN DOING NOTHING, BY A WIDER MARGIN THAN RECORDED** — the strategy owns **≈$62 of the deficit**, not the basket (beta ≈ −$5.21 at the measured $204.44 time-weighted gross exposure);
+> `BELOW_PASSIVE_BENCHMARK` is **logically entailed** by `NON_POSITIVE_NET_PNL`; the dispersion pair *"worst −11.15%, best +17.19%"* **reproduces on no bar pair — do not re-quote it**.
+> `studies/passive-benchmark-truth-2026-08-04.md`.
+>
+> **THE MICROSTRUCTURE SEARCH IS A NULL, AND THE STANDING VERDICT IS NOT LOCALIZED** — 64 pre-registered cells, 7 cleared power, **all 7 failed the placebo** (family-wise **p = 0.3781**); an anchor-lag
+> confound puts the artifact ceiling at ~9.1 bps against observed 9.7–10.7. **Git-attested freeze `c48085e`** carries the prereg with Results EMPTY, so `git diff c48085e` IS the results.
+> `studies/payload-microstructure-prereg-2026-08-04.md`.
+>
+> **`entryVwap` IS BUY-SIDE ONLY ⇒ the anchor is the COVER price on every SHORT trip**; biases Arm2/Arm3, **not fixed on purpose** (`studies/frame-audit-2026-08-03.md`). **THE HORIZON GRID FLATTERS EVERY
+> RESULT — re-read any prior finding before quoting it** (`verdicts.md`). **TWO LIVE BEHAVIOUR CHANGES SHIPPED 2026-07-30, NEITHER CREDITABLE ALONE** — v10 `inverted` (**never quote +47.6 as an edge**) and
+> `AGENTIC_PLAN_AUTHORITATIVE_EXITS`, same boot, no control arm. **THE LLM LANE IS FUNDED — do not investigate a latch** (any cause but `insufficient_credit` IS an incident).
+> **`POSITION_DRIFT` HALTS THIS SYSTEM ROUTINELY — the old "has never halted" line is FALSIFIED (top banner: 2138 of 2155 lifetime halts).** The `streak>=2` debounce (`1ff1fc7`) works as designed (P65: 429
+> mismatches − 427 halts = exactly 2 first-strike passes) and a halt DOES engage the kill switch and suppress all trading. **The through-line has now held ELEVEN passes** (`config_snapshots`, `fee_ledger`,
+> P58's alarm text, P59's `error_class`, P60's dead perp axis, P61's liquidation feed, **and P65's five:
+> the sweep blind to 2155 halts, a lane reporting ACTIVE while dead, `audit_log` blind by construction until 07-27, a healthcheck documented as "the final rung" that cannot fail, and an authoring runner
+> that cannot print its own abort**): *a surface reporting health it never established.*

@@ -391,6 +391,34 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   > finding. **Deadline: the pass after NOFILL reaches n≥12 (~2026-08-09) resolves tier 2 explicitly.**
   > Tier 1 carries **no deadline** by construction and must never be given one.
 
+**Amendment 2026-08-10 (Pass 66) — tier 2 is SUPERSEDED by accrual, and the NOFILL re-read is
+blocked on the UNFILLED cell rather than on the total.**
+
+1. **Tier 2's "excludes zero at h=4/h=8" no longer reproduces.** Fresh `pnpm loop:forward-return` at
+   **2026-08-10T08:53Z**, v10 `flat_only`: h=4 **POWERED −9.3 bps n=55 k=10 CI [−32.1, +15.7]**;
+   h=8 **POWERED −20.8 bps n=54 k=10 CI [−45.1, +3.9]**; h=1 −7.6 [−19.5, +6.9]; h=24 −15.5
+   [−44.6, +29.2]. **Every horizon's interval now includes zero.** On n=21 the same two cells read
+   −45.3 [−122.0, −0.3] and −52.8 [−134.9, −1.5]. **The adverse reading did not survive 2.6× the
+   population — do not re-quote the 2026-08-04 amendment's intervals.** The honest statement is that
+   v10's forward edge is **indistinguishable from zero**, not that it is good: the point estimate is
+   negative at all four horizons. Full table, and the resolution that the n=21/k=8 vs n=26/k=9
+   discrepancy is **accrual, not filters**: `studies/redesign-scoreboard-2026-08-04.md`
+   § Checkpoint #1.
+2. **The replay divergence is UNCHANGED and still fires** — h=8 live −20.8 vs replay +19.3, h=24
+   live −15.5 vs replay +47.6, both intervals excluding the prediction. Replay keeps predicting an
+   edge the live lane does not realise.
+3. **The NOFILL n≥12 re-read (due ~2026-08-09) was taken, and it is blocked on the unfilled cell.**
+   Joining v10 entry decisions to `order_intents` on `symbol` + `source_based_on_seq`, and intents to
+   `fills` on `intent_id`: **55 v10 entry decisions, 55 produced an intent, 45 filled, 10
+   intent-with-no-fill.** The total clears n≥12; **the unfilled cell is n=10 and is UNDERPOWERED**, so
+   the filled-vs-unfilled forward-return split — the only instrument that can show adverse selection
+   — **cannot be scored yet**. At the observed accrual (~5 v10 entries/day, ~18% unfilled) the
+   unfilled cell reaches n=12 around **2026-08-12**. Re-read then; the binding constraint is the
+   unfilled count, and saying "n=55, powered" here would be wrong.
+4. **Instrument gap, named rather than worked around.** `computeForwardReturn` carries no fill-status
+   partition, so even at n≥12 the split needs the core extended to expose `filled`/`unfilled`
+   alongside `all`/`flat_only`. Seam recorded; not built this pass.
+
 ### WATCH-V4-10 — an orphaned perp algo stop resting against a flat book (2026-07-30, Pass 49)
 
   **CLOSED 2026-07-31 — the breach was real, the recorded root cause was WRONG, and the fix is
@@ -641,6 +669,52 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   the lane. The in-contract lever is `output_config: {effort: …}`, which appears nowhere in
   `anthropic-agent-client.ts` today, so the lane runs at the API default and pays for thinking depth
   it may not need.
+
+**Amendment 2026-08-10 (Pass 66) — the registered primary is FALSIFIED with exact counts, and this
+watch's own "all pinned at exactly 4096" line is falsified alongside it.**
+
+L1 (`AGENTIC_OUTPUT_EFFORT=medium`) went live **2026-08-04T08:00:23Z** — confirmed to the second from
+the prompt-hash partition, which switches to `aefafb3c…` at `2026-08-04T08:00:23.693878Z` (567 rows
+through 2026-08-10T08:45Z). Cross-tab over `agent_decisions`, non-replay, by UTC day, of the
+`truncated_max_tokens:` prefix against `output_tokens = 4096`:
+
+| UTC day | prefix ∧ 4096 | prefix, NOT 4096 | 4096, no prefix | priced decides |
+| --- | --- | --- | --- | --- |
+| 2026-07-31 | 8 | 4 | 2 | 194 |
+| 2026-08-01 | 7 | 2 | 0 | 157 |
+| 2026-08-02 | 2 | 1 | 0 | 157 |
+| 2026-08-03 | 12 | 7 | 0 | 155 |
+| 2026-08-04 _(straddles the enable)_ | 5 | 8 | 0 | 124 |
+| 2026-08-05 _(feed-wedge day)_ | 4 | 13 | 0 | 79 |
+| 2026-08-06 _(feed-wedge day)_ | 3 | 2 | 0 | 67 |
+| 2026-08-07 | 1 | 0 | 0 | 103 |
+| 2026-08-08 | 2 | 0 | 0 | 114 |
+| 2026-08-09 | 4 | 5 | 0 | 106 |
+
+- **The registered expected-positive — "zero rows … over the first TWO FULL UTC days after the
+  enable" (08-05, 08-06) — is FALSIFIED: 4 and 3.** This confirms with counts what Pass 65 recorded
+  from a single observation.
+- **The 4096-pinned rate did fall, and not by enough to mean anything.** 17/508 = **3.35%** of
+  priced decides over 07-31→08-02, against 7/323 = **2.17%** over the three CLEAN post-enable days
+  08-07→08-09 — a ~35% relative reduction on 17 vs 7 rows. **Not distinguishable from noise at this
+  count, and not the registered zero.**
+- **NEW, and it invalidates how this watch has been counted since it opened: "all pinned at exactly
+  4096" is FALSE.** Prefix-carrying rows that are NOT at 4096 exist in both eras — **14 of 43 (33%)**
+  over 07-31→08-03 and **31 of 53 (58%)** over 08-04→08-10. A truncation stamp below the token
+  ceiling is a **different event** from the one this watch was written to count, and the two have
+  been aggregated together throughout. Every prior count under this watch inherits that.
+- **L1's named defect 2 (latency) does NOT fire.** p95 **30,556 ms** post-enable (n=567) against
+  **29,009 ms** pre (n=841); max 67,251 ms; **zero rows ≥ 75 s and zero ≥ 90 s**.
+
+**Why this cannot be adjudicated further today, and exactly what closes it.** Whether `effort` is
+honoured for this model at all is unanswerable from these columns: a request-parameter effect and a
+payload-size effect produce an identical row. `stop_reason` is journalled from this pass
+(`agent_decisions.stop_reason`, migration `0003`). **Registered read: the `max_tokens` share of
+`stop_reason` on the `+eff-medium` prompt-hash partition over 7 days of post-deploy rows.
+Unchanged-or-higher ⇒ `effort` is not transmitting ⇒ unset `AGENTIC_OUTPUT_EFFORT`. Deadline
+2026-08-17.** **The default outcome on a silent, empty or unreadable instrument is the unset, not the
+status quo** — a lever that does not transmit is rolled back, never left set in the hope that it did
+something.
 
 ### WATCH-V4-13 — spot rests one protective leg, and the zero that looks like proof is not (2026-07-31, Pass 51)
 
@@ -931,6 +1005,43 @@ boot, so **a zero is a real absence, not a missing series**.
 ample; a still-empty reading by then is itself the finding.
 
 **Status: UNFIRED** — shipped and deployed `fbb3800` at 2026-08-05T01:11:05Z, boot `90dbb484`.
+
+**Amendment 2026-08-10 (Pass 66) — read one day past deadline; TWO of the four named defects FIRE.**
+
+Counters at **2026-08-10T09:02Z**, boot `815e01b8` (up since 2026-08-06T17:39:41Z — 3.64 days). Both
+new children zero-seed at boot, so a zero here is a real absence, not a missing series:
+
+```text
+agentic_schema_rejections_total{kind="batch"}                       = 13
+agentic_schema_rejections_total{kind="batch_stringified_recovered"} =  0
+agentic_schema_rejections_total{kind="element"}                     = 23
+agentic_schema_rejections_total{kind="single"}                      =  0
+agentic_schema_rejections_total{kind="missing_symbol"}              =  2
+```
+
+- **Defect 1 FIRES, unambiguously.** `batch_stringified_recovered` is **0** while `{kind="batch"}`
+  fired **13** times in 3.64 days. **The salvage addresses a shape that does not occur.** Per the
+  clause's own instruction: recorded, and **the recovery is no longer claimed.**
+- **Defect 2 FIRES.** **Zero** rows carry the `empty_tool_input:` prefix across the whole
+  2026-08-04 → 2026-08-10 window (`agent_decisions`, non-replay, prefix split on `rationale`), while
+  `schema_rejected:` fired **47** times over the same window. The split bought diagnosability nobody
+  needed.
+- **Defect 3 UNREAD** — no `nextConsultBars` read was taken this pass. It stays open with no
+  deadline claim: **an unrun check is not a passing one.**
+- **Defect 4 does not fire** — no `realDecides` drift observed; the guarding spec is green.
+
+**And a reading the watch did not ask for.** Whole-batch discards continue at 13 / 3.64 d ≈
+**3.6/day**, against the ~7/day the deadline paragraph projected from the 21.4% baseline. The rate
+fell — **but not by the mechanism this fix shipped**, because the salvage recovered nothing. The
+cause is unidentified and **is not creditable to `fbb3800`**. Untested candidate confounds: the
+`strict:true` schema (predates the fix), the 2026-08-04 L1/L4 enables, and the liquidation + perp
+trade-flow payload channels going live 2026-08-04. Note also that the 21.4% baseline used
+`increase()` over a different window and a "consults" denominator; this read is a raw counter against
+`consulted`=251 gate events, so the rate comparison is **indicative, not matched**. The defect that
+fires does not depend on the denominator.
+
+**Status: FIRED (defects 1 and 2). The fix is deployed, harmless, and did not do what it shipped to
+do.**
 
 ## Flagged for human review (open)
 

@@ -899,7 +899,7 @@ the new counter child zero-seeds congruently.
 
 ## 2026-08-06 — Pass 65 (one host suspend exposed three latent defects, every instrument that should have caught them was blind, and the fixes for them introduced three more)
 
-Window: 2026-08-05T00:05Z (Pass 64's sweep) → 2026-08-06T17:45Z. Sweep gap 40.0h — Pass 64 held its
+**Window:** 2026-08-05T00:05Z (Pass 64's sweep) → 2026-08-06T17:45Z. Sweep gap 40.0h — Pass 64 held its
 lease 2398 min and never released it; `loop:lock` broke it as stale on acquire, and Pass 64's own
 report sat complete-but-uncommitted in the tree (landed unmodified as `af22c6d`). Boot at sweep
 `9add5939-fcbf-4fa3-8098-2e15b9ac630c` (StartedAt 2026-08-05T16:29:07Z, build `fbb3800`);

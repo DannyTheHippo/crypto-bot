@@ -706,3 +706,248 @@ schedule + fallback + re-arm combined", not by clearing 60.000%. And the two lev
 pass on owner instruction; the 2026-07-17 "never two money-path items per pass" rule is not
 touched — both knobs are LLM cadence/cost levers, neither alters the Strategy → Risk → Execution
 money path.
+
+## Checkpoint #1 — recorded 2026-08-10T08:52:03Z, 27h08m EARLY against the 2026-08-11T12:00Z row
+
+_Appended under § 2.5. The frozen body above is untouched. This checkpoint extends nothing and
+adjusts nothing (§ 2.5 rule 3); it re-derives a date._
+
+**Why early.** The pass that carries this checkpoint ran on 08-10. The § 2.5 line is a pure function
+of elapsed time from A1, declared before any result was seen, so evaluating it at this read's instant
+is not moving a target — it is reading the same line at a different `x`. The 08-11T12:00Z row is
+restated below as well, and the loop re-reads it on time.
+
+**Tuple B — ONE `PromotionReadinessService.evaluate()` sample, 2026-08-10T08:52:03Z** (never
+assembled from separate reads, § 2.5 rule 1):
+
+```text
+windowDays=17.50014773148148  roundTrips=80  netPnlUsd=−81.2138271444
+llmCostUsd=40.0934201         winRate=0.275  ready=false
+reasons=[NON_POSITIVE_NET_PNL, BELOW_PASSIVE_BENCHMARK]
+```
+
+**`INSUFFICIENT_WINDOW` has cleared** (17.50 > 14 days) — and the gate still does not open, exactly
+as § 2 predicted: `NON_POSITIVE_NET_PNL` was never touched by the window.
+
+### The comparison, in both directions (§ 2.5 rule 2)
+
+```text
+elapsed A1 → B          = 2026-08-03T22:02:24Z → 2026-08-10T08:52:03Z = 6.4511458 d
+projected at −$5.2088/d = −63.5326 − 5.2088 × 6.4511458 = −$97.1352
+measured                =                                 −$81.2138
+```
+
+**BETTER than projection by $15.92 (16.4%).** Carried to the declared 08-11T12:00Z row at the
+measured forward rate below, the book lands ≈ **−$83.7** against the declared **−$103.02** — ahead by
+≈ $19.3. Reported in the favourable direction here because that is the direction it went; the rule
+exists to force the unfavourable one, and it binds identically.
+
+### Re-derived rates, each with its denominator named
+
+```text
+gross = net + llm = −81.2138271444 + 40.0934201 = −$41.1204070444
+wall-clock since epoch (2026-07-21T11:21:00Z → B) = 19.8965625 d
+forward window  (P65 tuple 2026-08-06T16:33:53Z → B), wall-clock = 3.6792824 d
+  Δnet = −$8.4760287500   Δllm = +$6.8995314   Δgross = −$1.5764973500   Δtrips = 19
+```
+
+| rate | arithmetic | value |
+| --- | --- | --- |
+| net-of-cost, wall-clock since epoch | 81.2138271444 ÷ 19.8965625 | **−$4.0818/day** |
+| net-of-cost, on the gate's own `windowDays` (conservative) | 81.2138271444 ÷ 17.50014773 | **−$4.6407/day** |
+| gross only, wall-clock since epoch | 41.1204070444 ÷ 19.8965625 | **−$2.0667/day** |
+| LLM, epoch average | 40.0934201 ÷ 19.8965625 | **$2.0151/day** |
+| **net-of-cost, forward window** | 8.4760287500 ÷ 3.6792824 | **−$2.3037/day** |
+| LLM, forward window | 6.8995314 ÷ 3.6792824 | **$1.8752/day** |
+| gross only, forward window | 1.5764973500 ÷ 3.6792824 | **−$0.4285/day** |
+
+### Restated S3 date — and it has moved past the window close
+
+```text
+headroom on the −$200 arm = 200 − 81.2138271444 = $118.7861728556
+```
+
+| rate used | days to −$200 | date |
+| --- | --- | --- |
+| forward window −$2.3037/day | 51.56 | **2026-09-30** |
+| wall-clock epoch average −$4.0818/day | 29.10 | **2026-09-08** |
+| gate `windowDays` −$4.6407/day (conservative) | 25.60 | **2026-09-04** |
+| the pre-declared composed −$5.2088/day | 22.81 | **2026-09-02** |
+
+**§ 2.2 declared the band 2026-08-27 → 2026-09-01, straddling the 2026-08-31 close. Every restated
+rate now lands AFTER the close; the earliest is 2026-09-04.** The window still closes 2026-08-31 and
+the −$200 trigger is still −$200 — what changed is which mechanism is expected to fire first. **The
+program should now be expected to end on the written verdict, not on a triggered S3.** That flips
+§ 2.2's flagged interaction ("on current trajectory the program terminates on its own budget trigger
+rather than on a written verdict") and the flip is recorded here rather than discovered at the close.
+
+The LLM arm remains slack: headroom `150 − 40.0934201 = $109.9066`; at the forward $1.8752/day that
+is 58.6 days (~2026-10-08). **The −$200 arm still binds first; the $150 arm is still not a live
+constraint** (§ 2.3 unchanged).
+
+### Where the improvement came from — and every reason not to bank it
+
+```text
+forward-window gross per round trip = −1.5764973500 ÷ 19 = −$0.0830/trip
+book-average realised (P65 tuple)   = −39.5439096944 ÷ 61 = −$0.6483/trip
+hit rate on the 19 forward trips    = (0.275×80 − 0.2622950820×61) ÷ 19 = 6 ÷ 19 = 31.58%
+```
+
+**Gross per trip improved ~87% in dollar terms, and the hit rate rose to 31.58% from 24.49% (A1) and
+26.23% (P65). It is still below the derived gross break-even of 41.65%**, and four things must travel
+with those numbers or they will be misread:
+
+1. **n = 19, one window, clusters unread.** The powered bar is n≥12 AND clusters≥5 on base assets;
+   n clears and clusters were not computed. **This is not a POWERED result and may not be quoted as
+   one.**
+2. **The bps form is an estimate, not a measurement.** Converting −$0.0830/trip needs a Σ one-way
+   notional this read does not carry. At the stale $83.2531 book-average one-way notional it is
+   ≈ **−10.0 bps/trip** against the recorded −69.9016 — a denominator from a different window, and
+   labelled an estimate wherever it appears.
+3. **Nothing in the configuration changed during this window.** The container has run `5deaac5`
+   since 2026-08-06T17:39:41Z with RestartCount 0; no deploy, no lever, no env edit — the *loop* was
+   dark, the *app* was not. So the improvement carries **no lever confound and full regime
+   confound**, and the parsimonious reading is a different market window, not a different strategy.
+4. **The forward-return instrument agrees with the regime reading, not with a skill reading** —
+   v10's adverse edge weakened toward zero as its population grew (below), which is what a
+   small-sample artifact does when it accrues.
+
+**Nothing here rescues or damages the ENTRIES verdict**, and nothing here is admissible against the
+promotion gate: `ready=false` on `NON_POSITIVE_NET_PNL` and `BELOW_PASSIVE_BENCHMARK`, and a
+31.58% hit rate on 19 trips does not reach a 41.65% break-even, let alone the 57.8% all-in figure.
+
+### Forward-return recomputation — the adverse-POWERED reading did NOT survive population growth
+
+Fresh `pnpm loop:forward-return`, 2026-08-10T08:53Z, playbook v10 (inverted), population
+`flat_only` (byte-identical to `all` at 55/55 and 54/54, as in both earlier sweep digests):
+
+| horizon | power | mean | n / clusters | 95% CI | vs replay |
+| --- | --- | --- | --- | --- | --- |
+| h=1 | POWERED | −7.6 bps | 55 / 10 | [−19.5, +6.9] | −0.8 — consistent |
+| h=4 | POWERED | −9.3 bps | 55 / 10 | [−32.1, +15.7] | +0.8 — consistent |
+| h=8 | POWERED | −20.8 bps | 54 / 10 | [−45.1, +3.9] | +19.3 — **DIVERGENCE** |
+| h=24 | POWERED | −15.5 bps | 54 / 10 | [−44.6, +29.2] | +47.6 — **DIVERGENCE** |
+
+**Every interval includes zero.** The 2026-08-04 amendment recorded v10 EXCLUDING zero at h=4 and
+h=8 (−45.3 [−122.0, −0.3] and −52.8 [−134.9, −1.5]) on n=21. On n=55 — 2.6× the population — the
+point estimates moved to −9.3 and −20.8 and both intervals now straddle zero. **The adverse-POWERED
+signature that would have justified minting away from v10 has not survived accrual. It was a
+small-population reading.** The honest statement is that v10's forward edge is **indistinguishable
+from zero**, not that it is good: the point estimate is negative at all four horizons.
+
+**WATCH-PLAYBOOK-V10-1 tier 2's "excludes zero at h=4/h=8" is SUPERSEDED by this read and must not
+be re-quoted from the amendment.** The n=21/k=8 vs n=26/k=9 discrepancy the record never reconciled
+is **accrual, not filters**; the authoritative cut is each pass's own fresh recomputation as of its
+own instant, and no earlier cut is re-quotable.
+
+**The replay divergence is unchanged and still fires** at h=8 and h=24, both intervals excluding the
+replay prediction. Replay continues to predict a positive edge the live lane does not realise.
+
+**Consequence for the event-driven mint gate shipped this pass:** it permits a mint only on
+`powered ∧ ciHi < 0` in `flat_only` at h=4 or h=8. Here `ciHi` is **+15.7** and **+3.9**. **The
+trigger does not fire, and minting nothing today is the trigger working.**
+
+## L1 and L4 adjudicated — 2026-08-10 (Pass 66), six days late, on a re-based window
+
+_Appended under § 3.1 and § 3.4. Frozen bodies untouched. Both levers went live in one instant,
+**2026-08-04T08:00:23Z**, confirmed to the second by the prompt-hash partition switching to
+`aefafb3c…` at `2026-08-04T08:00:23.693878Z`._
+
+### The registered two-day window is unusable, and it is re-based rather than waived
+
+§ 3.1 and § 3.4 both read "the first TWO FULL UTC days after the enable" — **2026-08-05 and
+2026-08-06. Both days are corrupted by the Pass-65 feed wedge**: `agent_decisions` rows land at
+**2920** and **2560** against **3840** on an intact day (76.0% and 66.7%). A spend read across a
+lane that was dead for a quarter to a third of the day measures the outage, not the lever.
+
+**Re-based window, declared here before the numbers below are read against it:** the three CLEAN
+post-enable UTC days **2026-08-07, 08-08, 08-09**, each carrying the full 3840 rows. The pre-enable
+baseline is unchanged from § 1.2 — the three full days **2026-07-31 → 08-02**. This substitutes a
+window, not a threshold; every declared magnitude and every named defect is graded at the number
+§ 3 declared.
+
+**One basis note that must travel with the notional figures.** § 1.2's Σ one-way notional keys on
+the fill's own time; the reads below key on `fills.ingested_at`, which differs for 2026-07-31
+($459.7588 here vs $300.7782 there). **Both sides of every comparison below use the `ingested_at`
+basis**, so the comparison is internally consistent and is **not** mixable with § 1.2's figures.
+
+### The measurements
+
+| quantity | pre-enable (07-31→08-02) | post-enable clean (08-07→08-09) | change |
+| --- | --- | --- | --- |
+| decide spend | **$2.5857/day** | **$1.9013/day** | **−26.5%** (−$0.6844/day) |
+| priced decide rows | 169.33/day | 107.67/day | **−36.4%** |
+| Σ one-way notional | $312.4066/day | $316.9294/day | **+1.45%** |
+| **cost per priced decide** | $0.015271 | **$0.017659** | **+15.6%** |
+| **LLM term** (`spend × 1e4 ÷ notional`) | **82.77 bps/trip** | **59.99 bps/trip** | **−27.5%** |
+
+### L4 — `AGENTIC_WAKE_MOVE_PCT` 0.008 → 0.012: **all three clauses MET, no rollback**
+
+1. **`forced_move` falls ≥ 30%** — 105 events over the 3.6335 days since boot `815e01b8` =
+   **28.9/day** against the 94/day baseline: **−69.3%. MET.** (Since-boot counter, post-enable only;
+   there is no within-boot before/after and none is claimed.)
+2. **Decide spend falls ≥ $0.15/day** — **−$0.6844/day. MET, and it OVER-delivers**, landing above
+   the declared $0.15–$0.60/day band. Recorded as an over-delivery because § 3.4 printed its upper
+   bound precisely so that over-delivery would be as falsifiable as under-delivery.
+3. **Σ one-way notional falls by a SMALLER fraction than spend** — spend **−26.5%**, notional
+   **+1.45%** (it rose). **MET decisively.**
+
+**Named defect 1 — the one § 3.4 called most likely ("the lever bought less trading, not cheaper
+trading") — does NOT fire.** **Named defect 2 does NOT fire**: `forced_fallback` is 27 over 3.6335
+days = **7.4/day** against the 29/day baseline, so the fallback did not rise to absorb the removed
+wakes; it fell too. **Named defect 3 stays unmeasurable and nothing is claimed about missed entries.**
+
+**This is the first lever in this program to move the § 1.3 identity in the right direction for the
+right reason: spend fell while turnover did not.** On these denominators the all-in bar reads
+`8.6718 − 0.3317 + 59.99 = 68.33 bps/round trip`, against 78.80 book-average and 108.01 forward.
+**It is still a lever on the rate of a loss, never on its sign** (§ 2.4 unchanged), and gross must
+cross zero before any of it matters.
+
+### L1 — `AGENTIC_OUTPUT_EFFORT=medium`: **primary FALSIFIED; the cost clause passes only through a confound**
+
+- **Registered expected-positive #1 — zero `truncated_max_tokens:` rows at `output_tokens = 4096`
+  over the registered days — FALSIFIED** (4 on 08-05, 3 on 08-06). On the re-based clean window the
+  4096-pinned rate is 7/323 = **2.17%** of priced decides against 17/508 = **3.35%** pre — a ~35%
+  relative fall on 17 vs 7 rows, **not distinguishable from noise and not the registered zero**.
+  Full cross-tab, and the separate falsification of this watch's "all pinned at exactly 4096"
+  invariant: `research/loop/watches.md` § WATCH-V4-12, amendment 2026-08-10.
+- **Expected-positive #2 — decide spend ≤ $2.20/day — MET** ($1.9013). **But it is not L1's.**
+  Spend fell because the lane made **36.4% fewer priced calls**, which is L4's mechanism; **cost per
+  decide ROSE 15.6%**. A lever that was supposed to make each call cheaper is sitting on a window
+  where each call got dearer.
+- **Named defect 1 (a `schema_rejected:` rise attributable to the cap) does NOT fire** — 18/day pre
+  (07-31→08-02) against **7.67/day** on the clean window.
+- **Named defect 2 (latency past the 75 s batch budget, or a 90 s abort) does NOT fire** — p95
+  **30,556 ms** post (n=567) vs **29,009 ms** pre (n=841), max 67,251 ms, **zero rows ≥ 75 s, zero
+  ≥ 90 s**.
+- **Named defect 3 (entry rate outside [1.60%, 6.75%]) — read on a PROXY denominator and does not
+  fire on it.** The registered denominator is FLAT-marker candle rows; `input_payload` is empty on
+  the current rows, so the marker was **not reconstructible this pass**. Proxy: entries per candle
+  row, **34/26722 = 0.1272%** over the 7 days before the enable against **28/20951 = 0.1337%**
+  after — a +5.1% relative change, which lands the registered rate near 4.39% against a 4.1743%
+  baseline, well inside the band **if** the FLAT fraction of candle rows is stable across the two
+  windows. That "if" is untested. **This is a proxy reading and is labelled one.**
+- **Named defect 4 (spend does not fall ≥ $0.40/day ⇒ NO-OP rollback) does not fire on its literal
+  test** — and passing it is **not** evidence that L1 transmitted, because the fall is attributable
+  to L4.
+
+**Decision: L1 is NOT unset today, and the reason is not optimism.** Its own mechanism is falsified;
+what remains unanswerable from these columns is whether `effort` reaches the model at all, because a
+request-parameter effect and a payload-size effect produce an identical row — and the payload grew
+independently when the liquidation and perp trade-flow channels went live on 2026-08-04, which is an
+equally good explanation for the +15.6% per-decide cost and the +5.3% p95. **`stop_reason` is
+journalled from this pass** (`agent_decisions.stop_reason`, migration `0003`) and separates them.
+**Registered read: the `max_tokens` share of `stop_reason` on the `+eff-medium` prompt-hash
+partition over 7 days of post-deploy rows. Unchanged-or-higher ⇒ `effort` is not transmitting ⇒
+unset `AGENTIC_OUTPUT_EFFORT`. Deadline 2026-08-17. The default outcome on a silent, empty or
+unreadable instrument is the unset, not the status quo.**
+
+### The confound stack, stated so no later reader credits either lever alone
+
+**L1 and L4 shipped in the same instant.** Nothing measured after 2026-08-04T08:00:23Z is
+attributable to one of them. A third change lands in the same window — the liquidation and perp
+trade-flow payload channels going live 2026-08-04 — and a fourth sits under the whole comparison:
+**the market regime changed** (§ Checkpoint #1: gross per trip improved ~87% with **zero**
+configuration changes in the 08-06 → 08-10 window). The decomposition above assigns the *mechanism*
+— fewer calls, not cheaper calls — which is what distinguishes the two levers; it does not assign
+the *credit*, and this record does not claim to.

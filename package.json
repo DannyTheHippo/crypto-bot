@@ -37,7 +37,7 @@
     "format:check": "prettier --check .",
     "lint:md": "markdownlint-cli2",
     "lint:md:fix": "markdownlint-cli2 --fix",
-    "checks": "pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck && pnpm test",
+    "checks": "pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck && pnpm test:cov",
     "--- TESTS ---": "--------------------------------",
     "test": "vitest run test/features test/domain test/ports test/livegate",
     "test:livegate": "vitest run test/livegate",

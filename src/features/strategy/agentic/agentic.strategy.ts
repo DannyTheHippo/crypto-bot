@@ -486,6 +486,15 @@ export interface AgenticStrategyDeps {
   readonly onAlgoStopGone?: (
     symbol: SymbolId,
   ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
+  // Backlog #149 (CLOCK half, 2026-08-10): the durable open-time source rearmExitGeometry needs to
+  // reconstruct barsElapsed on a re-arm instead of hardcoding 0 — every in-memory field is null in
+  // exactly the post-restart case this fallback targets (see rearmExitGeometry's own comment).
+  // Closure over the SAME RoundTripEvidencePort instance `evidence` above is bound to (see
+  // trading-runtime.module.ts's wiring), captured with this registration's own strategyId — mirrors
+  // onClosedTrade's id-capturing closure convention. Optional: absent, or a null answer (flat / no
+  // matching fills), fails OPEN to today's byte-identical barsElapsed: 0 — a measurement input, never
+  // a permission gate.
+  readonly openPositionOpenedAt?: (symbol: SymbolId) => Promise<number | null>;
   // I1b (Design § Universe: scanner-gated active menu — the reported per-symbol ingestion gap):
   // fires once per decide() call that lands on an actual candle-close trigger, with this instance's
   // OWN closed-candle window — mirrors onVenueTp/onVenueStop's fire-and-forget seam convention.
@@ -704,6 +713,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly onAlgoStopGone?: (
     symbol: SymbolId,
   ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
+  // Backlog #149 (CLOCK half) — see AgenticStrategyDeps.openPositionOpenedAt's own comment.
+  private readonly openPositionOpenedAt?: (symbol: SymbolId) => Promise<number | null>;
   // I1b — see AgenticStrategyDeps.onCandleMetrics' own comment.
   private readonly onCandleMetrics?: (symbol: SymbolId, candles: readonly CandleEvent[]) => void;
   // Warn-once bookkeeping for an unknown-role resting order on the exit side (see roleForOrder /
@@ -809,6 +820,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.bookSnapshot = deps.bookSnapshot;
     this.algoOrders = deps.algoOrders;
     this.onAlgoStopGone = deps.onAlgoStopGone;
+    this.openPositionOpenedAt = deps.openPositionOpenedAt;
     this.onCandleMetrics = deps.onCandleMetrics;
     this.subscriptions = {
       venue: params.venue,
@@ -1137,13 +1149,16 @@ export class AgenticStrategy implements AsyncStrategy {
             '[rearm-fallback] synthetic protective plan — model returned no directives while positioned',
         },
         entryPrice: null,
-        barsElapsed: 0,
+        // Backlog #149 (CLOCK half): recovered from the durable open-time source when wired, else 0
+        // (byte-identical to pre-#149) — see rearmExitGeometry/rearmBarsElapsed's own comments.
+        // maxHoldBars above stays the fixed policy constant; only this numerator was ever wrong.
+        barsElapsed: geometry.barsElapsed,
         venueTpPlacedAtBar: null,
         venueStopPlacedAtBar: null,
         pendingScaleInQty: null,
       };
       this.logger.warn(
-        `re-arm fallback: ${this.symbol} positioned ${context.position.side} but consult returned ${decision.action} without directives — attaching protective defaults (stop=${geometry.stopLossPct} [${geometry.stopLossSource}], tp=${geometry.takeProfitPct} [${geometry.takeProfitSource}])`,
+        `re-arm fallback: ${this.symbol} positioned ${context.position.side} but consult returned ${decision.action} without directives — attaching protective defaults (stop=${geometry.stopLossPct} [${geometry.stopLossSource}], tp=${geometry.takeProfitPct} [${geometry.takeProfitSource}], barsElapsed=${geometry.barsElapsed})`,
       );
       this.onRearmFallback?.();
     }
@@ -1853,12 +1868,17 @@ export class AgenticStrategy implements AsyncStrategy {
     stopLossSource: string;
     takeProfitPct: string;
     takeProfitSource: string;
+    barsElapsed: number;
   }> {
+    // barsElapsed is independent of avgEntry/the resting-order derivation below — computed first so
+    // every return path (including the two avgEntry/entry-validity bails) carries it.
+    const barsElapsed = await this.rearmBarsElapsed(input);
     const geometry = {
       stopLossPct: AGENTIC_MAX_STOP_LOSS_PCT,
       stopLossSource: 'synthetic',
       takeProfitPct: '0.02',
       takeProfitSource: 'synthetic',
+      barsElapsed,
     };
     if (avgEntry === null) return geometry;
     const entry = new Decimal(avgEntry);
@@ -1888,6 +1908,32 @@ export class AgenticStrategy implements AsyncStrategy {
       }
     }
     return geometry;
+  }
+
+  // Backlog #149 (CLOCK half): reconstructs the re-armed plan's barsElapsed from the durable open-time
+  // source (AgenticStrategyDeps.openPositionOpenedAt) so a re-arm on bar 90 of a hold doesn't restart
+  // the maxHoldBars clock at 0 — the defect this closes. Fails OPEN to 0 (byte-identical to the
+  // pre-#149 hardcode) on every non-answer: no closure wired, a null answer (flat / no matching
+  // fills), a REJECTED answer (the closure wraps a live DB read — fillsForMode — which can genuinely
+  // throw; caught here rather than left to propagate, since nothing between Drizzle and this call
+  // absorbs it the way onAlgoStopGone's error-absorbing service does for its own closure), or a
+  // non-positive/non-finite elapsed span (e.g. clock skew, a stale/future openedAt) — this is a
+  // measurement input feeding a re-arm's INITIAL clock value, never a permission gate, so a missing or
+  // malformed answer must never block or widen the re-arm itself.
+  private async rearmBarsElapsed(input: AgentDecisionInput): Promise<number> {
+    let openedAt: number | null | undefined;
+    try {
+      openedAt = await this.openPositionOpenedAt?.(this.symbol);
+    } catch (err) {
+      this.logger.warn(
+        `re-arm fallback: ${this.symbol} openPositionOpenedAt rejected — barsElapsed stays 0 (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return 0;
+    }
+    if (openedAt === undefined || openedAt === null) return 0;
+    const elapsedMs = input.snapshot.eventTime - openedAt;
+    if (!Number.isFinite(elapsedMs) || elapsedMs <= 0 || this.baseIntervalMs <= 0) return 0;
+    return Math.floor(elapsedMs / this.baseIntervalMs);
   }
 
   // The resting protective stop's own TRIGGER price, per rail. PERP: a STOP_MARKET lives on the algo

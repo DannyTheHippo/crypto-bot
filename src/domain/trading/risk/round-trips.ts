@@ -213,6 +213,38 @@ export function walkRoundTrips(
   return { cycles, unconvertibleFeeAsset };
 }
 
+// Backlog #149 (CLOCK half): the trailing OPEN cycle's openedAt for one (strategyId, symbol) — null
+// when that group is flat (never traded, or its last cycle closed with no fills after). A sibling of
+// walkRoundTrips, NOT a variant of it: walkRoundTrips deliberately excludes the still-open trailing
+// cycle (its own header comment), so this walks the SAME dust-closure rule independently rather than
+// widen that contract. Scale-ins are handled the same way walkRoundTrips handles them: openedAt is
+// set once, on the cycle's FIRST fill, and only reset when a dust-closure actually closes the cycle —
+// so a scale-in never moves it forward to the latest add.
+export function openCycleOpenedAt(
+  fills: readonly RoundTripFill[],
+  dustNotional: Decimal,
+  strategyId: string,
+  symbol: string,
+): number | null {
+  let cycle = freshCycle();
+  for (const fill of fills) {
+    if (fill.strategyId !== strategyId || fill.symbol !== symbol || fill.side === null) continue;
+    const qty = new Decimal(fill.qty);
+    const price = new Decimal(fill.price);
+    if (cycle.openedAt === null) cycle.openedAt = fill.executedAt;
+    cycle.signedQty = fill.side === 'BUY' ? cycle.signedQty.plus(qty) : cycle.signedQty.minus(qty);
+
+    const residualNotional = cycle.signedQty.abs().mul(price);
+    if (residualNotional.gt(cycle.peakNotional)) cycle.peakNotional = residualNotional;
+    // Same fail direction as walkRoundTrips' own dust-closure guard: a cycle that never reaches
+    // dustNotional stays open (never phantom-closed by an early sub-dust fill).
+    if (residualNotional.lt(dustNotional) && cycle.peakNotional.gte(dustNotional)) {
+      cycle = freshCycle();
+    }
+  }
+  return cycle.openedAt;
+}
+
 // Cross-cycle fee sum in quote units: quote-asset fees subtract directly, base-asset fees convert
 // at that fill's own price. Any other fee asset is NOT summed — walkRoundTrips flags it via
 // unconvertibleFeeAsset, which the promotion verdict treats as fail-closed, so silently treating

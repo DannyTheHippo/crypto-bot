@@ -5,7 +5,11 @@ import type {
   RoundTripEvidence,
   RoundTripEvidencePort,
 } from '../../../ports/trading/promotion';
-import { walkRoundTrips, type ClosedRoundTrip } from '../../../domain/trading/risk/round-trips';
+import {
+  walkRoundTrips,
+  openCycleOpenedAt,
+  type ClosedRoundTrip,
+} from '../../../domain/trading/risk/round-trips';
 
 const DEMO_MODE = 'testnet' as const;
 
@@ -57,6 +61,13 @@ export class RoundTripEvidenceReader implements RoundTripEvidencePort {
       closedSinceLastReflection,
       lastReflectionAt,
     };
+  }
+
+  // Backlog #149 (CLOCK half): a NEW walk over the same fills read (never a new DB query) — see
+  // RoundTripEvidencePort.openPositionOpenedAt's own comment for why this needs to be durable.
+  async openPositionOpenedAt(strategyId: string, symbol: string): Promise<number | null> {
+    const fills = await this.stats.fillsForMode(DEMO_MODE, this.evidenceEpochMs);
+    return openCycleOpenedAt(fills, new Decimal(this.dustNotional), strategyId, symbol);
   }
 }
 

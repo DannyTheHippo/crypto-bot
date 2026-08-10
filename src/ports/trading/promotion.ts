@@ -203,6 +203,14 @@ export interface ReflectionTriggerSeed {
 export interface RoundTripEvidencePort {
   recentRoundTrips(limit: number): Promise<readonly RoundTripEvidence[]>;
   reflectionSeed(strategyId?: string): Promise<ReflectionTriggerSeed>;
+  // Backlog #149 (CLOCK half): the trailing OPEN cycle's openedAt (epoch ms) for one
+  // (strategyId, symbol) — null when flat. The ONLY durable source of a live position's open time
+  // reachable from the composition root (see AgenticStrategyDeps' own comment on why); consulted
+  // solely by the re-arm fallback's barsElapsed reconstruction, never by the promotion verdict or
+  // recentRoundTrips above (both stay closed-cycle-only by design). Optional so existing fakes stay
+  // valid — an absent method leaves the re-arm fallback byte-identical to its pre-#149 hardcoded
+  // barsElapsed: 0 (fail-open: this is a measurement input, never a permission gate).
+  openPositionOpenedAt?(strategyId: string, symbol: string): Promise<number | null>;
 }
 
 // ── PromotionReadiness verdict ───────────────────────────────────────────────

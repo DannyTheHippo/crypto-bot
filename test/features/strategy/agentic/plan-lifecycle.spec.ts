@@ -1062,6 +1062,99 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     await strategy.decide(buildInput(0, { position: longPosition('100') }));
     expect(rearmFallbackCalls).toBe(0);
   });
+
+  // Backlog #149 (CLOCK half, 2026-08-10): rearmExitGeometry previously hardcoded barsElapsed: 0,
+  // restarting the maxHoldBars clock on every re-arm no matter how long the position had really been
+  // open. With a durable open-time source wired, 94 real bars already elapsed at re-arm + the fixed
+  // maxHoldBars: 96 need only 2 more quiet bars to fire max_hold — proof the recovered clock, not a
+  // fresh one, is driving the exit.
+  it('reconstructs barsElapsed from the durable open-time source on a re-arm (max_hold fires early)', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    const openedAt = BASE_TIME - 94 * STEP_MS; // 94 real bars already elapsed at re-arm time
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient(), {
+      openPositionOpenedAt: () => Promise.resolve(openedAt),
+    });
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held })); // re-arm: barsElapsed seeded to 94
+    const quiet = await strategy.decide(buildInput(1, { position: held })); // 95 — still below 96
+    expect(quiet).toEqual([]);
+    const out = await strategy.decide(buildInput(2, { position: held })); // 96 — max_hold fires
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.reason).toBe('plan exit: max_hold');
+  });
+
+  // Fail-open pin: absent closure ⇒ barsElapsed starts at 0 on the re-arm, byte-identical to
+  // pre-#149 — the same 3 bars stay far short of maxHoldBars 96, so no max_hold exit fires.
+  it('fails open to barsElapsed 0 on a re-arm when openPositionOpenedAt is absent (byte-identical to pre-#149)', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient());
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held })); // re-arm: barsElapsed 0 (no closure)
+    const bar1 = await strategy.decide(buildInput(1, { position: held }));
+    expect(bar1).toEqual([]);
+    const bar2 = await strategy.decide(buildInput(2, { position: held }));
+    expect(bar2).toEqual([]); // nowhere near maxHoldBars 96
+  });
+
+  // Fail-open pin, second answer shape: a wired closure that itself resolves null (flat / no
+  // matching fills) must degrade identically to an absent closure, never throw or widen the re-arm.
+  it('fails open to barsElapsed 0 on a re-arm when openPositionOpenedAt resolves null', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient(), {
+      openPositionOpenedAt: () => Promise.resolve(null),
+    });
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held }));
+    const bar1 = await strategy.decide(buildInput(1, { position: held }));
+    expect(bar1).toEqual([]);
+    const bar2 = await strategy.decide(buildInput(2, { position: held }));
+    expect(bar2).toEqual([]);
+  });
+
+  // Fail-open pin, third answer shape: the closure wraps a live DB read that can genuinely reject
+  // (transient PG error) — a rejection must degrade the SAME as absent/null, never propagate out of
+  // decide() and abort the re-arm branch (which would lose that bar's protective plan entirely).
+  it('fails open to barsElapsed 0 on a re-arm when openPositionOpenedAt rejects', async () => {
+    class BareHoldClient implements AgentClientPort {
+      propose(): Promise<AgentProposal> {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'bare hold' },
+        });
+      }
+    }
+    const strategy = new AgenticStrategy(SID, makeParams(), new BareHoldClient(), {
+      openPositionOpenedAt: () => Promise.reject(new Error('db down')),
+    });
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held }));
+    const bar1 = await strategy.decide(buildInput(1, { position: held }));
+    expect(bar1).toEqual([]);
+    const bar2 = await strategy.decide(buildInput(2, { position: held }));
+    expect(bar2).toEqual([]);
+  });
 });
 
 // W1.3 follow-on: the accepted plan a decision carried must reach the journal row (persistence

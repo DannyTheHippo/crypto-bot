@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import {
   walkRoundTrips,
+  openCycleOpenedAt,
   sumFeesQuote,
   type RoundTripFill,
 } from '../../../src/domain/trading/risk/round-trips';
@@ -295,6 +296,74 @@ describe('domain/risk round-trip walk', () => {
       DUST,
     );
     expect(cycles[0]!.meanSlippageBps!.toFixed()).toBe('-100'); // single contributing fill
+  });
+});
+
+// Backlog #149 (CLOCK half): the durable open-time source rearmExitGeometry needs — walkRoundTrips
+// itself deliberately excludes the still-open trailing cycle, so this is a separate walk.
+describe('domain/risk openCycleOpenedAt', () => {
+  it('returns null for a group with no fills at all (flat, never traded)', () => {
+    expect(openCycleOpenedAt([], DUST, 'agentic-1', 'BTC/USDT')).toBeNull();
+  });
+
+  it('returns null once every cycle in the group has closed (flat again)', () => {
+    const opened = openCycleOpenedAt(
+      [
+        fill({ qty: '1', price: '100', executedAt: 1 }),
+        fill({ side: 'SELL', qty: '1', price: '110', executedAt: 2 }),
+      ],
+      DUST,
+      'agentic-1',
+      'BTC/USDT',
+    );
+    expect(opened).toBeNull();
+  });
+
+  it('returns the still-open cycle openedAt for a position that never closed', () => {
+    const opened = openCycleOpenedAt(
+      [
+        fill({ qty: '1', price: '100', executedAt: 1_000 }),
+        fill({ qty: '1', price: '105', executedAt: 2_000 }), // scale-in — same open cycle
+      ],
+      DUST,
+      'agentic-1',
+      'BTC/USDT',
+    );
+    expect(opened).toBe(1_000); // the FIRST opening fill, not the scale-in
+  });
+
+  it('resumes tracking at the SECOND cycle once the first closes (openedAt resets)', () => {
+    const opened = openCycleOpenedAt(
+      [
+        fill({ qty: '1', price: '100', executedAt: 1 }),
+        fill({ side: 'SELL', qty: '1', price: '105', executedAt: 2 }), // cycle 1 closes
+        fill({ qty: '1', price: '200', executedAt: 3 }), // cycle 2 opens — still open
+      ],
+      DUST,
+      'agentic-1',
+      'BTC/USDT',
+    );
+    expect(opened).toBe(3);
+  });
+
+  it('scopes to the requested (strategyId, symbol) only, ignoring other groups', () => {
+    const fills = [
+      fill({ strategyId: 'agentic-1', qty: '1', price: '100', executedAt: 1 }),
+      fill({ strategyId: 'agentic-2', symbol: 'ETH/USDT', qty: '1', price: '10', executedAt: 2 }),
+    ];
+    expect(openCycleOpenedAt(fills, DUST, 'agentic-1', 'BTC/USDT')).toBe(1);
+    expect(openCycleOpenedAt(fills, DUST, 'agentic-2', 'ETH/USDT')).toBe(2);
+    expect(openCycleOpenedAt(fills, DUST, 'agentic-3', 'SOL/USDT')).toBeNull();
+  });
+
+  it('never phantom-closes a still-building sub-dust position (same peak-notional guard as walkRoundTrips)', () => {
+    const opened = openCycleOpenedAt(
+      [fill({ qty: '0.01', price: '100', executedAt: 5 })], // notional 1 < dust 5
+      DUST,
+      'agentic-1',
+      'BTC/USDT',
+    );
+    expect(opened).toBe(5); // still open — never reached dustNotional, so it cannot close
   });
 });
 

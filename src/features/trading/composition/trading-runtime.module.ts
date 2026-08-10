@@ -859,6 +859,13 @@ export class TradingRuntimeService
         // unknown-role) is invisible in production logs — metrics were the only observable.
         logger: { warn: (m) => this.log.warn(`[${id}] ${m}`) },
         evidence: this.roundTripEvidence,
+        // Backlog #149 (CLOCK half): the SAME RoundTripEvidencePort instance `evidence` above is
+        // bound to, closed over this registration's own strategy id — mirrors onClosedTrade's
+        // id-capturing closure just above. Optional method on the port (?.()) plus the ?? null
+        // fallback means an unwired/older port answers null, which rearmBarsElapsed already treats
+        // as fail-open — see AgenticStrategyDeps.openPositionOpenedAt's own comment.
+        openPositionOpenedAt: (symbol) =>
+          this.roundTripEvidence?.openPositionOpenedAt?.(id, symbol) ?? Promise.resolve(null),
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
         fearGreedFeed: this.fearGreedFeed,

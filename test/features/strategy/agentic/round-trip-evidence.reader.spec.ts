@@ -147,4 +147,33 @@ describe('RoundTripEvidenceReader', () => {
     const bounded = new RoundTripEvidenceReader(statsOf(realTrips), '5', 1_500);
     expect(await bounded.recentRoundTrips(10)).toHaveLength(2);
   });
+
+  // Backlog #149 (CLOCK half): openPositionOpenedAt is a NEW walk over the SAME fillsForMode read
+  // recentRoundTrips/reflectionSeed already use — never a second DB query.
+  it('openPositionOpenedAt returns the still-open cycle openedAt for the requested (strategyId, symbol)', async () => {
+    const reader = new RoundTripEvidenceReader(
+      statsOf([
+        fill({ strategyId: 'agentic-1', qty: '1', price: '100', executedAt: 1_000 }),
+        fill({
+          strategyId: 'agentic-2',
+          symbol: 'ETH/USDT',
+          qty: '1',
+          price: '10',
+          executedAt: 500,
+        }),
+        fill({
+          strategyId: 'agentic-2',
+          symbol: 'ETH/USDT',
+          side: 'SELL',
+          qty: '1',
+          price: '11',
+          executedAt: 600,
+        }),
+      ]),
+      '5',
+    );
+    expect(await reader.openPositionOpenedAt('agentic-1', 'BTC/USDT')).toBe(1_000);
+    expect(await reader.openPositionOpenedAt('agentic-2', 'ETH/USDT')).toBeNull(); // closed
+    expect(await reader.openPositionOpenedAt('agentic-3', 'SOL/USDT')).toBeNull(); // never traded
+  });
 });

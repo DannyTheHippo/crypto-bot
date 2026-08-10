@@ -805,8 +805,8 @@ with those numbers or they will be misread:
    ≈ **−10.0 bps/trip** against the recorded −69.9016 — a denominator from a different window, and
    labelled an estimate wherever it appears.
 3. **Nothing in the configuration changed during this window.** The container has run `5deaac5`
-   since 2026-08-06T17:39:41Z with RestartCount 0; no deploy, no lever, no env edit — the *loop* was
-   dark, the *app* was not. So the improvement carries **no lever confound and full regime
+   since 2026-08-06T17:39:41Z with RestartCount 0; no deploy, no lever, no env edit — the _loop_ was
+   dark, the _app_ was not. So the improvement carries **no lever confound and full regime
    confound**, and the parsimonious reading is a different market window, not a different strategy.
 4. **The forward-return instrument agrees with the regime reading, not with a skill reading** —
    v10's adverse edge weakened toward zero as its population grew (below), which is what a
@@ -988,7 +988,7 @@ same terms § 3.5 refuses it for L5.
 **So why ship it.** Not as an improvement. **As a correctness fix and a confound removal**: every
 future entry-side study on this lane would otherwise be run against a model that was told a false
 fact about its own book, and that confound is unremovable after the fact. It is admissible under
-the redesign plan's stance sentence as *evidence for the successor program*, and under no other
+the redesign plan's stance sentence as _evidence for the successor program_, and under no other
 heading.
 
 **Expected-positive — TRANSMISSION, which is deterministic, not behaviour, which is declared null:**
@@ -1031,6 +1031,6 @@ distributions — and **never on PnL**.
 attributable to one of them. A third change lands in the same window — the liquidation and perp
 trade-flow payload channels going live 2026-08-04 — and a fourth sits under the whole comparison:
 **the market regime changed** (§ Checkpoint #1: gross per trip improved ~87% with **zero**
-configuration changes in the 08-06 → 08-10 window). The decomposition above assigns the *mechanism*
+configuration changes in the 08-06 → 08-10 window). The decomposition above assigns the _mechanism_
 — fewer calls, not cheaper calls — which is what distinguishes the two levers; it does not assign
-the *credit*, and this record does not claim to.
+the _credit_, and this record does not claim to.

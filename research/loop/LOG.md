@@ -969,7 +969,7 @@ run in paper mode, this fix is a no-op until the reader's mode is threaded rathe
 
 ## 2026-08-10 — Pass 67 (the out-of-sample arm stopped being UNSTARTED, and the one owed enable is refused by its own precondition)
 
-**Window:** 2026-08-10T16:07Z → 17:0xZ. Lease `04fb519b02bec364` taken 16:07:41Z. `date -u` anchored
+**Window:** 2026-08-10T16:07Z → 16:46Z. Lease `04fb519b02bec364` taken 16:07:41Z, released 16:46Z. `date -u` anchored
 BEFORE any timestamp forensics (16:07:16Z). Sweep `2026-08-10T16:07:51Z`: **ZERO alarms**, 17
 annotations. Boot `a5279f26-8b35-4275-8a7b-d1a7ca6a4569`, StartedAt 2026-08-10T09:49:33Z,
 RestartCount 0, running build **`917e542`** (`build_info` read directly, not inferred), working tree

@@ -37,13 +37,17 @@ import {
   resolveActiveVersion,
 } from './lib/playbook-shared.mjs';
 import { deriveValidationOpts } from './playbook-candidate-core.mjs';
+import { runForwardReturn } from './loop-forward-return.mjs';
 import {
   AUTHORING_ATTEMPT_FAMILY,
+  EST_COST_PER_DECIDE_USD,
   assertNoRetiredObjective,
   buildEvidenceDigest,
   buildScorecard,
+  classifyDeclaredBudget,
   classifyEntryRateFloor,
   classifyMintGate,
+  classifyMintTrigger,
   classifyRegistrySplitBrain,
   classifySameDayGate,
   corpusAttemptKey,
@@ -65,6 +69,33 @@ const SCORE_SPEC = 'test/eval/agentic/loop-authoring-score.spec.ts';
 // Dust threshold for the round-trip walk. Mirrors the promotion path's own posture: a residue below
 // this closes the cycle rather than leaving it open forever on a rounding remainder.
 const DUST_NOTIONAL = new Decimal('1');
+
+// Mirrors MIN_EDGE_ROWS (test/eval/agentic/playbook-space-replay.ts:152) and loop-authoring-
+// score.spec.ts:60's own `ROWS` default — this shell cannot import that TS spec file directly (no
+// build step reaches test/eval), so the number is duplicated here rather than derived. If the spec's
+// default ever moves, this one must move with it; a mismatch would silently declare the wrong budget.
+const DEFAULT_DECLARED_ROWS = 150;
+// Mirrors loop-authoring-score.spec.ts:61's own `CAP_USD` default, for the same reason as ROWS above.
+const DEFAULT_DECLARED_CAP_USD = '5';
+
+// The declared drafting shape — ONE stance, compared against the incumbent (2 total arms). Cut from
+// two stances (draft_conservative + draft_exploratory, 3 arms including the incumbent) by the
+// 2026-08-10 owner decision: at MIN_EDGE_ROWS=150 rows, 3 arms declares $6.4674 against the $5.00 cap
+// (research/loop/LOG.md, Pass 65 — guaranteed to abort on EVERY run) while 2 arms declares $4.3116.
+// `draft_exploratory` is the one dropped, not `draft_conservative`: NO_SURVIVOR already settled that
+// prose does not move the entry sign (loop-authoring-core.mjs's own header), so the exploratory
+// stance's variance was bought at a cost this pass can no longer afford without going over budget
+// again — and the existing test fixtures (loop-authoring-core.spec.mjs) already treat
+// `draft_conservative` as the canonical arm. `syntheticVariants` below is driven off this SAME array's
+// length so the dry-run rehearsal and the real drafting shape can never drift apart.
+const DRAFT_STANCES = [
+  {
+    label: 'draft_conservative',
+    instruction:
+      'Draft a CONSERVATIVE revision: change as little as possible from the incumbent, ' +
+      'only what the evidence directly supports.',
+  },
+];
 
 function fail(message) {
   console.error(`${LOG}: ${message}`);
@@ -490,13 +521,15 @@ async function draftVariant(apiKey, model, prompt, stanceInstruction, label) {
  *
  * They are edits of the incumbent's own text, so they stay structurally valid and clearly synthetic:
  * nobody can mistake a dry-run variant for a drafted one, and the pass still exercises a real
- * multi-variant comparison including a loser.
+ * candidate-vs-incumbent comparison. Sliced to `DRAFT_STANCES.length` rather than hardcoded to a fixed
+ * count: a dry run rehearsing more arms than the real drafting shape declares would be rehearsing a
+ * different run than the one the budget classification below actually declares.
  */
 function syntheticVariants(incumbent) {
   const suffixes = [
     '\nDo not enter to fill a quiet session; a flat book costs nothing and pays no spread.',
     '\nWhen two readings of the same structure disagree, stand aside rather than sizing down.',
-  ];
+  ].slice(0, DRAFT_STANCES.length);
   return suffixes.map((suffix, i) => ({
     name: `dryrun_variant_${i + 1}`,
     content: `${incumbent.content}${suffix}`,
@@ -605,6 +638,33 @@ async function main() {
   console.log(`\n${LOG}${dryRun ? ' (DRY RUN — nothing is written, no paid call is made)' : ''}`);
   console.log(`out: ${outDir}\n`);
 
+  // DECLARED-BUDGET GATE, before ANY paid call and before the day's slot is even readable. A run whose
+  // own arithmetic guarantees a budget abort must refuse HERE rather than find that out mid-replay —
+  // "BEFORE claimTodaysSlot()" is the point: a refused day must not burn the UTC slot. Fails CLOSED.
+  // Rationale, the ARMS-not-ROWS cut, and the ~$0.69 cost-variance margin: classifyDeclaredBudget's own
+  // header in loop-authoring-core.mjs. `declaredArms` mirrors whichever variant-generation path runs
+  // below (draftFile: exactly one supplied variant; real or --dry-run: DRAFT_STANCES.length, which is
+  // the SAME constant syntheticVariants slices by) plus the incumbent comparator.
+  const declaredRows = rowsArg ?? DEFAULT_DECLARED_ROWS;
+  const declaredCapUsd = capUsd ?? DEFAULT_DECLARED_CAP_USD;
+  const declaredArms = (draftFile !== undefined ? 1 : DRAFT_STANCES.length) + 1;
+  const estCostPerDecideUsd =
+    process.env.LOOP_AUTHORING_EST_COST_PER_DECIDE_USD !== undefined
+      ? Number(process.env.LOOP_AUTHORING_EST_COST_PER_DECIDE_USD)
+      : EST_COST_PER_DECIDE_USD;
+  const budget = classifyDeclaredBudget({
+    rows: declaredRows,
+    arms: declaredArms,
+    estCostPerDecideUsd,
+    capUsd: declaredCapUsd,
+  });
+  console.log(`DECLARED BUDGET: ${budget.proceed ? 'WITHIN CAP' : 'REFUSED'}`);
+  console.log(`  ${budget.reason}\n`);
+  if (!budget.proceed) {
+    fail(budget.reason);
+    return;
+  }
+
   const pool = new Pool({ connectionString: databaseUrl });
   try {
     // ── stage 1 ────────────────────────────────────────────────────────────────────────────────
@@ -626,6 +686,37 @@ async function main() {
         ` — gauge ${gaugeVersion === null ? 'unavailable' : `v${gaugeVersion}`}, DB mirror v${dbVersion}`,
     );
     if (incumbent.divergence !== null) console.warn(`  DIVERGENCE: ${incumbent.divergence}`);
+
+    // EVENT-DRIVEN MINT TRIGGER (2026-08-10 owner decision) — replaces calendar-driven (once-per-UTC-
+    // day) minting. A mint attempt is permitted only when a FRESH read of the INCUMBENT's own live
+    // forward return is adverse-POWERED at h=4 or h=8 on the flat_only population; see
+    // classifyMintTrigger's own header and research/studies/candidate-routing-override-2026-07-31.md
+    // § 8. Placed HERE — right after the incumbent is known and before any further stage-1 reads — so a
+    // day with no fresh adverse evidence spends nothing beyond this one probe, rather than building the
+    // whole evidence digest and drafting prompt first. `runForwardReturn` reuses the SAME
+    // computeForwardReturn `pnpm loop:forward-return` itself calls (loop-forward-return.mjs); this
+    // shell never re-derives the statistic. `asOfMs` is a provenance stamp, not a day-boundary
+    // computation (see classifyMintTrigger's own header for why Date.now() is fine here where
+    // classifySameDayGate's nowMsFromDb must not be).
+    console.log('\nEVENT-DRIVEN MINT TRIGGER — a fresh read of the incumbent’s own forward return');
+    const forwardReturn = runForwardReturn({ cwd: REPO_ROOT });
+    const mintTrigger = classifyMintTrigger({
+      panels: forwardReturn.panels,
+      incumbentVersion: incumbent.version,
+      asOfMs: Date.now(),
+      dryRun,
+    });
+    console.log(
+      `  MINT TRIGGER: ${mintTrigger.exempt ? 'EXEMPT' : mintTrigger.proceed ? 'FIRED' : 'NOT FIRED'}`,
+    );
+    console.log(`  ${mintTrigger.reason}`);
+    if (!mintTrigger.proceed) {
+      // Not an error exit: under event-driven minting, "the incumbent has not been measured adverse"
+      // is the ORDINARY day, not a failure — same posture as SLOT_SPENT below, a refusal on absent
+      // evidence is this gate working.
+      console.log(`\n${LOG}: no mint trigger today. Artifacts in ${outDir}`);
+      return;
+    }
 
     const decisions = await readDecisionSummary(pool, rationaleModule.isModelAuthoredDecision);
     const versionStats = [];
@@ -768,25 +859,12 @@ async function main() {
       console.log(`  DRY RUN: ${variants.length} deterministic stand-in variants, no paid call`);
     } else {
       // The key's presence was checked BEFORE the day gate — a run that could never draft must not
-      // consume the day's slot on its way to failing.
+      // consume the day's slot on its way to failing. Steered by prompt instruction alone, not
+      // temperature (the model rejects that parameter — see draftVariant). DRAFT_STANCES (module
+      // scope, top of file) is the single source for the declared drafting shape — see its own header
+      // for why it is one stance now, not two.
       const drafted = [];
-      // Two stances, not two temperatures (the model rejects the parameter — see draftVariant):
-      // one conservative pass and one exploratory pass, both steered by prompt instruction alone.
-      const stances = [
-        {
-          label: 'draft_conservative',
-          instruction:
-            'Draft a CONSERVATIVE revision: change as little as possible from the incumbent, ' +
-            'only what the evidence directly supports.',
-        },
-        {
-          label: 'draft_exploratory',
-          instruction:
-            'Draft an EXPLORATORY revision: where the evidence permits, consider a materially ' +
-            'different approach rather than a minimal edit.',
-        },
-      ];
-      for (const { label: stanceLabel, instruction } of stances) {
+      for (const { label: stanceLabel, instruction } of DRAFT_STANCES) {
         const v = await draftVariant(apiKey, model, prompt, instruction, stanceLabel);
         if (v !== null) drafted.push(v);
       }

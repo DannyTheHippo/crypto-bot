@@ -68,6 +68,25 @@
 //    shares. `--dry-run` is the ONLY exemption and it is not a hole: it spends nothing and writes
 //    nothing, so it can neither burn the slot nor need bounding. `--draft-file` is deliberately NOT
 //    exempt — it skips the drafting call and still spends the full stage-4 replay budget.
+//
+//  * classifyDeclaredBudget fails CLOSED (2026-08-10). It is a SPEND gate, not a measurement gate: an
+//    authoring run that starts over its own declared budget is guaranteed to abort mid-replay and,
+//    worse, DESTROY the evidence it already paid for rather than merely under-cover the corpus — Pass
+//    65 (`5deaac5`): `renderTwoBars` threw on an aborted run's null cells, so stage 6 never ran and a
+//    $5.0015 / 348-call run logged ZERO rows. There is no fails-OPEN reading of a spend gate: a cap
+//    that can be talked past on a guess is not a cap.
+//
+//  * classifyMintTrigger fails CLOSED, and has NO override flag — the same posture as
+//    classifySameDayGate, for the same reason: it is the one boundary standing in front of an
+//    UNATTENDED write to an APPEND-ONLY registry. The 2026-08-10 owner decision
+//    (research/studies/candidate-routing-override-2026-07-31.md § 8) replaces calendar-driven
+//    (once-per-UTC-day) minting with EVIDENCE-driven minting: a mint attempt is permitted only when a
+//    FRESH read of the incumbent's own live forward return is adverse-POWERED. Absent evidence — a
+//    transport failure, an unmeasured cell, an underpowered cell, or a cell that is powered but not
+//    adverse — refuses: the absence of proof of harm is not permission to act, and minting on a hunch
+//    is exactly the selection effect the rest of this file exists to keep out of the registry.
+//    `--dry-run` is the ONLY exemption, for the same reason classifySameDayGate exempts it: it spends
+//    nothing and writes nothing.
 
 // ── the retired objective, and how it is kept out of the drafting prompt ─────────────────────────
 
@@ -1271,6 +1290,227 @@ export function buildPerHorizonNetTable({
       'be quoted as a level (research/loop/STATUS.md).',
   );
   return lines.join('\n');
+}
+
+// ── the declared-budget refusal ──────────────────────────────────────────────────────────────────
+
+/**
+ * Measured cost per SCORED decide — $5.0015 ÷ 348 calls, from the Pass-65 budget-abort run
+ * (research/loop/LOG.md, authoring-2026-08-06: `costPerDecideUsd = 0.01437212643678161`), rounded to
+ * six significant figures for a stable literal. Overridable by env in the IO SHELL ONLY — this module
+ * never reads process.env (module header: "no fs, no pg, no clock, no network, no process").
+ */
+export const EST_COST_PER_DECIDE_USD = 0.014372;
+
+/**
+ * Refuses a declared authoring run whose OWN ARITHMETIC guarantees a budget abort before the replay
+ * ever starts. Fails CLOSED — see the header. This is a SPEND gate, never a measurement gate: it runs
+ * BEFORE the first paid call, on numbers already known (declared rows, declared arms, the measured
+ * per-decide cost), and it never re-checks itself once spending has started — `classifyMintGate`'s own
+ * `run.aborted` blocker is what catches an abort that happens anyway.
+ *
+ * `declaredUsd = rows * arms * estCostPerDecideUsd` is a LOWER bound on what stage 4 spends if it runs
+ * to completion, not a forecast with slack already built in: it is every row scored against every arm
+ * exactly once, which is precisely what the replay engine spends (loop-authoring-score.spec.ts). The
+ * 27% schema-discard rate measured on the SAME Pass-65 run (108/150 rows, 73.1% schema-valid) is
+ * ALREADY INSIDE the measured $0.01437212643678161/decide — that figure is dollars spent divided by
+ * calls MADE, discards included, not dollars per USABLE decide — so this arithmetic must not subtract
+ * a second discard term on top of it. The margin between the declared cost and the cap (≈$0.69 at the
+ * 2026-08-10 default shape: $5.00 − $4.3116) is what is left to absorb ordinary run-to-run COST
+ * VARIANCE (retries, longer completions), not schema waste counted twice.
+ *
+ * 2026-08-10: the default shape was cut from 3 arms (2 drafted + incumbent, $6.4674 declared — over
+ * the $5.00 cap on EVERY run, research/loop/LOG.md Pass 65) to 2 arms (1 drafted + incumbent, $4.3116
+ * declared). ARMS was cut, not ROWS: ROWS stays pinned at MIN_EDGE_ROWS (150,
+ * test/eval/agentic/playbook-space-replay.ts) because `judgeHalves`'s chronological-halves clause
+ * needs `DEPLOYMENT_HALF_MIN_ENTRIES`=12 entries in EACH half to read determined; at the ~90 rows that
+ * would buy 3 arms the same margin, that floor starves and every mint refuses on the halves clause
+ * before it ever reaches the deployment bar — trading one guaranteed refusal for another.
+ * @returns {{proceed:boolean,declaredUsd:number,reason:string}}
+ */
+export function classifyDeclaredBudget({ rows, arms, estCostPerDecideUsd, capUsd } = {}) {
+  const r = Number(rows);
+  const a = Number(arms);
+  const cost = Number(estCostPerDecideUsd);
+  const cap = Number(capUsd);
+  const declaredUsd = r * a * cost;
+  // NaN on any malformed input makes `declaredUsd <= cap` false in JS, so a bad input refuses exactly
+  // like an over-cap one — the fail-CLOSED direction holds without a separate branch for it.
+  const proceed = Number.isFinite(declaredUsd) && declaredUsd <= cap;
+  const arithmetic =
+    `${r} rows × ${a} arms × $${cost}/decide = $${declaredUsd.toFixed(4)}, against a ` +
+    `$${cap.toFixed(2)} cap`;
+  return {
+    proceed,
+    declaredUsd,
+    reason: proceed
+      ? `declared work is ${arithmetic} — within budget.`
+      : `refusing to draft: declared work is ${arithmetic} — over budget BEFORE the first paid call. ` +
+        'A run that starts over its own declared cost is guaranteed to abort mid-replay and destroy ' +
+        'the evidence it already paid for, rather than merely under-cover the corpus (Pass 65, ' +
+        `\`5deaac5\`) — see this function's own header for the margin this cap leaves for cost variance.`,
+  };
+}
+
+// ── the event-driven mint trigger ────────────────────────────────────────────────────────────────
+
+/** The population the trigger reads — the only one comparable to a FLAT-only replay corpus (see
+ * loop-forward-return-core.mjs's own FLAT_MARKER note: a live `open_long`/`open_short` also fires as a
+ * same-side scale-in, which `all` includes and `flat_only` excludes). */
+export const MINT_TRIGGER_POPULATION = 'flat_only';
+
+/**
+ * The horizons the trigger reads — a PAIR, either sufficient, never a conjunction. h=1 is excluded
+ * because it is too short to separate a real signal from the anchor-lag term
+ * (loop-forward-return-core.mjs's own ANCHOR_LOOKAHEAD_BPS header); h=24 is excluded because it is the
+ * `judgeHalves` primary horizon, where the deployment bar's own chronological-halves clause already
+ * governs rather than this trigger.
+ */
+export const MINT_TRIGGER_HORIZONS = Object.freeze([4, 8]);
+
+/** A cell's bps figure, or an explicit "n/a" for a null/non-finite one — never a fabricated number,
+ * same posture as `formatBpsOrUnscored` above. Reuses `bps`'s sign convention rather than growing a
+ * second one. */
+function fmtCellBps(value) {
+  return value === null || value === undefined || !Number.isFinite(Number(value))
+    ? 'n/a'
+    : bps(value);
+}
+
+/**
+ * Evaluates the trigger against an already-computed forward-return `panels` array. Split out of
+ * `classifyMintTrigger` so the as-of stamping below wraps every return path exactly once.
+ */
+function evaluateMintTrigger({ panels, incumbentVersion }) {
+  if (incumbentVersion === undefined || incumbentVersion === null) {
+    return {
+      fired: false,
+      horizon: null,
+      cell: null,
+      reason:
+        'no incumbent version was resolved — there is nothing to evaluate the trigger against.',
+    };
+  }
+  if (!Array.isArray(panels) || panels.length === 0) {
+    return {
+      fired: false,
+      horizon: null,
+      cell: null,
+      reason:
+        'the forward-return computation returned no panels (a probe failure, an unreadable reference, ' +
+        'or zero scoreable entries) — refusing without measured evidence.',
+    };
+  }
+  // Coerced to Number on both sides: a caller passing a string version (off a CLI arg, say) against a
+  // numeric `playbookVersion` would otherwise never match, and the trigger would refuse FOREVER while
+  // every other stage still prints OK — the exact invisible-failure shape
+  // classifyRegistrySplitBrain's own header warns against.
+  const version = Number(incumbentVersion);
+  const panel = panels.find(
+    (p) => Number(p?.playbookVersion) === version && p?.population === MINT_TRIGGER_POPULATION,
+  );
+  if (panel === undefined) {
+    return {
+      fired: false,
+      horizon: null,
+      cell: null,
+      reason:
+        `no ${MINT_TRIGGER_POPULATION} panel exists for incumbent v${version} in this computation — ` +
+        'refusing without measured evidence.',
+    };
+  }
+  const attempts = [];
+  for (const h of MINT_TRIGGER_HORIZONS) {
+    const entry = (panel.horizons ?? []).find((he) => he?.h === h);
+    const cell = entry?.cell ?? null;
+    if (cell && cell.powered === true && typeof cell.ciHi === 'number' && cell.ciHi < 0) {
+      return {
+        fired: true,
+        horizon: h,
+        cell,
+        reason:
+          `incumbent v${version} ${MINT_TRIGGER_POPULATION} reads ADVERSE-POWERED at h=${h}: mean=` +
+          `${fmtCellBps(cell.mean)} bps n=${cell.n} clusters=${cell.clusters} 95% CI ` +
+          `[${fmtCellBps(cell.ciLo)}, ${fmtCellBps(cell.ciHi)}] bps (CI upper bound < 0) — permitting ` +
+          'a mint attempt.',
+      };
+    }
+    attempts.push(
+      cell
+        ? `h=${h} ${cell.powered ? 'POWERED' : 'UNDERPOWERED'} mean=${fmtCellBps(cell.mean)} ` +
+            `n=${cell.n} clusters=${cell.clusters} CI=[${fmtCellBps(cell.ciLo)}, ${fmtCellBps(cell.ciHi)}]`
+        : `h=${h} ${entry?.status ?? 'not measured'}`,
+    );
+  }
+  return {
+    fired: false,
+    horizon: null,
+    cell: null,
+    reason:
+      `incumbent v${version} ${MINT_TRIGGER_POPULATION} is not adverse-POWERED at h=` +
+      `${MINT_TRIGGER_HORIZONS.join(' or ')}: ${attempts.join('; ')}.`,
+  };
+}
+
+/**
+ * The event-driven mint trigger. Fails CLOSED, and has NO override flag — see the header.
+ *
+ * Permits a mint attempt ONLY when a FRESH forward-return computation shows the INCUMBENT playbook
+ * reading adverse-POWERED (`cell.powered === true && cell.ciHi < 0`) on the `flat_only` population at
+ * h=4 or h=8. This is what "the incumbent is measured harmful" means operationally — see
+ * research/studies/candidate-routing-override-2026-07-31.md § 8 for the 2026-08-10 owner decision this
+ * implements, which replaces calendar-driven (once-per-UTC-day) minting.
+ *
+ * Deliberately takes `panels` — the OUTPUT of `computeForwardReturn`
+ * (scripts/loop-forward-return-core.mjs), not raw entry/grid rows — for two reasons. First, that keeps
+ * THIS function pure without re-importing the bootstrap's own PRNG contract, while still honouring "do
+ * not reimplement the statistic": the shell calls the REAL `computeForwardReturn` (via
+ * loop-forward-return.mjs's own `runForwardReturn`, the same call path `pnpm loop:forward-return`
+ * itself uses) and this function only reads its answer. Second, and decisively for testability: a
+ * cell's bootstrap CI is a function of a deterministic PRNG walk over base-asset clusters
+ * (`BOOTSTRAP_SEED`) that cannot be hand-derived from raw rows — this file's own spec pins the frozen
+ * 2026-08-10 fixture in terms of the CELL (mean/n/clusters/CI), which is exactly the shape `panels`
+ * carries and raw rows do not.
+ *
+ * `asOfMs` is a PROVENANCE stamp, not a day-boundary computation — unlike `classifySameDayGate`'s
+ * `nowMsFromDb`, nothing here gates a calendar arithmetic that a sleeping host would skew, so the shell
+ * may take it from `Date.now()` at the instant it ran the probe rather than a DB round trip.
+ *
+ * `dryRun` is the ONLY exemption, mirroring `classifySameDayGate`'s own EXEMPT shape: the evaluation
+ * still runs and is still reported (dry-run "must still print what it would do"), but `proceed` is
+ * forced true because a dry run spends nothing and writes nothing, so it can neither act on a hunch nor
+ * need bounding by this trigger.
+ * @returns {{proceed:boolean,exempt:boolean,fired:boolean,horizon:number|null,version:number|null,
+ *            cell:object|null,reason:string}}
+ */
+export function classifyMintTrigger({ panels, incumbentVersion, asOfMs, dryRun = false } = {}) {
+  const nowMs = finiteMs(asOfMs);
+  const asOf = nowMs === null ? 'unknown instant' : new Date(nowMs).toISOString();
+  const evaluation = evaluateMintTrigger({ panels, incumbentVersion });
+  const stamped = `[as-of ${asOf}] ${evaluation.reason}`;
+  if (dryRun === true) {
+    return {
+      proceed: true,
+      exempt: true,
+      fired: evaluation.fired,
+      horizon: evaluation.horizon,
+      version: incumbentVersion ?? null,
+      cell: evaluation.cell,
+      reason:
+        '--dry-run is EXEMPT from the mint-trigger gate: it makes no paid call and writes no row, so ' +
+        `it can neither act on a hunch nor need bounding by it. ${stamped} A REAL run would ` +
+        `${evaluation.fired ? 'PROCEED' : 'REFUSE'} here.`,
+    };
+  }
+  return {
+    proceed: evaluation.fired,
+    exempt: false,
+    fired: evaluation.fired,
+    horizon: evaluation.horizon,
+    version: incumbentVersion ?? null,
+    cell: evaluation.cell,
+    reason: stamped,
+  };
 }
 
 // ── evidence digest handed to the drafting model ─────────────────────────────────────────────────

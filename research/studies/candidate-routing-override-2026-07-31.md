@@ -173,3 +173,63 @@ Return to withholding candidates (mint pause, or `AGENTIC_PLAYBOOK_AB_PCT=0`) on
 4. **Owner instruction.** This override is the owner's; so is its reversal.
 
 Absent one of those, daily minting stands, and the 40% stands with it.
+
+## 8. Owner decision, 2026-08-10 — event-driven minting supersedes the DAILY CADENCE
+
+**This supersedes ONE clause of § 2 (the CADENCE — "mint daily, starting now") and closes the
+`research/loop/STATUS.md:117` OWNER DECISION OWED line**, verbatim:
+
+> **OWNER DECISION OWED: daily minting and powered evidence are mutually exclusive**
+> (`candidate-routing-override-2026-07-31.md`).
+
+That line was owed because the mechanism it names is real and was never adjudicated: minting once per
+UTC day divides the live entry population across playbook versions on a fixed calendar, independent of
+whether any version has accrued enough evidence to be judged. Measured (`STATUS.md:117`): **only v1 and
+v2 of eight versions ever reached `n≥12 AND clusters≥5`, both the oldest** — every version minted after
+them was diluted below the powered floor before it could be read, by the SAME daily cadence this record
+put in place. "NOTHING HERE CAN CURRENTLY BE SHOWN TO LEARN — the mechanism is DIVISION, not
+suppression" (`STATUS.md:117`) is the diagnosis; this section is the resolution. Precise denominator —
+**eight** live versions, not the `agent_playbook_versions` mint-ledger's larger row count (that table
+never deletes a row, so it is not the same count): `research/studies/learning-capacity-2026-07-31.md`
+§ 2 measures 78 entries shared across those eight versions, 9.75/version against the `MIN_ENTRIES=12`
+bar, with v1 (28 entries, 13 clusters) and v2 (18 entries, 11 clusters) the only two ever POWERED — the
+two that "had the book largely to themselves" before the next mint arrived.
+
+**The resolution: minting is no longer calendar-driven. It is EVENT-driven.** A mint attempt is now
+permitted ONLY when a FRESH read of the INCUMBENT playbook's own live forward return is
+adverse-POWERED — `cell.powered === true && cell.ciHi < 0` — on the `flat_only` population at h=4 or
+h=8 (`classifyMintTrigger`, `scripts/loop-authoring-core.mjs`; called from `scripts/loop-authoring.mjs`
+before `claimTodaysSlot()`, with no override flag and `--dry-run` as the sole exemption). This is what
+"the incumbent is measured harmful" means operationally, and it is a STRICTLY HIGHER bar than the
+once-per-day ceiling it replaces: a version now accrues evidence for as long as it takes to reach a
+verdict — powered or not, adverse or not — rather than being diluted every 24 hours by a fresh
+candidate regardless of whether the standing one has been read yet. This is precisely what
+**dissolves** the mutual exclusivity `STATUS.md:117` recorded: daily minting and powered evidence were
+exclusive only because the CADENCE was the fixed point; once the cadence is removed and minting instead
+waits on the incumbent's own adverse-POWERED reading, the two are no longer in tension by construction.
+
+A second, independent defect in the same daily-cadence mechanism is fixed alongside this one and is
+NOT a cadence change in its own right: the declared run shape (3 arms × 150 rows, $6.4674 against the
+$5.00 cap — `research/loop/LOG.md`, Pass 65) guaranteed a budget abort on every attempted run, so even
+absent the dilution problem the daily cadence was separately unable to complete a run most days.
+`classifyDeclaredBudget` (`scripts/loop-authoring-core.mjs`) now refuses a declared-over-budget shape
+BEFORE `claimTodaysSlot()`, and the default shape is cut to 2 arms × 150 rows ($4.3116 declared). This
+does not change WHO gets to mint or WHEN in the sense § 8's cadence change does — it only stops a run
+that would have been attempted from being arithmetically doomed on arrival.
+
+**Authority.** Per § 7 item 4 above — "This override is the owner's; so is its reversal" — the owner
+needs no further grant to amend one of the override's own clauses. This is that amendment, made
+2026-08-10, to the CADENCE clause of § 2 only.
+
+**What is UNCHANGED by this section, stated so it cannot be read as reviving § 1's superseded
+decision:**
+
+- `AGENTIC_PLAYBOOK_AB_PCT` **stays 40, untouched.** § 4's finding still holds — the override executes
+  by doing nothing to that knob — and this section does not edit `.env.app` or propose editing it.
+  Nothing here re-opens § 1's zeroing decision, which remains superseded.
+- § 6's assignment mechanism (deterministic 100-minute wall-clock buckets, NOT randomized) is unchanged
+  and its caveats bind exactly as before — this section changes WHEN a candidate is minted, never HOW a
+  decide is routed to one once it exists.
+- § 7 items 1–3 remain the reversal triggers for the ROUTING OVERRIDE itself (whether candidates route
+  at all). They are a different question from the cadence this section replaces, and none of them is
+  triggered or addressed by it.

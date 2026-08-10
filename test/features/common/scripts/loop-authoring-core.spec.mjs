@@ -6,14 +6,19 @@ import {
   COST_FLOOR_BPS,
   DEFAULT_MINT_FLOOR_MIN_ENTRIES,
   DEFAULT_MINT_FLOOR_MIN_ROWS,
+  EST_COST_PER_DECIDE_USD,
   MEASURED_HORIZON_CELLS,
+  MINT_TRIGGER_HORIZONS,
+  MINT_TRIGGER_POPULATION,
   RETIRED_OBJECTIVE_MARKERS,
   assertNoRetiredObjective,
   buildEvidenceDigest,
   buildPerHorizonNetTable,
   buildScorecard,
+  classifyDeclaredBudget,
   classifyEntryRateFloor,
   classifyMintGate,
+  classifyMintTrigger,
   classifyRegistrySplitBrain,
   classifySameDayGate,
   corpusAttemptKey,
@@ -1646,4 +1651,262 @@ describe('once-per-UTC-day gate', () => {
     expect(longAgo.nextSlotIso).toBe('2001-03-01T00:00:00.000Z');
     expect(longAgo.reason).not.toContain(new Date().toISOString().slice(0, 10));
   });
+});
+
+describe('loop-authoring declared-budget gate (2026-08-10 — arms cut before rows)', () => {
+  it('proceeds at the default shape — 2 arms × 150 rows, $4.3116 against the $5.00 cap', () => {
+    const g = classifyDeclaredBudget({
+      rows: 150,
+      arms: 2,
+      estCostPerDecideUsd: EST_COST_PER_DECIDE_USD,
+      capUsd: '5',
+    });
+    expect(g.proceed).toBe(true);
+    expect(g.declaredUsd).toBeCloseTo(4.3116, 4);
+    expect(g.reason).toContain('within budget');
+  });
+
+  it('refuses the OLD 3-arm default — quotes declared, cap, rows, arms and per-decide cost', () => {
+    // 150 × 3 × 0.014372 = $6.4674, exactly the $6.47 that guaranteed an abort on every run of the
+    // shape research/loop/LOG.md's Pass-65 entry records.
+    const g = classifyDeclaredBudget({
+      rows: 150,
+      arms: 3,
+      estCostPerDecideUsd: EST_COST_PER_DECIDE_USD,
+      capUsd: '5',
+    });
+    expect(g.proceed).toBe(false);
+    expect(g.declaredUsd).toBeCloseTo(6.4674, 4);
+    expect(g.reason).toContain('refusing to draft');
+    expect(g.reason).toContain('150 rows');
+    expect(g.reason).toContain('3 arms');
+    expect(g.reason).toContain(String(EST_COST_PER_DECIDE_USD));
+    expect(g.reason).toContain('$5.00 cap');
+  });
+
+  it('refuses exactly AT the cap boundary’s far side and proceeds exactly ON it', () => {
+    expect(
+      classifyDeclaredBudget({ rows: 100, arms: 1, estCostPerDecideUsd: 0.05, capUsd: '5' })
+        .proceed,
+    ).toBe(true); // 100 * 1 * 0.05 = 5.00, <=, proceeds
+    expect(
+      classifyDeclaredBudget({ rows: 101, arms: 1, estCostPerDecideUsd: 0.05, capUsd: '5' })
+        .proceed,
+    ).toBe(false); // 5.05 > 5.00
+  });
+
+  it('has no fails-OPEN reading — a malformed input refuses exactly like an over-cap one', () => {
+    expect(
+      classifyDeclaredBudget({
+        rows: Number.NaN,
+        arms: 2,
+        estCostPerDecideUsd: EST_COST_PER_DECIDE_USD,
+        capUsd: '5',
+      }).proceed,
+    ).toBe(false);
+  });
+
+  it.each([[undefined], [{}], [{ rows: 'not-a-number' }]])(
+    'never throws on %j — a spend gate that throws is a spend gate that skipped its own decision',
+    (input) => {
+      expect(() => classifyDeclaredBudget(input)).not.toThrow();
+      expect(classifyDeclaredBudget(input).proceed).toBe(false);
+    },
+  );
+});
+
+describe('loop-authoring event-driven mint trigger (2026-08-10 owner decision, supersedes daily minting)', () => {
+  const AS_OF_MS = Date.UTC(2026, 7, 10, 8, 53, 0);
+  const AS_OF_ISO = '2026-08-10T08:53:00.000Z';
+
+  function horizonEntry(h, cellOverrides) {
+    return {
+      h,
+      status: 'measured',
+      cell:
+        cellOverrides === null
+          ? null
+          : { n: 40, clusters: 8, mean: -5, ciLo: -10, ciHi: -1, powered: true, ...cellOverrides },
+    };
+  }
+
+  function panelFixture({ playbookVersion = 10, population = MINT_TRIGGER_POPULATION, horizons }) {
+    return { playbookVersion, population, entries: 1, horizons };
+  }
+
+  // The frozen ground truth this trigger must NOT fire on — measured 2026-08-10T08:53Z, v10
+  // flat_only: h=4 POWERED mean −9.3 bps n=55 k=10 CI [−32.1, +15.7]; h=8 POWERED mean −20.8 bps n=54
+  // k=10 CI [−45.1, +3.9]. Both intervals include zero.
+  const V10_FLAT_ONLY_2026_08_10 = panelFixture({
+    playbookVersion: 10,
+    horizons: [
+      // h=1/h=24 are OUT OF SCOPE for this trigger and carry an adverse-looking mean on purpose — the
+      // trigger must never read them.
+      horizonEntry(1, { n: 60, clusters: 11, mean: -30, ciLo: -50, ciHi: -10, powered: true }),
+      horizonEntry(4, { n: 55, clusters: 10, mean: -9.3, ciLo: -32.1, ciHi: 15.7, powered: true }),
+      horizonEntry(8, { n: 54, clusters: 10, mean: -20.8, ciLo: -45.1, ciHi: 3.9, powered: true }),
+      horizonEntry(24, { n: 50, clusters: 9, mean: -40, ciLo: -80, ciHi: -5, powered: true }),
+    ],
+  });
+
+  it('does NOT fire on the frozen 2026-08-10 v10 flat_only data — minting nothing here is the trigger working, not a bug', () => {
+    const t = classifyMintTrigger({
+      panels: [V10_FLAT_ONLY_2026_08_10],
+      incumbentVersion: 10,
+      asOfMs: AS_OF_MS,
+    });
+    expect(t.proceed).toBe(false);
+    expect(t.fired).toBe(false);
+    expect(t.reason).toContain(AS_OF_ISO);
+    expect(t.reason).toContain('v10');
+    // h=4
+    expect(t.reason).toContain('n=55');
+    expect(t.reason).toContain('clusters=10');
+    expect(t.reason).toContain('-9.3');
+    expect(t.reason).toContain('-32.1');
+    expect(t.reason).toContain('15.7');
+    // h=8
+    expect(t.reason).toContain('n=54');
+    expect(t.reason).toContain('-20.8');
+    expect(t.reason).toContain('-45.1');
+    expect(t.reason).toContain('3.9');
+    // h=1/h=24 are declared out of scope and must never be quoted as evidence for this trigger.
+    expect(t.reason).not.toContain('n=60');
+    expect(t.reason).not.toContain('n=50');
+  });
+
+  it('fires on h=4 alone when it is adverse-POWERED (ciHi < 0)', () => {
+    const p = panelFixture({
+      horizons: [
+        horizonEntry(4, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t).toMatchObject({ proceed: true, fired: true, horizon: 4 });
+    expect(t.reason).toContain('ADVERSE-POWERED');
+    expect(t.reason).toContain('n=20');
+    expect(t.reason).toContain('clusters=6');
+  });
+
+  it('fires on h=8 alone when h=4 is not adverse', () => {
+    const p = panelFixture({
+      horizons: [
+        horizonEntry(4, { n: 20, clusters: 6, mean: 2, ciLo: -3, ciHi: 8, powered: true }),
+        horizonEntry(8, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t).toMatchObject({ proceed: true, fired: true, horizon: 8 });
+  });
+
+  it('ignores an adverse-POWERED cell on the `all` population — only `flat_only` is comparable', () => {
+    const p = panelFixture({
+      population: 'all',
+      horizons: [
+        horizonEntry(4, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t.proceed).toBe(false);
+    expect(t.reason).toContain(`no ${MINT_TRIGGER_POPULATION} panel`);
+  });
+
+  it('ignores adverse-POWERED cells at h=1 and h=24 — out of this trigger’s declared scope', () => {
+    const p = panelFixture({
+      horizons: [
+        horizonEntry(1, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+        horizonEntry(24, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t.proceed).toBe(false);
+  });
+
+  it('does not fire on an UNDERPOWERED adverse cell — `powered` must be true, not merely ciHi < 0', () => {
+    const p = panelFixture({
+      horizons: [
+        horizonEntry(4, { n: 3, clusters: 2, mean: -50, ciLo: null, ciHi: null, powered: false }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t.proceed).toBe(false);
+    expect(t.reason).toContain('UNDERPOWERED');
+  });
+
+  it('refuses without measured evidence on empty panels — a probe failure', () => {
+    const t = classifyMintTrigger({ panels: [], incumbentVersion: 10, asOfMs: AS_OF_MS });
+    expect(t.proceed).toBe(false);
+    expect(t.reason).toContain('no panels');
+  });
+
+  it('refuses when no incumbent version was resolved', () => {
+    const t = classifyMintTrigger({
+      panels: [V10_FLAT_ONLY_2026_08_10],
+      incumbentVersion: undefined,
+      asOfMs: AS_OF_MS,
+    });
+    expect(t.proceed).toBe(false);
+    expect(t.reason).toContain('no incumbent version');
+  });
+
+  it('coerces the version comparison — a string incumbentVersion still matches a numeric playbookVersion', () => {
+    const p = panelFixture({
+      playbookVersion: 10,
+      horizons: [
+        horizonEntry(4, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const t = classifyMintTrigger({ panels: [p], incumbentVersion: '10', asOfMs: AS_OF_MS });
+    expect(t.proceed).toBe(true);
+  });
+
+  it('has NO override flag — extra fields cannot turn a refusal into a proceed', () => {
+    const t = classifyMintTrigger({
+      panels: [V10_FLAT_ONLY_2026_08_10],
+      incumbentVersion: 10,
+      asOfMs: AS_OF_MS,
+      force: true,
+      override: 'yes',
+    });
+    expect(t.proceed).toBe(false);
+  });
+
+  it('exempts --dry-run and still reports what a REAL run would do', () => {
+    const notFired = classifyMintTrigger({
+      panels: [V10_FLAT_ONLY_2026_08_10],
+      incumbentVersion: 10,
+      asOfMs: AS_OF_MS,
+      dryRun: true,
+    });
+    expect(notFired).toMatchObject({ proceed: true, exempt: true, fired: false });
+    expect(notFired.reason).toContain('EXEMPT');
+    expect(notFired.reason).toContain('A REAL run would REFUSE here');
+
+    const p = panelFixture({
+      horizons: [
+        horizonEntry(4, { n: 20, clusters: 6, mean: -15, ciLo: -30, ciHi: -1, powered: true }),
+      ],
+    });
+    const fired = classifyMintTrigger({
+      panels: [p],
+      incumbentVersion: 10,
+      asOfMs: AS_OF_MS,
+      dryRun: true,
+    });
+    expect(fired).toMatchObject({ proceed: true, exempt: true, fired: true });
+    expect(fired.reason).toContain('A REAL run would PROCEED here');
+  });
+
+  it('quotes the as-of instant, falling back to an explicit label when the clock is unreadable', () => {
+    const t = classifyMintTrigger({ panels: [], incumbentVersion: 10, asOfMs: Number.NaN });
+    expect(t.reason).toContain('unknown instant');
+  });
+
+  it.each([[undefined], [{}], [{ panels: 'not-an-array', incumbentVersion: 10 }]])(
+    'never throws on %j — a gate that throws is a gate that skipped its own decision',
+    (input) => {
+      expect(() => classifyMintTrigger(input)).not.toThrow();
+      expect(classifyMintTrigger(input).proceed).toBe(false);
+    },
+  );
 });

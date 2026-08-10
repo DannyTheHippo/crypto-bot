@@ -81,7 +81,7 @@ import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import { price, qty } from '../../../domain/common/types/money';
 import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
 import { feeScheduleForVenue } from '../../../domain/trading/fees';
-import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
 import { symbolId, type SymbolId, type VenueId } from '../../../domain/common/types/ids';
 
 // v3 spec §1.3: AgenticBridgeModule replaces AgenticCompositionBridgeModule (pure code motion out of
@@ -407,10 +407,10 @@ export function symbolConstraintsFor(symbol: string): SymbolConstraints | undefi
 // sizing) — set on the profile only when > 0 so the prompt sentence and the sizer's active path can
 // never disagree.
 //
-// maker/takerBps are read from domain/trading/fees.ts keyed by THIS symbol's own venue, rather than
-// the flat '10'/'10' pair that stood here for every symbol regardless of venue. The table currently
-// carries the spot schedule for both venues, so this render is byte-identical to the hardcoded pair
-// it replaces — see that table's own comment for why the measured perp schedule is a separate enable.
+// E1 (fee-truth enable): spotFees/perpFees are read from domain/trading/fees.ts's per-venue table
+// directly — BOTH venues' schedules, not just the symbol's own — because AgentTradingProfile now
+// carries both (a v3 boot always spans spot AND perp; see that type's own comment). The `symbol`
+// parameter is still needed for symbolConstraintsFor below, just no longer for venue resolution here.
 function agentTradingProfileFor(
   symbol: string,
   limits: PartialRiskLimits,
@@ -419,10 +419,11 @@ function agentTradingProfileFor(
   protectStopLossPct: string,
   protectTrailingPct: string,
 ): AgentTradingProfile {
-  const fees = feeScheduleForVenue(venueForSymbol(symbolId(symbol)));
+  const spotFees = feeScheduleForVenue(SPOT_VENUE_ID);
+  const perpFees = feeScheduleForVenue(PERP_VENUE_ID);
   return {
-    makerBps: fees.makerBps,
-    takerBps: fees.takerBps,
+    spotFees: { makerBps: spotFees.makerBps, takerBps: spotFees.takerBps },
+    perpFees: { makerBps: perpFees.makerBps, takerBps: perpFees.takerBps },
     baseNotional,
     maxOrderNotional: limits.maxOrderNotional ?? '100000',
     constraints: symbolConstraintsFor(symbol) ?? {

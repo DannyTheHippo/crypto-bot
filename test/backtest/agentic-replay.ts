@@ -159,7 +159,12 @@ import {
   type SymbolId,
 } from '../../src/domain/common/types/ids';
 import { splitSymbol } from '../../src/domain/venue/types/symbol';
-import { PERP_VENUE_ID, venueForSymbol } from '../../src/domain/venue/types/venue-map';
+import {
+  PERP_VENUE_ID,
+  SPOT_VENUE_ID,
+  venueForSymbol,
+} from '../../src/domain/venue/types/venue-map';
+import { feeScheduleForVenue } from '../../src/domain/trading/fees';
 import type { CandleEvent, CandleInterval } from '../../src/domain/venue/types/market-events';
 import type {
   AgentDecisionInput,
@@ -1012,9 +1017,20 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
     lotStep: qty('0.00001'),
     minNotional: price('5'),
   };
+  // opts.makerBps/takerBps is a fee-sensitivity knob scoped to THIS run's own traded symbol/venue
+  // (feeFraction above, the harness's own edge-floor gate) — the OTHER venue is never traded in this
+  // replay, so its schedule renders from the real production table (domain/trading/fees.ts) rather
+  // than a second, harness-specific override this replay has no opts field for.
+  const overridableFees = { makerBps: makerBps.toFixed(), takerBps: takerBps.toFixed() };
+  const productionSpotFees = feeScheduleForVenue(SPOT_VENUE_ID);
+  const productionPerpFees = feeScheduleForVenue(PERP_VENUE_ID);
   const tradingProfile: AgentTradingProfile = {
-    makerBps: makerBps.toFixed(),
-    takerBps: takerBps.toFixed(),
+    spotFees: isPerp
+      ? { makerBps: productionSpotFees.makerBps, takerBps: productionSpotFees.takerBps }
+      : overridableFees,
+    perpFees: isPerp
+      ? overridableFees
+      : { makerBps: productionPerpFees.makerBps, takerBps: productionPerpFees.takerBps },
     baseNotional: equityBase.toFixed(),
     maxOrderNotional: equityBase.mul(4).toFixed(),
     constraints,

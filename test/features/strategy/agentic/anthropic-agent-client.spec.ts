@@ -809,8 +809,8 @@ describe('AnthropicAgentClient', () => {
         apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
       );
       const profile = {
-        makerBps: '4',
-        takerBps: '6',
+        spotFees: { makerBps: '4', takerBps: '6' },
+        perpFees: { makerBps: '2', takerBps: '5' },
         baseNotional: '123',
         maxOrderNotional: '456',
         constraints: {
@@ -829,7 +829,7 @@ describe('AnthropicAgentClient', () => {
 
       const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(init.body as string) as { system: { text: string }[] };
-      // v3: the prompt renders makerBps/takerBps/round-trip fee — sizeFraction replaces
+      // v3: the prompt renders spotFees/perpFees/round-trip fee — sizeFraction replaces
       // baseNotional/maxOrderNotional as the sizing channel, so those two numbers no longer render.
       expect(body.system[0]!.text).toContain('4 maker');
       expect(body.system[0]!.text).toContain('6 taker');
@@ -3049,13 +3049,15 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
-  // 2026-08-03. The take-profit floor used to read maker/takerBps off the ONE static profile the
+  // 2026-08-03/E1. The take-profit floor used to read maker/takerBps off the ONE static profile the
   // composition root builds from TRADING_SYMBOLS[0] (BTC/USDT, spot), so a 20bps floor was applied to
   // a book that is 85% perp — a venue whose MEASURED schedule is 2 maker / 4-5 taker bps
   // (research/studies/fee-floor-derivation-2026-07-31.md § 2). The gate now reads
-  // domain/trading/fees.ts keyed by the symbol's own venue. THE TABLE STILL CARRIES 10/10 FOR BOTH
-  // VENUES: this pass ships the plumbing, not the behaviour change, so the first test below must keep
-  // failing the perp trade and the second proves the flip is a one-line table edit away.
+  // domain/trading/fees.ts keyed by the symbol's own venue, and (E1) the table itself carries the
+  // measured 2/5 perp entry (VENUE_FEE_SCHEDULES) rather than the placeholder 10/10 pair — the first
+  // test below now proves the ENABLED default accepts the trade; the second proves the same result is
+  // reachable via an explicit override too (defense against a future table edit silently changing
+  // this gate's behaviour without a failing test).
   describe('take-profit floor reads the SYMBOL’s own venue fee schedule', () => {
     const PERP_SYM = symbolId('SOL/USDT:USDT');
 
@@ -3091,7 +3093,7 @@ describe('AnthropicAgentClient', () => {
       );
     }
 
-    it('UNCHANGED TODAY: a perp takeProfitPct of 0.0015 is still rejected under the shipped 10/10 table', async () => {
+    it('ENABLED: a perp takeProfitPct of 0.0015 clears the real (default-table) 2/5 fee schedule', async () => {
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(perpOpen(0.0015)));
       const client = new AnthropicAgentClient(
         buildCfg({ maxPositionFractionPerp: '0.35', perpLeverageCap: '2' }),
@@ -3100,18 +3102,23 @@ describe('AnthropicAgentClient', () => {
 
       const proposal = await client.propose(perpInput());
 
-      expect(proposal.signals).toEqual([]);
-      expect(proposal.decision?.rationale).toContain('[rejected: tp below fee floor]');
+      // No feeSchedules override — this reads VENUE_FEE_SCHEDULES's own default entry for
+      // binanceusdm (2 maker + 5 taker = 7bps round trip; the bar floor's 8.3619bps is the binding
+      // one), which 0.0015 (15bps) clears comfortably.
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+      expect(proposal.plan?.takeProfitPct).toBe('0.0015');
     });
 
-    it('PLUMBING PROVEN: the same trade passes once the perp entry carries its measured 2/5 schedule', async () => {
+    it('the same trade also passes via an explicit feeSchedules override of the measured 2/5 schedule', async () => {
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(perpOpen(0.0015)));
       const client = new AnthropicAgentClient(
         buildCfg({
           maxPositionFractionPerp: '0.35',
           perpLeverageCap: '2',
-          // The pending enable, applied in-memory only: 2 maker + 5 taker = 7bps round trip, which
-          // 0.0015 (15bps) clears twice over.
+          // Redundant with VENUE_FEE_SCHEDULES's own default now (E1), but pinned explicitly so a
+          // FUTURE table edit can't silently change this gate's accept/reject boundary without a
+          // failing test: 2 maker + 5 taker = 7bps round trip, which 0.0015 (15bps) clears twice over.
           feeSchedules: new Map([
             [
               venueId('binanceusdm'),

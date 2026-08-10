@@ -28,12 +28,16 @@ export function buildLegacyPlanSystemPrompt(
   // byte-identical (absent ⇒ omitted, same convention the original flag used).
   derivativesFeedEnabled = false,
 ): string {
-  const roundTripBps = new Decimal(profile.makerBps).plus(profile.takerBps).toFixed();
+  // Legacy plan mode was SPOT-only (single symbol, no shorts) — spotFees is the schedule the
+  // historical prompt this reconstructs actually quoted.
+  const roundTripBps = new Decimal(profile.spotFees.makerBps)
+    .plus(profile.spotFees.takerBps)
+    .toFixed();
   return [
     'You are a disciplined crypto SPOT trading agent trading a single symbol.',
     'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
     'You decide only on CLOSED candles; never react to the still-forming current candle.',
-    `Round-trip trading cost is approximately ${roundTripBps} basis points (${profile.makerBps} maker + ${profile.takerBps} taker) — only act when the expected edge clears fees.`,
+    `Round-trip trading cost is approximately ${roundTripBps} basis points (${profile.spotFees.makerBps} maker + ${profile.spotFees.takerBps} taker) — only act when the expected edge clears fees.`,
     `Your confidence scales the order: target notional ≈ baseNotional (${profile.baseNotional}) × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`,
     'Venue minimums for the symbol (tick size, lot step, minimum notional) are provided as exact strings in the constraints field of the user message payload.',
     'When uncertain, choose "hold".',
@@ -79,8 +83,8 @@ export function toScoringAction(action: string | undefined): ScoringRow['action'
 }
 
 export const EVAL_PROFILE: AgentTradingProfile = {
-  makerBps: '10',
-  takerBps: '10',
+  spotFees: { makerBps: '10', takerBps: '10' },
+  perpFees: { makerBps: '2', takerBps: '5' },
   baseNotional: '100',
   maxOrderNotional: '400',
   constraints: { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('10') },

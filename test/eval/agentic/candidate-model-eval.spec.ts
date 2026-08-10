@@ -189,7 +189,9 @@ type PlanLikePlan = NonNullable<z.infer<typeof planLikeSchema>['plan']>;
 // stop-floor/R:R checks, not reproduced there as an exported helper) against EVAL_PROFILE's own
 // fee tier and the MIN_EDGE_MULTIPLE/MIN_RR floors quoted into this eval's system prompt.
 function isPlanSane(plan: PlanLikePlan): boolean {
-  const feeFraction = new Decimal(EVAL_PROFILE.makerBps).plus(EVAL_PROFILE.takerBps).div(10_000);
+  const feeFraction = new Decimal(EVAL_PROFILE.spotFees.makerBps)
+    .plus(EVAL_PROFILE.spotFees.takerBps)
+    .div(10_000);
   const edgeFloor = new Decimal(MIN_EDGE_MULTIPLE).mul(feeFraction);
   const minRr = new Decimal(MIN_RR);
   const stopLossPct = new Decimal(String(plan.stopLossPct));

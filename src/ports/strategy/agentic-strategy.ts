@@ -610,12 +610,23 @@ export class AgentProposeError extends Error {
   }
 }
 
-// Per-strategy venue/sizing facts the agent needs to reason about cost and order construction —
-// distinct from SymbolConstraints (venue-imposed rounding rules), this is the strategy's own
-// commercial profile (fee tier, target clip size).
-export interface AgentTradingProfile {
+// One venue's maker/taker fee pair, in basis points — deliberately NOT domain/trading/fees.ts's
+// VenueFeeSchedule (which also carries measuredAt/sourceStudy provenance): every construction site
+// of AgentTradingProfile is a prompt-facing fixture or the live composition read, neither of which
+// wants provenance noise riding along into a literal.
+export interface VenueFeeBps {
   readonly makerBps: string;
   readonly takerBps: string;
+}
+
+// Per-strategy venue/sizing facts the agent needs to reason about cost and order construction —
+// distinct from SymbolConstraints (venue-imposed rounding rules), this is the strategy's own
+// commercial profile (fee tier, target clip size). Carries BOTH venues' fee schedules (not just the
+// one the profile's own anchor symbol resolves to) because a v3 boot always spans spot AND perp —
+// see agent-prompt.ts's buildSystemPrompt for why the prompt must render both rather than picking one.
+export interface AgentTradingProfile {
+  readonly spotFees: VenueFeeBps;
+  readonly perpFees: VenueFeeBps;
   readonly baseNotional: string;
   readonly maxOrderNotional: string;
   readonly constraints: SymbolConstraints;

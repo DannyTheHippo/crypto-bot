@@ -125,8 +125,8 @@ function execReport(): ExecReport {
 
 function fixtureProfile(over: Partial<AgentTradingProfile> = {}): AgentTradingProfile {
   return {
-    makerBps: '8',
-    takerBps: '12',
+    spotFees: { makerBps: '8', takerBps: '12' },
+    perpFees: { makerBps: '2', takerBps: '5' },
     baseNotional: '75',
     maxOrderNotional: '300',
     constraints: {
@@ -268,8 +268,7 @@ describe('buildSystemPrompt', () => {
 
   it('renders the real fees from the given profile, and points at the payload constraints field', () => {
     const profile = fixtureProfile({
-      makerBps: '8',
-      takerBps: '12',
+      spotFees: { makerBps: '8', takerBps: '12' },
       baseNotional: '75',
       maxOrderNotional: '300',
     });

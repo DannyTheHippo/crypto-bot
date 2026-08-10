@@ -4,6 +4,7 @@ import type {
   AgentDecisionInput,
   AgentDecisionRecord,
   AgentTradingProfile,
+  VenueFeeBps,
   AgentHtfIndicators,
   AgentPortfolioBlock,
   AgentBudgetBlock,
@@ -15,6 +16,7 @@ import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/id
 import { splitSymbol } from '../../../domain/venue/types/symbol';
 import { toIndicatorNumber } from '../../../domain/common/types/money';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
+import { TAKE_PROFIT_GROSS_BAR_FRACTION } from '../../../domain/trading/fees';
 
 // W2.3: HTF h1/h4 indicators (warmup raised to 340 bars) now supply the long-horizon view, so 30
 // bars of the strategy's own timeframe (≈7.5h of 15m detail) plus HTF regime context replaces the
@@ -145,7 +147,18 @@ export const PROMPT_HASH_BASELINE_MAX_TOKENS = 4096;
 // to each recentDecisions line. They ship together under one tag rather than three, because they are
 // one deploy: a hash can only ever attribute rows to the composition that produced them, and no row
 // will ever exist carrying a subset of these three.
-export const TRADE_TEMPLATE_VERSION = 'v4';
+//
+// v4→v6 (E1, fee-floor truth): the round-trip-cost and take-profit-floor sentences now render BOTH
+// venues' real fee schedules (previously one static profile, spot fees, rendered for the whole book —
+// see domain/trading/fees.ts). The perp schedule itself also flipped from the placeholder 10/10 pair
+// to its measured 2/5, and the take-profit floor is now bar-floored (takeProfitFloorFraction), so the
+// "sub-0.6%" sentence — derived from the false 20bps figure — is replaced with the floors actually
+// enforced (0.1% perp via the schema minimum, 0.2% spot via the fee gate). SKIPS 'v5': this lineage's
+// own tag and the legacy PROMPT_TEMPLATE_VERSION tag (below, a SEPARATE §9 carve-out lineage) both
+// independently reached 'v5' — computePromptHash's distinctness test (agent-prompt.spec.ts) exists
+// precisely to catch two different template compositions hashing identically, so 'v5' is retired here
+// rather than reused.
+export const TRADE_TEMPLATE_VERSION = 'v6';
 
 // Delimiters wrapping the advisory playbook block quoted into the user message. Unique and
 // non-trivial so a playbook can never forge a close/open of its own — playbook-validator.ts
@@ -538,6 +551,22 @@ function protectiveBackstopSentence(profile: AgentTradingProfile): string | null
   return `A bot-side protective backstop will force-exit any long via the normal risk path if price falls ${clause} — do not rely on it as your exit plan; manage exits yourself.`;
 }
 
+// The take-profit floor as actually ENFORCED for a venue's fee pair — never the bare fee fraction.
+// Single-source-of-truth with the two floors that actually bind a proposal (anthropic-agent-client.ts's
+// takeProfitFloorFraction gate, and DECISION_V2_BOUNDS.takeProfitPct.min's schema bound above): the
+// prompt must state the number that would actually reject a directive, not merely what the venue
+// charges, or a model sizing to the stated number would still be schema-rejected (as perp is here —
+// the gate's own 0.00083619 bar floor sits below the 0.001 schema minimum, so the minimum is what
+// actually binds).
+function effectiveTakeProfitFloor(fees: VenueFeeBps): Decimal {
+  const feeFraction = new Decimal(fees.makerBps).plus(fees.takerBps).div(10_000);
+  return Decimal.max(
+    feeFraction,
+    TAKE_PROFIT_GROSS_BAR_FRACTION,
+    DECISION_V2_BOUNDS.takeProfitPct.min,
+  );
+}
+
 export interface BuildSystemPromptOptions {
   // C1: when true, documents the optional derivatives block (funding/OI/basis) in the system prompt.
   // Absent/false ⇒ byte-identical to pre-C1 output — gated separately from the block's own per-call
@@ -607,7 +636,14 @@ export function buildSystemPrompt(
   profile: AgentTradingProfile,
   opts: BuildSystemPromptOptions = {},
 ): string {
-  const roundTripBps = new Decimal(profile.makerBps).plus(profile.takerBps).toFixed();
+  const spotRoundTripBps = new Decimal(profile.spotFees.makerBps)
+    .plus(profile.spotFees.takerBps)
+    .toFixed();
+  const perpRoundTripBps = new Decimal(profile.perpFees.makerBps)
+    .plus(profile.perpFees.takerBps)
+    .toFixed();
+  const spotTakeProfitFloorPct = effectiveTakeProfitFloor(profile.spotFees).mul(100).toFixed();
+  const perpTakeProfitFloorPct = effectiveTakeProfitFloor(profile.perpFees).mul(100).toFixed();
   const backstopSentence = protectiveBackstopSentence(profile);
   const derivativesFeedEnabled = opts.derivativesFeedEnabled ?? false;
   const derivativesV2Enabled = opts.derivativesV2Enabled ?? false;
@@ -631,13 +667,13 @@ export function buildSystemPrompt(
     // traced to an AND-veto reading of the info blocks and a hold-is-always-safe prior.
     'Signal aggregation: the informational blocks described below are SIZE MODULATORS, not veto gates — one disagreeing input argues for a smaller sizeFraction, not an automatic hold; reserve holds for setups where the structure itself is absent or several independent signals genuinely conflict. Requiring every input to agree before entering is a failure mode: it converges on never trading.',
     'Evidence pace is part of the mandate: this lane must accumulate closed round trips (roughly two per day across the book) to earn live promotion — a week of pure holds is a FAILING outcome even though it avoids losses, so when torn between a half-size entry and another hold, prefer the half-size entry.',
-    `You trade at a SWING horizon: typical holds run hours to days, not single bars. Round-trip trading cost is approximately ${roundTripBps} basis points (${profile.makerBps} maker + ${profile.takerBps} taker), plus your own per-consult LLM cost — most single 15-minute bars are noise relative to both, so size and hold for moves that clear them.`,
+    `You trade at a SWING horizon: typical holds run hours to days, not single bars. Round-trip trading cost is approximately ${spotRoundTripBps} basis points (${profile.spotFees.makerBps} maker + ${profile.spotFees.takerBps} taker) on spot symbols (capabilities.shorts false) and ${perpRoundTripBps} basis points (${profile.perpFees.makerBps} maker + ${profile.perpFees.takerBps} taker) on perp symbols (capabilities.shorts true), plus your own per-consult LLM cost — most single 15-minute bars are noise relative to either, so size and hold for moves that clear them.`,
     "sizeFraction is your conviction channel (there is no separate confidence field): it sets the fraction of (equity-capped) account equity to commit, within the tool's stated bounds. An independent Risk engine has final authority and may veto, shrink, or resize any order you propose — it, not you, controls the final position size.",
     "You own your exits between consults: the stopLossPct/takeProfitPct/maxHoldBars you submit are enforced deterministically without another LLM call, so you are not paying to babysit a healthy position. Revise them anytime via 'adjust'; a partial close is available via adjust's partialCloseFraction, and a same-side 'open_*' while already positioned is a scale-in (fresh directives, sized to remaining headroom) rather than a resubmission of the position you already hold.",
     ...(backstopSentence !== null ? [backstopSentence] : []),
     'nextConsultBars is itself an economic decision, not a formality: schedule your next consult only as soon as you actually expect to need to act. A fill, or an adverse move past the configured wake threshold, forces an earlier consult regardless of what you schedule — so scheduling further out costs you nothing when the market moves against you and saves LLM spend when it does not.',
     "Correlation budgeting: most altcoin longs are largely one leveraged bet on BTC's own direction (BTC-beta), not independent ideas — use the portfolio block's correlation summary to avoid stacking several highly-correlated positions and calling it diversification.",
-    'A take-profit must clear the round-trip fee fraction stated above — in practice a typical swing target (1-8%) clears it many times over, so fee arithmetic justifies skipping only sub-0.6% targets, never a normal swing entry.',
+    `A take-profit must clear the round-trip fee floor actually enforced for that symbol's venue (not merely the fee fraction stated above — a bar-derived cost floor and the tool's own schema minimum can both sit above it) — in practice a typical swing target (1-8%) clears it many times over, so fee arithmetic justifies skipping only sub-${spotTakeProfitFloorPct}% targets on spot symbols (capabilities.shorts false) or sub-${perpTakeProfitFloorPct}% targets on perp symbols (capabilities.shorts true), never a normal swing entry.`,
     // v3: unconditional (perp symbols exist in every boot) — the summary does NOT yet carry
     // margin/liq-distance fields (no such data reaches AgentPositionSummary), so the prompt must teach
     // the model to REASON about liquidation from what it does have (the per-symbol leverage cap

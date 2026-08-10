@@ -102,7 +102,11 @@ export function isTradeSane(
   if (decision.takeProfitPct === undefined || decision.entry === undefined) return false;
 
   // (i) the prompt-stated fee floor: takeProfitPct must clear the round-trip fee fraction.
-  const feeFraction = new Decimal(profile.makerBps).plus(profile.takerBps).div(10_000);
+  // EVAL_PROFILE's fixture symbol is a spot symbol (BTC/USDT) — spotFees is the schedule that
+  // actually gates it (see fixtures.ts's SYM).
+  const feeFraction = new Decimal(profile.spotFees.makerBps)
+    .plus(profile.spotFees.takerBps)
+    .div(10_000);
   const clearsFeeFloor = new Decimal(String(decision.takeProfitPct)).gte(feeFraction);
   // (ii) the tool-stated contract: a 'taker' entry ignores offsetBps, so the model must submit 0.
   const takerOffsetIsZero = decision.entry.style !== 'taker' || decision.entry.offsetBps === 0;

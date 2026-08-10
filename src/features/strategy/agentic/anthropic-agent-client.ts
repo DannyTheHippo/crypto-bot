@@ -6,7 +6,7 @@ import type { CandleEvent } from '../../../domain/venue/types/market-events';
 import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/ids';
 import type { Signal } from '../../../domain/strategy/types/signal';
 import { venueForSymbol, PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
-import { roundTripFeeFraction, type VenueFeeSchedule } from '../../../domain/trading/fees';
+import { takeProfitFloorFraction, type VenueFeeSchedule } from '../../../domain/trading/fees';
 import {
   AgentProposeError,
   type AgentBudgetBlock,
@@ -459,8 +459,8 @@ export interface AnthropicAgentClientConfig {
 // system prompt's fee/sizing/minimums prose non-fictional-looking-but-clearly-illustrative rather
 // than absent. A later task (module wiring) supplies the strategy's actual profile via cfg.profile.
 const DEFAULT_TRADING_PROFILE: AgentTradingProfile = {
-  makerBps: '10',
-  takerBps: '10',
+  spotFees: { makerBps: '10', takerBps: '10' },
+  perpFees: { makerBps: '2', takerBps: '5' },
   baseNotional: '50',
   maxOrderNotional: '200',
   constraints: {
@@ -1949,15 +1949,14 @@ export class AnthropicAgentClient implements AgentClientPort {
     // directives ⇒ nothing to floor-check) or on a no-op hold.
     if (directives !== undefined) {
       // Keyed on THIS symbol's own venue, not on the one static profile the system prompt renders:
-      // that profile is built from the FIRST configured symbol (agentic-bridge.module.ts), so a
-      // single venue's schedule was floor-checking a book that is 85% the other venue. The table
-      // currently carries the same schedule for both venues, so this is arithmetically identical to
-      // the profile read it replaces — see domain/trading/fees.ts for why the measured perp schedule
-      // is a separate enable.
-      const feeFraction = roundTripFeeFraction(venueForSymbol(symbol), this.cfg.feeSchedules);
-      if (new Decimal(directives.takeProfitPct).lt(feeFraction)) {
+      // the prompt now renders BOTH venues' schedules (agentic-bridge.module.ts/agent-prompt.ts), but
+      // this gate still floor-checks per symbol rather than reading the prompt's own text. The floor
+      // is bar-floored, never a bare fee read — see domain/trading/fees.ts's takeProfitFloorFraction
+      // for why the measured perp schedule (2/5) alone is not a safe floor on its own.
+      const floorFraction = takeProfitFloorFraction(venueForSymbol(symbol), this.cfg.feeSchedules);
+      if (new Decimal(directives.takeProfitPct).lt(floorFraction)) {
         this.logger.warn(
-          `trade rejected: takeProfitPct ${directives.takeProfitPct} below round-trip fee ${feeFraction.toFixed()}`,
+          `trade rejected: takeProfitPct ${directives.takeProfitPct} below take-profit floor ${floorFraction.toFixed()}`,
         );
         return {
           signals: [],

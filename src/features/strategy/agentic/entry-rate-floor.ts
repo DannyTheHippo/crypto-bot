@@ -32,8 +32,8 @@ import { tradeDecisionSchema } from './anthropic-agent-client';
 // slightly-different copy — both modules ask a structural/comparative question, never "what is the
 // strategy's live fee tier right now".
 export const DEFAULT_FLOOR_PROFILE: AgentTradingProfile = {
-  makerBps: '10',
-  takerBps: '10',
+  spotFees: { makerBps: '10', takerBps: '10' },
+  perpFees: { makerBps: '2', takerBps: '5' },
   baseNotional: '50',
   maxOrderNotional: '200',
   constraints: {

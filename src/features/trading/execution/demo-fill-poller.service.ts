@@ -33,16 +33,18 @@ import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 // trades so historical demo fills are not re-ingested; a fill with no matching local order is counted
 // and skipped, never a halt.
 //
-// v3 §1.5: poll(venue, symbols) — one call per venue, each tracking its OWN sweep watermark off the
-// shared boot anchor (a spot-heavy poll advancing the watermark must never starve the perp venue's
-// own since-window, and vice versa). The exchange port for `venue` is resolved from
+// v3 §1.5: poll(venue, symbols) — one call per venue, each symbol tracking its OWN sweep watermark
+// off the shared boot anchor (a spot-heavy poll advancing the watermark must never starve the perp
+// venue's own since-window, and vice versa; per-symbol keying carries that same isolation down to
+// each symbol — see the watermark key below). The exchange port for `venue` is resolved from
 // VENUE_EXCHANGE_PORTS when present; the single EXCHANGE_PORT injection is the fallback (matched by
 // .venue) so pre-existing single-venue construction (this file's own spec, module-isolation boots)
 // is unaffected when the venue map is absent.
 @Injectable()
 export class DemoFillPollerService {
   private bootAnchor: EpochMs = 0 as EpochMs;
-  private readonly sinceByVenue = new Map<VenueId, EpochMs>();
+  // Keyed `${venue}|${symbol}` — matches reconcileTrades in reconciliation.service.ts.
+  private readonly sinceByKey = new Map<string, EpochMs>();
   private readonly log = new Logger('DemoFillPoller');
 
   constructor(
@@ -59,7 +61,7 @@ export class DemoFillPollerService {
   // Anchor the sweep window at boot so the first poll never re-ingests historical demo trades.
   init(): void {
     this.bootAnchor = this.clock.now();
-    this.sinceByVenue.clear();
+    this.sinceByKey.clear();
   }
 
   async poll(
@@ -72,8 +74,6 @@ export class DemoFillPollerService {
       this.log.error(`no exchange port available for venue "${venue}" — skipping this poll`);
       return { ingested: 0, skippedUnknown: 0 };
     }
-    const since = this.sinceByVenue.get(venue) ?? this.bootAnchor;
-
     const byVenueId = new Map<string, OrderRecord>();
     for (const rec of this.orders.all()) {
       if (rec.venueOrderId !== undefined) byVenueId.set(rec.venueOrderId, rec);
@@ -81,19 +81,6 @@ export class DemoFillPollerService {
 
     let ingested = 0;
     let skippedUnknown = 0;
-    // Advance the sweep watermark to the newest trade seen this poll, so the next fetchMyTrades only
-    // pulls trades at/after it instead of re-pulling every post-boot trade each cycle (unbounded work
-    // growth). Non-skipping: fetchMyTrades(since) returns ALL trades with ts ≥ since, so every trade
-    // ≤ maxTs was already in this fetch; the boundary trade re-fetches inclusively and the ingestor
-    // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
-    // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
-    //
-    // CLAMPED to now + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS (see that constant): the "all have ts ≤ now"
-    // premise above is the venue's promise, not ours to assume — one unbounded-future stamp would
-    // otherwise pin this watermark past every real trade permanently. The trade itself still ingests.
-    let maxTs = since;
-    let clampedTrades = 0;
-    let clampedSample: string | undefined;
     // Defect A commit-1: a fill matching no local order, on a symbol carrying an algo-rail anchor,
     // is the phantom-position signature (a venue-fired stop's spawned market order is
     // venue-generated and unmappable by clientOrderId — see this class's own MATCHING comment).
@@ -122,8 +109,17 @@ export class DemoFillPollerService {
     // anchoredSymbols loop directly above and ReconciliationService.reconcileTrades' own catch, which
     // survived the identical outage. Fail OPEN on the poll itself: one symbol's outage must never
     // starve every other symbol's fills or recovery pass.
-    let allSymbolsSwept = true;
+    // WATERMARK KEY: `${venue}|${symbol}` (matches reconcileTrades in reconciliation.service.ts), not
+    // per-venue — a per-venue watermark lets one persistently-failing symbol pin every other symbol's
+    // `since` at its own failure point, and the resulting unbounded re-read window silently truncates
+    // at either of two venue-side ceilings that never throw: Binance's myTrades page default of 500
+    // rows (ccxt-exchange.adapter.ts:215 calls fetchMyTrades with no explicit `limit`), and the perp
+    // endpoint's 7-day `endTime` window, which ccxt derives client-side and returns EMPTY once `since`
+    // is more than 7 days stale (reconciliation.service.ts's #54 pattern). Per-symbol keying bounds
+    // the hold to the symbol that is actually broken.
     for (const symbol of symbols) {
+      const key = `${venue}|${symbol}`;
+      const since = this.sinceByKey.get(key) ?? this.bootAnchor;
       let fills: readonly VenueFill[];
       try {
         fills = await exchange.fetchMyTrades(symbol, since);
@@ -131,9 +127,23 @@ export class DemoFillPollerService {
         this.log.warn(
           `fetchMyTrades for ${symbol} on venue "${venue}" threw (${err instanceof Error ? err.message : String(err)}) — skipping this symbol, retried next poll`,
         );
-        allSymbolsSwept = false;
-        continue;
+        continue; // this symbol's watermark is untouched; every other symbol's key advances independently
       }
+      // Advance THIS symbol's watermark to the newest trade seen this poll, so the next fetchMyTrades
+      // only pulls trades at/after it instead of re-pulling every post-boot trade each cycle
+      // (unbounded work growth). Non-skipping: fetchMyTrades(since) returns ALL trades with ts ≥
+      // since, so every trade ≤ maxTs was already in this fetch; the boundary trade re-fetches
+      // inclusively and the ingestor dedupes it on venueTradeId. Includes skipped (foreign/pre-boot)
+      // trades — all have ts ≤ now, while our not-yet-placed fills carry future ts, so the watermark
+      // can never outrun an own fill.
+      //
+      // CLAMPED to now + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS (see that constant): the "all have ts ≤
+      // now" premise above is the venue's promise, not ours to assume — one unbounded-future stamp
+      // would otherwise pin this watermark past every real trade permanently. The trade itself still
+      // ingests.
+      let maxTs = since;
+      let clampedTrades = 0;
+      let clampedSample: string | undefined;
       for (const f of fills) {
         const ceiling = (this.clock.now() + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS) as EpochMs;
         if (f.venueTimestamp > ceiling) {
@@ -161,50 +171,17 @@ export class DemoFillPollerService {
         );
         if (applied) ingested += 1;
       }
-    }
-    // WATERMARK GUARD: sinceByVenue is per-VENUE, not per-symbol, so advancing it while ANY symbol
-    // was skipped above would move the window past trades that skipped symbol never got to report —
-    // per-symbol isolation, added naively, would silently reopen the exact fill-loss path the old
-    // abort-everything behaviour prevented by accident. Fails toward RE-READING, never toward
-    // skipping: a partial poll leaves the watermark exactly where it was, so the next tick re-asks
-    // the same window for every symbol and the ingestor dedupes on venueTradeId.
-    //
-    // COST of the per-VENUE grain (adversarial review, 2026-08-06, comment-only — not implemented
-    // this pass): one symbol failing every poll pins the WHOLE venue's `since` at that symbol's
-    // failure point, so the re-read window every other symbol on the venue gets asked for grows
-    // monotonically for as long as that one symbol stays broken. Two silent-truncation mechanisms
-    // sit at the end of that growth, neither reachable today (fill volume tops out around 54
-    // rows/symbol/7d and boot lifetimes run 7-24h, both well inside both ceilings below):
-    //   1. Binance's myTrades page default of 500 rows — ccxt-exchange.adapter.ts:215 calls
-    //      fetchMyTrades with no explicit `limit`, so a widened window with 500+ real trades on one
-    //      symbol would return only the OLDEST 500, silently dropping the rest.
-    //   2. On the perp venue, reconciliation.service.ts's #54 pattern (~:1060-1068): ccxt 4.5.58
-    //      derives `endTime = min(since + 7d, now)` client-side once `now - since >= 7d`, so a
-    //      `since` more than 7 days stale returns an EMPTY array WITHOUT throwing — indistinguishable
-    //      here from "genuinely no new trades".
-    // The structurally correct fix is a per-SYMBOL watermark (keyed `${venue}|${symbol}`, the shape
-    // reconcileTrades already uses in reconciliation.service.ts), so one broken symbol's window grows
-    // without dragging its healthy siblings' windows along with it. Deliberately NOT implemented in
-    // this pass — the growth is inert at current volumes and this is a larger structural change than
-    // the wording/isolation fixes landing alongside it.
-    if (allSymbolsSwept) this.sinceByVenue.set(venue, maxTs);
-    // A venue-stamped future trade is a venue data-integrity event, not routine — logged at error.
-    // One line per poll (count + one sample) rather than per trade: a venue emitting the wrong time
-    // UNIT stamps every trade in the batch, and a per-trade line would turn the incident into a log
-    // flood that buries itself.
-    //
-    // The watermark phrase must name what was actually PERSISTED, not `maxTs` unconditionally: on a
-    // partial poll (allSymbolsSwept === false, see the WATERMARK GUARD above) `maxTs` was computed
-    // from this poll's trades but never written to sinceByVenue — `since` is still the true current
-    // value. Claiming "clamped to ${maxTs}" there would name a value the gauge never held.
-    if (clampedTrades > 0) {
-      const watermarkNote = allSymbolsSwept
-        ? `sweep watermark clamped to ${maxTs}`
-        : `sweep watermark held at ${since} (partial poll — some symbol(s) failed this cycle, see the warning above)`;
-      this.log.error(
-        `venue "${venue}" returned ${clampedTrades} trade(s) stamped beyond now+${VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}ms — ` +
-          `${watermarkNote}, fills still ingested (e.g. ${clampedSample})`,
-      );
+      this.sinceByKey.set(key, maxTs);
+      // A venue-stamped future trade is a venue data-integrity event, not routine — logged at error.
+      // One line per (venue, symbol) sweep, not per trade: a venue emitting the wrong time UNIT
+      // stamps every trade in the batch, and a per-trade line would turn the incident into a log
+      // flood that buries itself.
+      if (clampedTrades > 0) {
+        this.log.error(
+          `venue "${venue}" symbol ${symbol} returned ${clampedTrades} trade(s) stamped beyond now+${VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}ms — ` +
+            `sweep watermark clamped to ${maxTs}, fills still ingested (e.g. ${clampedSample})`,
+        );
+      }
     }
     // Recovered against the intent's OWN createdAt lookback, never this poller's `since` watermark
     // (just advanced above) — the watermark can already sit past the trigger trade, exactly the

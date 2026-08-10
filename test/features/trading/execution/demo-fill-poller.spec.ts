@@ -460,7 +460,8 @@ describe('DemoFillPollerService', () => {
   // ~29% of calls for ~10.7h; the unguarded fetchMyTrades in the per-symbol loop aborted the whole
   // venue poll on ANY one symbol's throw, starving the algoSuspects -> recoverSymbol() loop for
   // hours and leaving two venue-fired stop fills un-ingested (phantom local shorts). These pin the
-  // per-symbol isolation and its load-bearing watermark guard.
+  // per-symbol isolation AND the per-symbol watermark key (`${venue}|${symbol}`): a failing symbol
+  // must hold back only its own `since`, never a healthy sibling's.
   describe('per-symbol fetchMyTrades isolation (2026-08-05/06 incident)', () => {
     const SYM_A = symbolId('BTC/USDT');
     const SYM_B = symbolId('ETH/USDT');
@@ -571,9 +572,11 @@ describe('DemoFillPollerService', () => {
       expect(recoverSymbol).toHaveBeenCalledWith(SYM_B);
     });
 
-    // Load-bearing: sinceByVenue is per-VENUE, so advancing it while SYM_A was skipped would move
-    // the window past trades SYM_A never got to report.
-    it('the watermark does NOT advance when any symbol was skipped', async () => {
+    // Watermark keyed `${venue}|${symbol}`: SYM_A's throw holds back only ITS OWN key. SYM_B's key
+    // advances independently on its own successful poll — a per-venue watermark would have pinned
+    // SYM_B's `since` at T too, unboundedly widening its re-read window for as long as SYM_A stays
+    // broken (the exact defect this key shape fixes).
+    it("a throw on one symbol leaves that symbol's watermark unmoved while the other symbol's advances", async () => {
       const { poller, sinceCalls } = buildIsolation({
         bySymbol: {
           [SYM_A]: new Error('ExchangeNotAvailable: 502 Bad Gateway'),
@@ -592,13 +595,38 @@ describe('DemoFillPollerService', () => {
       await poller.poll(V, [SYM_A, SYM_B]); // SYM_A throws, SYM_B sees a newer trade
       sinceCalls.length = 0;
       await poller.poll(V, [SYM_A, SYM_B]);
-      expect(sinceCalls).toEqual([T, T]); // still the boot anchor, not T + 500
+      expect(sinceCalls).toEqual([T, T + 500]); // SYM_A still at the boot anchor, SYM_B advanced
+    });
+
+    // The key is `${venue}|${symbol}`, not `${venue}` — polling ONLY SYM_A must never touch SYM_B's
+    // key, even implicitly. Confirmed by polling SYM_A alone to a new watermark, then polling SYM_B
+    // alone and observing it still starts from the boot anchor.
+    it("a successful poll advances only the polled symbol's own watermark key", async () => {
+      const { poller, sinceCalls } = buildIsolation({
+        bySymbol: {
+          [SYM_A]: [
+            fill({
+              clientOrderId: clientOrderId(VENUE_ID),
+              venueTradeId: 'a-only',
+              symbol: SYM_A,
+              venueTimestamp: epochMs(T + 900),
+            }),
+          ],
+          [SYM_B]: [],
+        },
+        localOrders: [localOrder()],
+      });
+      poller.init(); // since = T for both keys
+      await poller.poll(V, [SYM_A]); // SYM_A only — advances venue|SYM_A to T + 900
+      sinceCalls.length = 0;
+      await poller.poll(V, [SYM_B]); // SYM_B only — its own key was never touched above
+      expect(sinceCalls).toEqual([T]); // still the boot anchor, not SYM_A's T + 900
     });
 
     // A rejected ccxt/network promise is not always an Error (drivers reject with plain strings and
     // objects too) — the fetchMyTrades catch's `err instanceof Error ? err.message : String(err)`
     // must survive that shape, same as the recoverSymbol/hasAlgoAnchor non-Error tests above.
-    it('fetchMyTrades rejecting with a non-Error value is still tolerated — remaining symbols still polled, watermark held', async () => {
+    it("fetchMyTrades rejecting with a non-Error value is still tolerated — remaining symbols still polled, only SYM_A's own watermark held", async () => {
       const { poller, ingested, sinceCalls } = buildIsolation({
         bySymbol: {
           [SYM_A]: 'ECONNRESET', // non-Error rejection
@@ -619,10 +647,13 @@ describe('DemoFillPollerService', () => {
       expect(ingested[0]?.venueTradeId).toBe('b5');
       sinceCalls.length = 0;
       await poller.poll(V, [SYM_A, SYM_B]);
-      expect(sinceCalls).toEqual([T, T]); // watermark held at the boot anchor, not advanced to T + 700
+      expect(sinceCalls).toEqual([T, T + 700]); // SYM_A held at the boot anchor, SYM_B advanced
     });
 
-    it('the watermark DOES advance on a fully-swept poll', async () => {
+    // Each symbol's watermark reflects only ITS OWN trades: SYM_A's fill advances venue|SYM_A, while
+    // SYM_B (no trades this poll) stays at the boot anchor on its own key — a per-venue watermark
+    // would have dragged SYM_B's `since` up to T + 300 too, purely as a side effect of SYM_A's fill.
+    it("the watermark advances per-symbol on a fully-swept poll — SYM_B's own since is unaffected by SYM_A's fill", async () => {
       const { poller, sinceCalls } = buildIsolation({
         bySymbol: {
           [SYM_A]: [
@@ -641,7 +672,7 @@ describe('DemoFillPollerService', () => {
       await poller.poll(V, [SYM_A, SYM_B]);
       sinceCalls.length = 0;
       await poller.poll(V, [SYM_A, SYM_B]);
-      expect(sinceCalls).toEqual([T + 300, T + 300]);
+      expect(sinceCalls).toEqual([T + 300, T]);
     });
 
     it('a partial poll followed by a clean poll ingests the previously-missed trade exactly once (dedupe holds)', async () => {
@@ -674,12 +705,11 @@ describe('DemoFillPollerService', () => {
       expect(ingested[0]?.venueTradeId).toBe('missed-1');
     });
 
-    // FIX 4 (adversarial review, 2026-08-06): the clamp log's "sweep watermark clamped to ${maxTs}"
-    // phrase used to fire unconditionally whenever clampedTrades > 0, even on a partial poll where
-    // maxTs was computed but the WATERMARK GUARD above never wrote it to sinceByVenue — naming a
-    // value that was never persisted. Pins the corrected, partial-poll branch of the wording (the
-    // fully-swept "clamped to" branch is already covered by the top-level 10-years-future test).
-    it('a partial poll logs "held at" the pre-poll watermark, never "clamped to" the discarded candidate', async () => {
+    // Per-symbol keying: SYM_A's throw is unrelated to SYM_B's own clamp — SYM_B swept cleanly, so
+    // it logs its own "clamped to" against its own watermark, exactly as if it had been polled alone.
+    // SYM_A's key is untouched (still the boot anchor) and never appears in a clamp log at all — it
+    // never reached the fills loop.
+    it('SYM_A throwing does not suppress or alter SYM_B’s own clamp log on the same poll', async () => {
       const TEN_YEARS_MS = 10 * 365 * 86_400_000;
       const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       try {
@@ -697,21 +727,26 @@ describe('DemoFillPollerService', () => {
           },
           localOrders: [localOrder()],
         });
-        poller.init(); // since = T, never advances this poll (SYM_A failed)
+        poller.init(); // since = T for both keys
         await poller.poll(V, [SYM_A, SYM_B]);
-        expect(sinceCalls).toEqual([T, T]); // watermark held, confirming the log's claim
+        const ceiling = T + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS;
         expect(errorSpy).toHaveBeenCalledWith(
-          expect.stringContaining(`sweep watermark held at ${T}`),
+          expect.stringContaining(`symbol ${SYM_B} returned 1 trade(s)`),
         );
-        expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('clamped to'));
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(`sweep watermark clamped to ${ceiling}`),
+        );
+        sinceCalls.length = 0;
+        await poller.poll(V, [SYM_A, SYM_B]);
+        expect(sinceCalls).toEqual([T, ceiling]); // SYM_A still at the boot anchor, SYM_B clamped
       } finally {
         errorSpy.mockRestore();
       }
     });
   });
 
-  // FIX 4's other branch: a fully-swept poll must still name the value it actually wrote to the
-  // watermark ("clamped to" the ceiling), not the raw discarded venue stamp.
+  // A fully-swept poll must name the value it actually wrote to the watermark ("clamped to" the
+  // ceiling), not the raw discarded venue stamp.
   it('a fully-swept poll logs "clamped to" the value actually written to the watermark', async () => {
     const TEN_YEARS_MS = 10 * 365 * 86_400_000;
     const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);

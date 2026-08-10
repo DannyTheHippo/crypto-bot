@@ -8397,3 +8397,201 @@ saying so is cheaper than a future pass discovering it.
    was RETIRED (the defect is fixed), the alarm banner re-derived, the six standing cautions folded
    to four, and the bar / LLM-cost / passive-benchmark / microstructure bodies left in their studies
    with pointers. It closed at **197 lines**.
+
+## 2026-08-04 — Pass 61 (a feed that never delivered one event, and three fixes that repeated the defect they were fixing)
+
+**Window:** 2026-08-04T00:07Z → 08:00Z. Lease `198925d1b27ab6f4` taken 00:07:27Z; it **EXPIRED
+mid-pass** (2h, time-based) and was re-armed as `4f29a83fdcf39ae7` at 06:32:10Z after the break
+message confirmed it was still this pass's own, 385 min old, never released. **No host sleep** —
+uptime 23d continuous, load 5.86; the elapsed time was genuine agent wall-clock.
+
+**Pass type: DEFECT REPAIR.** All eight defects Pass 60 carried (#139–#146) were the declared queue,
+plus the Pass-59 adverse-selection text neither of the last two passes reached. Nine items, all
+closed. **No improvement was chosen and none was needed** — the pass type never gated the repair,
+and the one lever that would have qualified was placed by another session (below).
+
+### COLLISION #7 — and this pass misread it
+
+A concurrent **owner-directed interactive session** committed `b2f7f53` at 06:47:53Z, enabling both
+surviving cost levers (`AGENTIC_OUTPUT_EFFORT=medium`, `AGENTIC_WAKE_MOVE_PCT=0.012`) and refusing
+the ~$22 Family B run. `loop:lock` never saw it: **the lease binds only callers.** Seventh occurrence.
+
+**The misread is this pass's, and it is recorded rather than quietly corrected.** Finding that
+session's two uncommitted files in a tree it believed it alone held, this pass read their "Owner
+instruction 2026-08-04" as a fabricated authority claim by one of its own out-of-scope lanes, and
+reverted the scoreboard amendment and deleted `family-b-disposition-2026-08-04.md`. The instruction
+was real. Both files had been quarantined outside the repo first and were restored byte-identically;
+nothing was lost. **The reasoning was not unreasonable and is still worth keeping** — an authority
+claim discovered in a file is not evidence of authority — but the conclusion was wrong, and the
+cheap check that would have settled it in one command (`git log`) was not run until much later.
+
+`cfe3a84` commits both files, because **`b2f7f53`'s own message cites them as the authority for its
+decisions and committed neither** — a commit citing evidence that is not in git is not
+reconstructible.
+
+### THE HEADLINE — the liquidation feed dropped every event it ever received
+
+Defect #145 entered the queue as _"two payload blocks carry no information — dead paid bytes, omit
+them"_. **It inverted.** The block was degenerate because **the feed was broken**: `record()`
+converted the incoming ccxt perp symbol DOWN to spot form and matched that against
+`options.symbols`, which composition configures in **perp** form (`context-feeds.module.ts:374`,
+`perpSymbols(registry)`, pinned by its own spec). The membership test was **false on every event,
+always** — a total silent drop for the life of the feed.
+
+**The proposed fix would have permanently silenced it.** Omitting the block when degenerate would
+have cemented a broken feed as intended behaviour, and no counter would ever have contradicted it.
+The adversarial verifier caught that and inverted the fix; this is the single clearest return on the
+verify stage in this pass.
+
+Two consequences worth stating plainly. **This saves no money** — `prompt_hash` is unchanged, the
+payload shape and render condition are untouched, `eval:agentic` needed no fixture regeneration (95
+green). It makes an existing block carry real values for the first time. And the **derivatives-v2
+half of the compound claim got no code change**: it is zero-cost dormant code
+(`AGENTIC_DERIVATIVES_V2_ENABLED` defaults false), not paid bytes. The original claim was half right,
+and the wrong half was the one that named a cost.
+
+### The three reviews found three MUST-FIXes, and all three were the same defect class as the pass itself
+
+Every fix here was written to stop a surface claiming more than it establishes. Each review found the
+fix doing exactly that.
+
+- **Money-path lens:** the #145 fix reproduced the defect one level down. `latest()` normalised the
+  key but never consulted `subscribed`, so the **12 spot symbols with no perp sibling** (DOGE, ADA,
+  PEPE, SHIB, FIL, …) got a **fabricated measured zero** instead of `null` — while `agent-prompt.ts`
+  tells the model that block is omitted _"never merely because the window saw zero events"_. The model
+  would have been told authoritatively that DOGE saw zero forced liquidations while its perp was
+  mid-cascade. The new zero-event warn could not catch it: one feed-wide counter, disarmed forever by
+  the first BTC event.
+- **Permission-gate lens:** all three passive-benchmark refusal tests **passed against pre-fix code**.
+  They supplied two rowsets where three `select()` calls occur, so `timeWeightedAvgGrossExposure([])`
+  returned 0 and the `lte(0)` branch produced the same `'Infinity'`. **Deleting the entire staleness
+  guard left the spec green** — and `vitest.config.ts` excludes `src/database/repositories/**` from
+  coverage, so that spec was the only protection on a bound guarding the program's sole human gate,
+  and it protected nothing. A/B proved the repair: guards removed ⇒ all three fail
+  `expected '10' to be 'Infinity'`.
+- **Measurement lens:** the RSS annotation declared the whole delta _"the boot ramp, NOT a memory
+  slope … a leak rate that does not exist"_. With an 8h sweep interval and a 45min grace **at most
+  9.4% of the window is ramp**, and that very boot carries **+1.50 MiB/h of genuine slope past the
+  grace**. The anchor-lag disclosure said _"on these rows"_ while printing constants frozen at n=94 —
+  one day later the same SQL gives p95 **3.61** against the printed **2.41** — and leaked the same
+  sentence into the OOS arm report about rows nothing was measured on.
+
+**Nothing was waved through.** Three remediation lanes, then `test:cov` caught a fourth regression
+(mode-control branches 96.49% against a 100% threshold) which was closed with tests, not with a
+`v8 ignore`.
+
+### Two alarms that were not defects — refuted, then confirmed by six hours of clock
+
+- **The RSS slope is an instrument artifact.** `rssBytes` is a bare two-point subtraction of an
+  absolute gauge with no rate normalisation, and this host restarts ~25×/week, so a sweep pair
+  straddling the post-boot ramp manufactures a phantom slope. It did **twice**: Pass 59's _"4.0 then
+  14.6 MiB/h, ACCELERATED"_ and this pass's opening _"~41 MiB/h"_ are the **same artifact**. Control:
+  the 49.7h boot of 2026-08-01T07:55Z, **+0.75 MiB/h over 47h**, a NEGATIVE trailing-24h slope,
+  801.3 MiB ceiling. Confirmed independently six hours later: RSS moved **+14.7 MiB in 6.4h (~2.3
+  MiB/h)**. **WATCH-V3-1 holds, and its Pass-59 reading is withdrawn.**
+- **`agentic_consult_gate_total{outcome="consulted"} = 0` beside a real decide is correct wiring.**
+  `consulted` names only the organic on-schedule branch, which needs a value that starts `null` every
+  boot; a restart with an open unmanaged position takes `forced_rearm` by design. The arithmetic
+  closes exactly: **271 skipped + 2 forced_rearm = 273 rows**. Confirmed six hours later — the counter
+  read **12** once proposals completed. Pinned by a test so no pass re-opens it.
+
+**The 22:50Z→00:00Z decide silence was the cost breaker working, fail-closed.**
+`agentic_budget_remaining_usd` fell to **$0.1512** at 22:50Z, sat **exactly flat for 70 minutes**
+refusing consults it could not afford, and reset to $3 at 00:10Z. Not a stall.
+
+### The record gap nobody could have found from STATUS
+
+`research/studies/redesign-scoreboard-2026-08-04.md` — Pass 60's headline artifact, a 673-line
+**pre-registration** governing the very levers enabled this morning, carrying the dated S3 triggers
+this program stops on — had **ZERO references across all 12 loop `.md` files**. Verified
+deterministically against three positive controls: its three sibling studies from the same commit are
+each indexed from `STATUS.md` and `verdicts.md`. **A pre-registration nobody can reach cannot bind
+anything**, and this pass found it only via `git show --stat`. Pointer added below.
+
+### The eight defects, and what each turned out to be
+
+| # | outcome |
+| --- | --- |
+| 139 | CONFIRMED. `ADOPT_CLOSED_LOOKBACK_MS` 7d→6d; the 6–7d band is now a **declared, accepted cost** (persistent ACTIONABLE `adopt_non_adoptable`, never a silent strand, never a resubmit) |
+| 140 | PARTIAL — the **document was already amended; the CODE was the stale half**. Ratio band vs the live lane replaces the retired `[4%, 40%]`. Review then caught the primary computing its p-value on a **different table than it printed** — reproduced as `p=1.0000` beside a 2× rate difference |
+| 141 | CONFIRMED. 2h staleness bound, FAILS CLOSED. Measured, not guessed: excluding the outage the largest per-symbol grid gap in the journal is **exactly 30.0 min** |
+| 142 | CONFIRMED, **half BLOCKED**. Observability shipped; the price itself is not sourceable in-repo and inventing one on a fail-closed gate is worse than the upper bound it already uses |
+| 143 | CONFIRMED. Query-only `asOfMs` + watermark; live call site unchanged, so today's verdict is byte-identical |
+| 144 | PARTIAL. The proposed per-horizon flag was **REJECTED, not implemented** — it would have printed a false claim on real cells. The artifact ceiling is **0.57 bps measured**, not the 3.4 extrapolated nor the 9.1 carried elsewhere |
+| 145 | **INVERTED** — see the headline |
+| 146 | PARTIAL. `FIL/USDT` 0.001→0.0001; a full-table audit found **40/40 rows present, exactly one drift**, so isolated, not table drift |
+
+### Gates, diff, deploy, soak
+
+`format:check` · `lint` · `lint:md` · `typecheck` · `build` all clean; **`test` 197 files / 3761
+passed**; `test:livegate` **55/55**; `test:cov` green with **no threshold failure**; `eval:agentic`
+**95**; `backtest` **80**. One transient `test` failure was observed and is recorded rather than
+smoothed: `app-module.boot.spec.ts` failed once with `Parse Error: Expected HTTP/, RTSP/ or ICE/`,
+passed in isolation and on full re-run — an HTTP socket flake under concurrent server boots, not a
+change here.
+
+`022b361` money path (#139/#145/#146) · `4ef4153` promotion gate (#141/#142/#143) · `e299475` loop
+instruments (#140/#144, RSS artifact, adverse-selection text) · `cfe3a84` the other session's two
+cited records. Grouped **one commit per reviewed slice** rather than one per defect, because that is
+the unit each review actually adjudicated.
+
+**Deployed and verified:** `build_info{git_sha="cfe3a84"}`, boot
+`c63b7f20-2fd2-48c5-9320-2f0ccb2605ec`, healthy in 10s, `RestartCount` 0,
+`kill_switch_state{state="RUNNING"}`, clean stamp writing (07:56:07Z), budget initialised $2.05.
+
+**A new redeploy carve-out, found by nearly filing it as an incident:** a metrics scrape taken
+within ~70s of boot reads `mode_info{effective="paper"}` — the safe default — because mode
+resolution had not yet run. The log settles it at 07:56:49Z:
+`effective mode=testnet (requested=testnet) downgrades=[]`, and the gauge now reads
+`effective="testnet"`. **A fresh-boot `paper` reading is a mid-boot artifact, not a downgrade.**
+
+**SOAK: PASS** (`loop:sweep` 08:03:42Z). One alarm — the frozen reject-rate window, unchanged. **No
+new alarm.** Container healthy, `RestartCount` 0, running build `cfe3a84` == working-tree tip, 23
+Prometheus rules loaded / 0 firing, host duty cycle 0 suspends.
+
+- **`error=0` this boot.** Every prior boot carried exactly one error line, the `venue_filter_drift`
+  refusal of FIL/USDT. It is gone — #146 confirmed live, not merely green in a test.
+- **Decides are flowing:** lifetime real model decides 1264, newest 08:00:41Z, five minutes after
+  boot. `consulted=0 / forced_rearm=6` is the fresh-boot shape refuted above, now expected.
+- **All three corrected sentences are live and read correctly**, which is the only way to check a
+  fix whose whole subject is what the loop prints to itself. The divergence annotation now states
+  the statistic **cannot** show adverse selection and names the filled-vs-unfilled split as the
+  instrument that can; the anchor disclosure carries its measured population, the 83/94 ticker split
+  and the 0.57 bps ceiling; the replay side is named as **a different row set**.
+- `rss_delta_spans_warmup` correctly did NOT fire — the boot changed, so there is no cross-boot delta
+  to qualify.
+
+**The book, ONE `evaluate()` sample at 2026-08-04T08:03:42Z:** `windowDays=11.3571, roundTrips=50,
+netPnlUsd=−66.4593, llmCostUsd=30.0237, winRate=0.2400, ready=false`, reasons unchanged
+`[NON_POSITIVE_NET_PNL, INSUFFICIENT_WINDOW, BELOW_PASSIVE_BENCHMARK]`. **The promotion gate did not
+move and was not supposed to** — nothing here was a profitability change. v10 h=8 forward return is
+now n=26 / clusters=9, mean **−42.0 bps** CI [−104.5, +9.3], still excluding the +19.3 replay
+prediction.
+
+`loop:harness` re-run at close: `loop-sweep-specs` **353 passed**, `eval:agentic` **95**, `backtest`
+**80**, 0 failing — clearing the three `harness_stale` annotations the sweep opened with.
+
+### Flagged / next
+
+1. **`AGENTIC_OUTPUT_EFFORT` (L1) and the liquidation fix landed on the SAME boot, and the confound is
+   pre-registered here BEFORE the first read (~2026-08-06), not discovered after.** L1's named
+   rollback trigger _"entry rate outside [1.60%, 6.75%] on the first 400 post-enable FLAT rows"_ is
+   **confounded** — `022b361` gives the model real liquidation data for the first time, a genuine
+   behaviour change that can move entry rate. **That trigger may not be read as evidence about L1
+   alone.** L1's PRIMARY signature is unaffected and stays clean: `truncated_max_tokens` rows → 0 and
+   output-token spend, which a payload-content change cannot touch.
+2. **#142's pricing half stays open**, and it is an owner-capability item, not a scheduling choice:
+   no authoritative `claude-opus-4-8` rate exists in-repo. The gate runs on a fail-closed upper bound
+   that is now at least **named in a log line** instead of silently absorbed.
+3. **The OOS arm is still unstartable** — the code/document contradiction is gone, but it remains
+   blocked on an owner-side hourly decide-leg trigger that does not exist. `oos_arm_unstarted` will
+   keep firing verbatim, which is correct reporting.
+4. **`recordedEventCount()` is not on `LiquidationFeedPort`** and has no production reader; the only
+   live signal for a stuck feed is a one-shot warn. Wiring it into `metrics.service.ts` is the
+   durable fix and was left out of scope.
+5. **The pin-set leak (≈$0.33/day) was not reached for a THIRD consecutive pass.** Three passes is a
+   pattern, not a coincidence: it is now competing with a defect queue every time. If it is worth
+   ≈$0.33/day it should be scheduled as the improvement of a pass whose sweep is clean, or dropped.
+6. **`git log` belongs in the rehydration step, not just before committing.** The playbook already
+   says to re-run it before commit; this pass shows the cost of not running it EARLY — a concurrent
+   commit was invisible for six hours and produced a wrong conclusion about fabricated authority.

@@ -215,3 +215,13 @@ Closed ledger — rows moved out of `STATUS.md` when done, kept in full here (no
 | `state.md` | never for content — a stub kept because commit messages, `docs/runbook.md` and the scheduled task reference the path by name |
 | `digests/` | `loop:sweep` writes its digest here; rehydration reads the newest |
 | `incidents/` | a named incident note written by an earlier pass |
+
+## Backlog (open) — moved here from STATUS.md at Pass 66 for the 200-line cap, nothing dropped
+
+| # | Item | Stage | Effort | Status / next check |
+| --- | --- | --- | --- | --- |
+| 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | DESIGN-GATED: the 5→8 sequencing gate is OBE (40 symbols + vol×ATR scanner + menu-8); residual = the rotation-vs-promotion-walk attribution design |
+| 56 | Put `test:cov` on `pnpm checks` | 2 | S | **Proved again Pass 60**: `6029d72` shipped five uncovered branches and only an A/B revert found them. One line, once the `v8 ignore` annotations are spot-checked |
+| 58 | Retire or re-scope the spot half of the universe | 1 | M | 191 spot consults → **0** entries under v10 (P(0) ≈ 3.8e-4); **14 lifetime spot `open_long`, zero `open_short` ever**; spot realized PnL **−$8.01 over 7 lifetime entries**, and Pass 62 measures **−190.1 bps/trip mean on n=7 — 4× worse than perp, but n=7 is not a basis for a venue decision.** **Justify on EXPECTANCY, never on cost.** Confounded with v10 `inverted`. Remedies: `LOG.md` § Pass 58 |
+
+Row **57 CLOSED 2026-08-03 with a measured answer** (decoupling artifact +21.0 bps/trip, CI [+1.4, +39.8] — it FLATTERS the demo book, so it cannot be what makes it negative; `studies/frame-audit-2026-08-03.md`). Rows **54/55** moved in full to `charter.md` § Backlog closed ledger; **18/44/45/47** retired OBSOLETE 2026-07-30. **Do not re-open one because its gate has cleared.**

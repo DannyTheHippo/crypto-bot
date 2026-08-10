@@ -993,7 +993,7 @@ heading.
 
 **Expected-positive — TRANSMISSION, which is deterministic, not behaviour, which is declared null:**
 
-1. The rendered system prompt on the v5 template carries the perp schedule `2/5` and the spot
+1. The rendered system prompt on the **v6** template carries the perp schedule `2/5` and the spot
    schedule `10/10` as **distinct facts**, and no longer contains the 20-bps-derived "sub-0.6%"
    sentence. Verified by `pnpm eval:agentic`'s rendered fixture and by the prompt-hash partition
    moving off `aefafb3c…`.
@@ -1015,7 +1015,13 @@ heading.
    toward the newly-legal band, the suppression hypothesis is alive on a channel this read could
    not see; if it does not move, the null declared above is confirmed.
 
-**Confound stack, declared before the enable.** The v4→v5 partition is clean, but the container
+**`TRADE_TEMPLATE_VERSION` goes v4 → v6, and v5 is SKIPPED deliberately.** `PROMPT_TEMPLATE_VERSION`
+in the same file already holds `'v5'`; reusing that string for a different template composition is
+exactly the collision `computePromptHash`'s distinctness spec exists to catch. **`v5` is retired for
+this lineage — do not reintroduce it**, and read every "v5" in the plan that authorised this enable
+as "v6".
+
+**Confound stack, declared before the enable.** The v4→v6 partition is clean, but the container
 recreate that deploys it also carries: **migration `0003` + `stop_reason` journaling** (`fe84c61`),
 **per-symbol fill watermarks**, **the reconciliation repair path for orphaned algo-rail stops**, and
 **the authoring budget/mint gate**. Standing alongside: **L1 and L4 still live** since 2026-08-04,

@@ -11,11 +11,15 @@
 //     `experiments` table — same gate test/db/experiment-registry.spec.ts uses for the same table.
 //
 // This harness is UNSTARTED (research/studies/oos-session-arm-2026-08-03.md § Cadence: "Until that
-// trigger exists the arm is UNSTARTED, not failed, and no read may be sealed") — the owner-side
-// hourly trigger does not exist yet. Nothing in this file scores a read or writes a real committed
-// decisions-*.jsonl; every write here targets a tmpdir. Building the file-backed path is still in
-// scope (loadSessionAnswers/makeFileBackedFetchFn) so the real standing arm has somewhere to plug in
-// once the trigger lands.
+// trigger exists the arm is UNSTARTED, not failed, and no read may be sealed"). The hourly trigger
+// named there was RETIRED by the 2026-08-10 amendment (owner constraint: no new daemons, crons, or
+// background tasks) — the carrier is now the existing daily-profitability-loop.md pass, firing the
+// decide leg at pass start AND pass end (see that amendment's § 1, and docs/planning/daily-
+// profitability-loop.md § 1a for the executable pass step). The arm is UNSTARTED for the SAME reason
+// either way: no window has been sealed and no read has been scored. Nothing in this file scores a
+// read or writes a real committed decisions-*.jsonl; every write here targets a tmpdir. Building the
+// file-backed path is still in scope (loadSessionAnswers/makeFileBackedFetchFn) so the real standing
+// arm has somewhere to plug in — test/eval/agentic/oos-arm-run.spec.ts is that plug-in point now.
 
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -521,6 +525,37 @@ describe('oos-session-arm — dry-run decide batch: $0 by construction, no netwo
   });
 });
 
+describe('oos-session-arm — sealBatch fails CLOSED, no live DB required', () => {
+  // Both proofs below run unconditionally (no DB_GATE_OPEN) — a fail-closed proof must not depend on
+  // the very DB availability it is proving the absence/failure of.
+  const fixtureWindow = {
+    windowStart: NOW_MS - 4 * BAR_MS,
+    windowEnd: NOW_MS,
+    rowIdsInOrder: [FAITHFUL_ROW.id, FAITHFUL_ROW_2.id],
+    payloadSha256: computeRowSetHash([FAITHFUL_ROW, FAITHFUL_ROW_2]),
+    liveFlatRows: 2,
+    liveEntryCount: 0,
+  };
+
+  it('rejects rather than silently no-opping when no connection string is supplied', async () => {
+    // '' rather than `undefined` — an explicit `undefined` argument still falls through to the
+    // default parameter (`process.env['DATABASE_URL']`), which may be set in THIS run's shell even
+    // though the assertion is about the "no DB" case. An empty string bypasses the default and is
+    // still falsy, so the same guard fires deterministically regardless of shell state.
+    await expect(sealBatch(fixtureWindow, '')).rejects.toThrow(/DATABASE_URL/);
+  });
+
+  it('rejects rather than silently no-opping when the DB is unreachable, even at a `_test`-suffixed URL', async () => {
+    // Port 1 on loopback: nothing listens there, so `pg` fails fast with ECONNREFUSED rather than
+    // hanging — this never touches a real database, live or test. The `_test` suffix is deliberate:
+    // it proves the fail-closed path fires on a genuine connection failure, not merely on the
+    // production-URL guard logTrials used to apply (§ module header — that gate is gone).
+    await expect(
+      sealBatch(fixtureWindow, 'postgres://x:x@127.0.0.1:1/cryptobot_test'),
+    ).rejects.toThrow();
+  }, 10_000);
+});
+
 // ── DB integration — sealBatch writes a real, DB-authored created_at ────────────────────────────────
 // Same guard as test/db/experiment-registry.spec.ts (DB_SUITE_ALLOW_RESET or a `_test`-suffixed
 // DATABASE_URL) — this is NOT part of the free/default leg above, and is skipped entirely offline.
@@ -546,9 +581,11 @@ describe.skipIf(!DB_GATE_OPEN)(
           windowEnd: NOW_MS,
           rowIdsInOrder: [FAITHFUL_ROW.id, FAITHFUL_ROW_2.id],
           payloadSha256: computeRowSetHash([FAITHFUL_ROW, FAITHFUL_ROW_2]),
+          liveFlatRows: 2,
+          liveEntryCount: 0,
         };
         const beforeSeal = Date.now();
-        await sealBatch(window);
+        await sealBatch(window, DB_URL);
         const afterSeal = Date.now();
 
         const expectedParamsHash = paramsHash({

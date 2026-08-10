@@ -1021,3 +1021,190 @@ seal replaces it with the arm's own measured rate, in a further amendment.
   not explained; the v10 confound (`inverted`, live 2026-07-30T16:57Z, no control arm) is unchanged.
 - **It does not create the hourly trigger.** § Cadence still binds: the trigger is owner-side, it does
   not exist, and until it does no read may be sealed.
+
+### Amendment 2026-08-10 — the hourly trigger is RETIRED; the carrier is the existing 3×/day pass
+
+_Appended per the rule above. Nothing before this heading is edited, including the 2026-08-04
+amendment. **Admissible today, and only today, for the reason § Cadence itself gives:** the arm is
+still UNSTARTED — no window has been sealed and no read has been scored (verified against the
+project's own machinery as of this date: `sealBatch`, test/eval/agentic/oos-arm-record.ts, was
+rewritten this same date to fail CLOSED into `public.experiments`, but nothing has called it with real
+data). A cadence change is a design decision, not a result; this document's own discipline is that a
+change of this kind is admissible only BEFORE the first look, and this is that window._
+
+**The owner constraint that forces this amendment, stated once:** no new daemons, crons, or background
+tasks (owner, 2026-08-10). § Cadence's own text names an hourly trigger as "an owner-side scheduler
+change, outside this repository" and records that the scheduler has "already produced five concurrent-
+pass collisions on this host." That trigger was never built and, under the present constraint, never
+will be. The carrier below is the existing `daily-profitability-loop.md` pass. That playbook's own
+cadence line names a 2-4/day band; this amendment's arithmetic uses **3×/day** as its planning figure
+(the mid-band value, and the figure this amendment's own author specified) — a pass at the low end of
+the band accrues rows more slowly than § 1's table states, a pass at the high end more quickly, and
+neither changes any conclusion below by more than the table's own rounding. Nothing new is scheduled;
+the decide leg rides a loop pass that already runs.
+
+#### 1. Cadence: 3×/day, not hourly — the decide leg fires at PASS START and PASS END, rowId-deduped
+
+> **CADENCE, as amended 2026-08-10.** The decide leg (`docs/planning/daily-profitability-loop.md`
+> § 1a) fires TWICE per pass — once immediately after § 1's rehydration (`loop:sweep`), once again
+> immediately before § 6's `loop:unlock` — at a pass cadence of 3×/day. Each firing gathers rows with
+> `event_time > nowMs − 4·BAR_MS` (the same k∈{0,1,2,3} eligibility window § Cadence always specified,
+> now bound to the DATABASE clock at gather time rather than a wall clock trigger) and dedupes against
+> every rowId already recorded in `research/oos-arm/decisions-*.jsonl`, so the SAME row is never
+> offered to the session twice regardless of how many firings see it while still within its own
+> 45-60-minute eligibility window.
+
+**The measured rate, and where ≈33.6 rows/day comes from.** § 4 of the 2026-08-04 amendment measured
+**134.7 FLAT rows/day** at full (hourly, 24-window) coverage — 5.6125 rows/hour on average. A firing
+that gathers a ~1-hour lookback window therefore samples ≈5.6125 rows per firing. At 6 firings/day
+(3 passes × 2 legs):
+
+```text
+6 x 5.6125 = 33.675 rows/day  ≈ 33.6 rows/day
+```
+
+Rows required for a `d`-point primary difference (§ 2 of the 2026-08-04 amendment's own table,
+`n = 2 z^2 p_bar q_bar / d^2`, unchanged here — no statistic in this amendment is re-derived):
+
+| `d` (absolute) | rows required | days at 134.7/day (hourly, § 2 of 2026-08-04) | days at 33.675/day (adopted, dual-leg) |
+| --- | --- | --- | --- |
+| 10 pp | 202 | 1.50 | **5.997 ≈ 6.0** |
+| 5 pp | 604 | 4.49 | 17.94 |
+| 3 pp | 1,441 | 10.70 | 42.79 |
+
+**The ×8 comparison table, and a discrepancy this amendment records rather than papers over.** The
+task that authored this amendment specified "show the ×8 comparison table against the originally-
+recorded hourly cadence." My own derivation from the measured 134.7 rows/day does not reproduce ×8
+against the ADOPTED dual-leg design — it reproduces **×4.0** (134.7 / 33.675 = 4.0000). It DOES
+reproduce ×8 against a **single-leg** 3×/day design (one decide firing per pass, not two):
+
+```text
+3 x 5.6125 = 16.8375 rows/day (single-leg)      134.7 / 16.8375 = 7.9994 ~= x8
+```
+
+| cadence | firings/day | rows/day | ratio vs hourly | days to 10pp (202 rows) |
+| --- | --- | --- | --- | --- |
+| hourly (originally recorded, § Cadence pre-amendment) | 24 | 134.7 | 1.0x (reference) | 1.50 |
+| 3×/day, ONE decide leg per pass (not adopted) | 3 | 16.84 | **8.0x slower** | 12.00 |
+| 3×/day, decide at PASS START AND PASS END (ADOPTED, this amendment) | 6 | 33.68 | **4.0x slower** | 5.997 |
+
+**Both figures are recorded, per this document's own precedent for a supplied figure that does not
+reconcile** (§ Figures this document could not verify, the 1,288-vs-1,461-cluster discrepancy in § The
+arithmetic: "recorded as SUPPLIED, not re-derived"). **My derivation is ×4.0 for the cadence actually
+adopted (pass-start AND pass-end) and ×8.0 for the single-leg alternative the task named but this
+amendment does not adopt.** The single-leg number is what "traded away" against pure hourly coverage
+would have been had this document chosen one firing per pass; the dual-leg design this amendment
+actually specifies recovers half of that loss. Either way the day-scale conclusion is unchanged from
+the 2026-08-04 amendment's own closing line: **a 5-percentage-point behavioural difference remains
+powered in under three weeks (17.94 days), and the 10-percentage-point case remains powered in about a
+week (6.0 days)** — an order of magnitude worse than hourly, never a blocker, because § Rows accrue
+with time already established that this arm is aimed at an axis where waiting is cheap.
+
+#### 2. The eligibility filter is an INVARIANT, not a preference
+
+`k <= 3` (§ Eligibility) was already fail-closed in the shipped machinery
+(`assertEligible`, test/eval/agentic/oos-arm-decide.ts: "a row presented at k > 3 is refused, not
+clamped") — this amendment does not change that code. What changes is the STATUS of the rule: under
+an hourly trigger, `k <= 3` was a near-tautology (an hourly firing reaches every row within 0-3 bars by
+construction, § Cadence's original text). Under the 3×/day carrier, a firing's own gather bound
+(`event_time > nowMs - 4*BAR_MS`, `scripts/loop-oos-arm-gather.mjs`) is what keeps offered rows inside
+the eligible band — the invariant now does real work rather than restating the trigger's own geometry,
+and a candidates file that ever carries an ineligible row is evidence the gather bound or the gather
+instant is wrong, not a row to quietly drop. `oos-arm-run.spec.ts`'s `decideCandidateBatch` asserts
+eligibility over the WHOLE batch, uncaught, before any row is decided — one ineligible row aborts the
+firing.
+
+#### 3. Time-of-day population scope note — binding on every future read
+
+A 3×/day pass cadence samples candidate rows from **three approximate clock windows per day** (the
+pass cadence's own three run times), each contributing two closely-spaced firings (pass start, pass
+end) rather than one. **The sealed row population is therefore NOT a uniform sample of the trading
+day** — it is concentrated near three instants, wherever those happen to fall for a given 24h period,
+never smeared evenly across all 24 hours the way an hourly trigger's 24 firings would have been. If
+entry behaviour (either arm's) varies by time of day — a real possibility this program has never ruled
+out for this corpus — a sealed window's rows carry that non-uniformity, and a read scored on them
+inherits it. **This is a scope limit, stated here once and binding on every future read of this arm
+without needing restatement**: no read may describe its rows as a time-of-day-uniform sample, and any
+apparent effect must be checked against which of the three daily windows it concentrates in before
+being read as a rate difference rather than a scheduling artifact.
+
+#### 4. The blind-subagent VOID-4 convention
+
+VOID condition 4 ("a transcript showing the deciding session read anything beyond the offered payload
+... is the blindness condition") is enforced procedurally (§ Blindness is procedural), and this
+amendment names the SPECIFIC mechanism the 3×/day carrier uses to enforce it, since an hourly trigger
+never had to specify one:
+
+> **The decide leg runs in a DISPATCHED SUBAGENT** whose entire input is the candidates file's own
+> contents plus the composed prompt surface (`buildLiveSystemPrompt`/`buildPlaybookBlock` output) —
+> **never `action`, never a pointer into `research/loop/`, `agent_decisions`, or candle data beyond
+> what the candidates file already carries.** The candidates file is structurally incapable of naming
+> the live lane's decision (the gather SQL never selects `action` — § vi of the task that built this
+> machinery, `scripts/loop-oos-arm-gather.mjs`), so the subagent's blindness is enforced twice: once by
+> what it is given, once by what it is asked. **That dispatched subagent's own transcript IS the VOID-4
+> artifact** — never summarized, redacted, or regenerated before a read checks it (§ Blindness is
+> procedural: "checked before the seal is written").
+
+#### 5. Per-read seal targets: reads 1-2 at 202 rows each
+
+The first two of the family's six disjoint reads (§ Multiplicity) are targeted at **202 rows each** —
+the 10-percentage-point row requirement from § 2 of the 2026-08-04 amendment's own two-proportion
+table, cited rather than re-derived. This is a TARGET for when a window is sealed, not a change to the
+primary's own required-rows table (still 202/604/1,441 for 10/5/3 pp, § Underpowered and incomplete
+still governs an under-target seal) — a read sealed short of 202 is reported with its true `n` and
+achieved power, never dropped or re-opened. Reads 3-6's targets are left undeclared here: the family's
+own multiplicity discipline (§ Multiplicity) governs their sequencing, and declaring a target ahead of
+having any sealed read to calibrate against would be exactly the kind of un-evidenced constant this
+document's own § Figures this document could not verify exists to avoid.
+
+#### 6. A missed pass is a gap, recorded as a gap — never backfilled
+
+If a pass fails, is skipped, or ends before reaching § 1a's own decide-leg step (either firing), the
+rows that accrued in that window are **not** retroactively gathered by a later pass. This is the SAME
+rule § Row-window bookkeeping already states for a missed hour under the retired hourly design ("Gaps
+between windows are permitted and are a wait, never a backfill") — restated here because the failure
+mode changes shape under the new carrier: a missed PASS is now the unit of loss (up to ~11.2 rows,
+2 firings' worth at the measured per-firing rate), not a missed hour (~5.6 rows). `LOG.md`'s pass entry
+records a gap explicitly when a firing is skipped, the same way it records any other incomplete pass
+step — never silently, and never papered over by widening a later firing's lookback window past its
+own `4*BAR_MS` bound to "catch up" (which would also break the eligibility invariant in § 2 above).
+
+#### 7. Seals happen ONLY at target — a seal IS a scored read; the family budget is 6
+
+> **SEALING, as amended 2026-08-10.** The decide leg (§ 1a of the daily loop playbook) NEVER seals a
+> window as a side effect of gathering or recording rows. A window is sealed only when a pass
+> determines it has reached its target row count (§ 5 above for reads 1-2), as that pass's OWN
+> explicit, reported action — computing `liveFlatRows`/`liveEntryCount` per the registered denominator
+> (§ 1 of the 2026-08-04 amendment) over exactly that window's rows before calling `sealBatch`
+> (`test/eval/agentic/oos-arm-record.ts`). This is not a new rule — § Row-window bookkeeping already
+> requires "the window is fixed in its seal BEFORE the read is scored" and VOID condition 5 already
+> requires a seal before any score — this amendment states it against the NEW carrier so a future pass
+> does not read "the decide leg ran" as "a window was sealed." **A seal IS a scored read for the
+> family's own 6-read budget** (§ Multiplicity: "After the sixth seal the family is SPENT"), so sealing
+> early, on an under-target window, spends a family slot on a read that will report as UNDERPOWERED by
+> construction (§ Underpowered and incomplete) — a strictly worse outcome than waiting for target with
+> no offsetting benefit, since accumulated rows before a seal cost nothing to hold.
+
+#### 8. What this amendment does not do
+
+- **It scores no read, seals no window and consumes no family slot.** The arm remains UNSTARTED. Every
+  file this amendment's machinery touches (`test/eval/agentic/oos-arm-run.spec.ts`,
+  `scripts/loop-oos-arm-gather.mjs`, the `sealBatch` rewrite in `oos-arm-record.ts`) was built and
+  validated with SYNTHETIC fixtures only — no real candidates file, no real answers file, and no real
+  seal was written by the work that produced this amendment.
+- **It changes no alpha, no multiplicity ladder, no cluster unit, no VOID condition, and no imported
+  constant.** Six disjoint scored reads at `8.3333e-3`; base-asset clusters; `HORIZONS`, `MIN_ENTRIES`,
+  `MIN_CLUSTERS`, `N_BOOT`, `BOOTSTRAP_SEED`, `MAX_GAP_SHARE`, `BAR_MS`, `FLAT_MARKER` all still
+  imported, never redefined. VOID conditions 1 through 5 (as already amended 2026-08-04 for condition
+  3) stand word for word.
+- **It does not change the primary or secondary statistic, the comparator, or the required-rows
+  table.** § 1-2 of the 2026-08-04 amendment govern unchanged; this amendment only changes HOW OFTEN
+  rows accrue toward those row counts, never what is computed over them once sealed.
+- **It does not shorten the day counts — it lengthens them, and says so plainly** (§ 1's table: 6.0
+  days at 10pp versus the pre-amendment hourly figure of 1.50). The owner constraint that forces this
+  trade (no new daemons) is accepted as binding, and this document does not argue against it — only
+  records what it costs.
+- **It does not build a seal invoker.** § 7 states the seal policy; no CLI or automatic trigger that
+  calls `sealBatch` on reaching target was built alongside this amendment. A pass that judges a window
+  at target seals it manually, as its own reported action, until such an invoker is separately
+  proposed and reviewed.

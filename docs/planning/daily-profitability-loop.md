@@ -117,6 +117,68 @@ before suspecting a bug (Y1 §D host-state). That annotation is measured from in
 process (wall-clock advance minus monotonic advance), so unlike the old `pmset` read it describes
 the thing that actually stopped.
 
+## 1a. Out-of-sample session-arm decide leg (fires at pass start AND pass end)
+
+Machinery: `research/studies/oos-session-arm-2026-08-03.md` (the pre-registration; binds — read its
+§ Cadence and its 2026-08-10 amendment before touching this step), `test/eval/agentic/oos-arm-
+{decide,record,prompt,run}.ts`, `scripts/loop-oos-arm-gather.mjs`. **This step is the decide leg
+only.** It gathers candidate rows and records this session's blind decisions. It never seals a
+window (sealing is a separate, later action — see the note at the end of this section) and it never
+scores a read.
+
+**Carrier, not a new daemon** (owner constraint, 2026-08-10: no new daemons, crons, or background
+tasks). This step is TWO firings inside the existing pass — once here, right after §1 step 4
+(`loop:sweep`), and once again at the very end of the pass, immediately before §6 step 5's
+`loop:unlock`. A missed firing (pass skipped, pass failed before reaching this step) is a GAP,
+recorded as a gap in LOG.md — **never backfilled** (pre-registration § Row-window bookkeeping: "Gaps
+between windows are permitted and are a wait, never a backfill").
+
+Run each firing as follows:
+
+1. **Gather** (read-only, no daemon):
+   `OOS_ARM_CANDIDATES_FILE=<scratch path> corepack pnpm --dir <repo> loop:oos-gather`. This queries
+   `agent_decisions` for rows with `trigger_kind='candle'`, non-replay
+   (`strategy_id NOT LIKE 'replay-%'`), a FLAT position marker (the same literal
+   `loop-forward-return.mjs` uses), and `event_time > (DB clock now()) − 4·900000` ms — the arm's own
+   k∈{0,1,2,3} eligibility window, read off the DATABASE clock in the SAME round trip the query itself
+   uses, never the host clock. It excludes any rowId already present in
+   `research/oos-arm/decisions-*.jsonl` (dedupe) and REFUSES — throws, writes nothing — if the
+   gathered rows span more than one `agent_playbook_versions.version`: a promotion landing mid-window
+   is a gap for THIS firing, never a guess at which version applies to which row. **The output file
+   structurally never carries `action` or any other field naming the live lane's decision** — the
+   gather SQL never selects `action`, so there is nothing in the file to leak.
+2. **Blind decide, in a dispatched subagent — this is the VOID-4 artifact.** Dispatch a subagent
+   whose ENTIRE input is the candidates file's contents plus the composed prompt surface (the same
+   `buildLiveSystemPrompt`/`buildPlaybookBlock` output the harness itself builds — never hand-compose
+   a different one) — **never `action`, never a pointer into `research/loop/`, `agent_decisions`, or
+   candle data beyond what the candidates file already carries** (pre-registration VOID condition 4:
+   "a transcript showing the deciding session read anything beyond the offered payload ... is the
+   blindness condition"). The subagent decides each row exactly as the live trading tool schema
+   requires (one `submit_trade`-shaped tool call per row) and writes its answers to a scratch JSONL,
+   one line per row: `{"rowId": "...", "toolInput": {...}}`. **That subagent's own transcript is the
+   artifact this pre-registration's blindness check reads** — never summarized, redacted, or
+   regenerated; the dispatching pass keeps the transcript reference in its own LOG.md entry.
+3. **Record** (env-gated, no daemon):
+   `OOS_ARM_RUN=1 OOS_ARM_CANDIDATES_FILE=<same path> OOS_ARM_ANSWERS_FILE=<answers path> corepack pnpm --dir <repo> exec vitest run test/eval/agentic/oos-arm-run.spec.ts`
+   (`pnpm --dir <repo> vitest …` fails EACCES — `exec` is required, same as every other ad hoc vitest
+   invocation in this playbook). Decides every ELIGIBLE, ANSWERED row via the file-backed replay path
+   (zero network egress beyond what the dispatched subagent itself made in step 2), reports the count
+   of rows skipped for a missing answer, runs the caps-faithfulness and entry-rate VOID checks, and —
+   only if both are clean — appends one line per decided row to
+   `research/oos-arm/decisions-YYYY-MM-DD.jsonl` (dated off the gather instant). An ineligible row in
+   the candidates file (the gather step's own bound should prevent this, but the runner asserts it
+   independently) ABORTS the whole firing; a VOID caps/entry-rate check writes nothing. Either way, do
+   not retry the same candidates file — re-gather fresh at the next firing.
+
+**Sealing is a SEPARATE, later action this step does not perform.** Per the pre-registration's
+2026-08-10 amendment (§ Seal targets), a window is sealed only once it reaches its target row count
+(202 rows for reads 1-2) — most firings of this step accumulate rows toward that target without
+sealing anything. A pass that determines a window HAS reached target seals it via `sealBatch`
+(`test/eval/agentic/oos-arm-record.ts`) as its own explicit, reported action, computing
+`liveFlatRows`/`liveEntryCount` per the registered denominator over exactly that window's rows before
+calling it — never as an implicit side effect of this decide-leg step, and never for a window that has
+not reached target.
+
 ## 2. Evidence sweep — `pnpm loop:sweep` IS the sweep
 
 Run `corepack pnpm --dir <repo> loop:sweep` (sandbox-disabled). It is the whole sweep — the

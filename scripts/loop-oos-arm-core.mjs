@@ -395,6 +395,41 @@ function scoreOneRead({
   ).length;
   const liveEntryRate = paired.length === 0 ? null : liveEntryCount / paired.length;
 
+  // Cross-check against the SEALED baseline (SealWindow.liveFlatRows/liveEntryCount,
+  // test/eval/agentic/oos-arm-record.ts) — the figure the parent (decide-leg pass step) computed and
+  // fixed BEFORE this read was scored, per § 1 of the 2026-08-04 amendment ("the baseline `L` ... is
+  // recorded in the seal, before the read is scored"). This is an ANNOTATION, never a correction: the
+  // figures computed above from `paired` (this scorer's own join against `agent_decisions` at score
+  // time) are what every statistic in this read uses, unconditionally. A disagreement means the
+  // sealed-time and score-time reads of the SAME registered denominator moved — a live row added,
+  // removed, or reclassified between seal and score — and that is itself a finding worth surfacing,
+  // not silently resolved in either figure's favor.
+  const sealedLiveFlatRows = Number(metrics.liveFlatRows);
+  const sealedLiveEntryCount = Number(metrics.liveEntryCount);
+  const sealBaselineReadable =
+    Number.isFinite(sealedLiveFlatRows) && Number.isFinite(sealedLiveEntryCount);
+  if (!sealBaselineReadable) {
+    annotations.push(
+      annotation(
+        'oos_arm_seal_baseline_unchecked',
+        `read ${readIndex}: the seal carries no readable liveFlatRows/liveEntryCount — the ` +
+          'sealed-baseline cross-check was NOT run for this read. This is an open gap, not a clean ' +
+          'match: do not read its absence as evidence the sealed and scored baselines agree',
+      ),
+    );
+  } else if (sealedLiveFlatRows !== paired.length || sealedLiveEntryCount !== liveEntryCount) {
+    annotations.push(
+      annotation(
+        'oos_arm_seal_baseline_mismatch',
+        `read ${readIndex}: sealed baseline (liveFlatRows=${sealedLiveFlatRows}, ` +
+          `liveEntryCount=${sealedLiveEntryCount}) disagrees with the baseline this scorer computed ` +
+          `at score time (paired rows=${paired.length}, liveEntryCount=${liveEntryCount}) — annotated, ` +
+          'not corrected: every statistic below uses the SCORE-TIME figures, and the disagreement ' +
+          'itself is the finding',
+      ),
+    );
+  }
+
   // VOID condition 3 AS AMENDED 2026-08-04: (a) S/L outside [1/6, 6.0], or (b) S > 65% absolute.
   // There is NO absolute floor: a low session entry count is reported with its true n and achieved
   // power (§ Underpowered and incomplete), never voided.
@@ -685,9 +720,10 @@ export function computeOosArm({
       annotation(
         'oos_arm_decision_record_absent',
         'research/oos-arm/decisions-*.jsonl could not be read (absent or unreadable) — the arm has ' +
-          'recorded no offered rows. Per the pre-registration (§ Cadence) this is EXPECTED until the ' +
-          'owner-side hourly decide-leg trigger exists: the arm is UNSTARTED, not FAILED, and this is ' +
-          'a void read rather than a clean zero',
+          'recorded no offered rows. Per the pre-registration (§ Cadence, as amended 2026-08-10) this ' +
+          'is EXPECTED until the decide-leg pass step (daily-profitability-loop.md § 1a) has fired at ' +
+          'least once and appended a record: the arm is UNSTARTED, not FAILED, and this is a void read ' +
+          'rather than a clean zero',
       ),
     );
   } else {
@@ -764,8 +800,9 @@ export function computeOosArm({
       annotation(
         'oos_arm_unstarted',
         'no sealed window exists yet — VOID condition 5 ("no seal, no score") means no read may be ' +
-          'scored. This is UNSTARTED, not FAILED (§ Cadence: "Until [the hourly] trigger exists the ' +
-          'arm is UNSTARTED, not failed, and no read may be sealed")',
+          'scored. This is UNSTARTED, not FAILED (§ Cadence, as amended 2026-08-10: the decide leg now ' +
+          'rides the existing pass carrier and no window has reached its seal target yet — "no read ' +
+          'may be sealed" until one does)',
       ),
     );
     return { status: 'unstarted', reads: [], familySpent, annotations };

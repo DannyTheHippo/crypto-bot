@@ -666,6 +666,119 @@ describe('computeOosArm — VOID conditions', () => {
   });
 });
 
+// Sealed-baseline cross-check (SealWindow.liveFlatRows/liveEntryCount, oos-arm-record.ts;
+// pre-registration § 1 of the 2026-08-04 amendment). This is an ANNOTATION, never a correction — the
+// scorer's own score-time join against `agent_decisions` is what every statistic uses regardless of
+// what the seal says.
+describe('computeOosArm — sealed-baseline cross-check (annotation, never a correction)', () => {
+  function record(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      rowId: 'r1',
+      eventTime: T0,
+      venue: 'binance',
+      symbol: 'BTC/USDT',
+      base: 'BTC',
+      playbookVersion: 1,
+      hashes: {},
+      agentPromptCommitSha: '',
+      capsSource: 'recorded',
+      schemaValid: true,
+      action: 'hold',
+      directives: null,
+      ...over,
+    };
+  }
+
+  it('names the check UNCHECKED when the seal carries no liveFlatRows/liveEntryCount at all', () => {
+    const rows = [record({ rowId: 'r1' })];
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = [
+      {
+        eventTime: T0,
+        venue: 'binance',
+        symbol: 'BTC/USDT',
+        action: 'hold',
+        playbookVersion: null,
+        isFlat: true,
+      },
+    ];
+    const seals = [
+      { createdAtMs: 1, metrics: { windowStart: T0, windowEnd: T0 + BAR_MS, rowIds: ['r1'] } },
+    ];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    expect(r.annotations.map((a) => a.kind)).toContain('oos_arm_seal_baseline_unchecked');
+    expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_seal_baseline_mismatch');
+  });
+
+  it('annotates a mismatch without changing the scored read when the sealed baseline disagrees', () => {
+    const rows = [record({ rowId: 'r1' })];
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = [
+      {
+        eventTime: T0,
+        venue: 'binance',
+        symbol: 'BTC/USDT',
+        action: 'hold',
+        playbookVersion: null,
+        isFlat: true,
+      },
+    ];
+    // Sealed baseline claims 5 FLAT rows / 3 entries; the score-time join finds only 1 row / 0 entries
+    // — a deliberate disagreement, proving the annotation fires without altering the read.
+    const seals = [
+      {
+        createdAtMs: 1,
+        metrics: {
+          windowStart: T0,
+          windowEnd: T0 + BAR_MS,
+          rowIds: ['r1'],
+          liveFlatRows: 5,
+          liveEntryCount: 3,
+        },
+      },
+    ];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    const mismatch = r.annotations.find((a) => a.kind === 'oos_arm_seal_baseline_mismatch');
+    expect(mismatch).toBeDefined();
+    expect(mismatch!.detail).toContain('liveFlatRows=5');
+    expect(mismatch!.detail).toContain('liveEntryCount=3');
+    expect(mismatch!.detail).toContain('paired rows=1');
+    // The scored read itself is unchanged — 0 entries of 1 paired row, not the sealed 3-of-5.
+    expect(r.reads[0]!.primary!.summary).toContain('live entry-rate=0.0%');
+    expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_seal_baseline_unchecked');
+  });
+
+  it('names no mismatch when the sealed baseline agrees exactly with the score-time join', () => {
+    const rows = [record({ rowId: 'r1' })];
+    const decisionLines = rows.map((r) => JSON.stringify(r));
+    const liveEntryRows: EntryRow[] = [
+      {
+        eventTime: T0,
+        venue: 'binance',
+        symbol: 'BTC/USDT',
+        action: 'hold',
+        playbookVersion: null,
+        isFlat: true,
+      },
+    ];
+    const seals = [
+      {
+        createdAtMs: 1,
+        metrics: {
+          windowStart: T0,
+          windowEnd: T0 + BAR_MS,
+          rowIds: ['r1'],
+          liveFlatRows: 1,
+          liveEntryCount: 0,
+        },
+      },
+    ];
+    const r = computeOosArm({ decisionLines, seals, liveEntryRows, gridRows: [] });
+    expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_seal_baseline_mismatch');
+    expect(r.annotations.map((a) => a.kind)).not.toContain('oos_arm_seal_baseline_unchecked');
+  });
+});
+
 // Regression for the 2026-08-04 adversarial review finding: armEntryRate is computed over
 // schemaValidRows.length (armTrials), but the Fisher table and pooled z used n = paired.length —
 // a different, larger denominator whenever any sealed row is schema-invalid. A 2x true rate

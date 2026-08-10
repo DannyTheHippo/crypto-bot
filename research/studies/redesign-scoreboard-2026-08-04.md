@@ -942,6 +942,89 @@ partition over 7 days of post-deploy rows. Unchanged-or-higher ⇒ `effort` is n
 unset `AGENTIC_OUTPUT_EFFORT`. Deadline 2026-08-17. The default outcome on a silent, empty or
 unreadable instrument is the unset, not the status quo.**
 
+### L6 — the fee-truth PROMPT path: registered 2026-08-10 BEFORE its enable, magnitude declared ZERO and DERIVED
+
+_§ 3.5 declared L5 (the table row flip) NULL and measured, and explicitly deferred the prompt-path
+change: "a separate, unregistered lever with no magnitude. It does not ship on this record." This
+registers it. Written and committed **before** the enable commit, per § 3's standing rule and
+`rules` rail 4. § 3's rule that a lever with no derivable magnitude is BLOCKED is satisfied here
+the way § 3.2 and § 3.5 satisfied it: the magnitude **is** derivable, and it is **zero**._
+
+**Mechanism.** The model is told its round trip costs **20 bps** (the SPOT schedule `10/10`) on a
+book that is **88.65% perp at a measured 7.2208 bps** — a 2.8× overstatement of its own cost. The
+table row is one half; the other half is that `agentTradingProfileFor` builds the rendered profile
+from `config.strategy.symbols[0]` = `BTC/USDT`, a SPOT symbol, **so the prompt never reads the perp
+row at all**. L6 flips the perp schedule to `{makerBps:'2', takerBps:'5'}` (the file's own
+pre-registered round-up of the measured 4.5216), renders **both** venues' schedules, floors the
+take-profit gate at `max(roundTripFeeFraction(venue), +8.3619 bps)`, and rewrites the
+20-bps-derived "sub-0.6% targets" sentence.
+
+**Measured here, 2026-08-10T09:12Z — and it substantially dismisses the suppression hypothesis
+§ 3.5 left open.** Proposed `takeProfitPct` on non-replay entry decisions, from `plan_json`:
+
+| venue | n | min | p25 | median | p75 | max | proposals < 0.002 | < 0.001 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| binanceusdm (perp) | 112 | **0.012** | 0.025 | **0.035** | 0.045 | 0.070 | **0** | **0** |
+| binance (spot) | 14 | 0.020 | 0.0285 | 0.031 | 0.035 | 0.045 | **0** | **0** |
+
+**The model has never proposed a take-profit anywhere near the floor.** Its perp minimum is
+**0.012 — six times the current 0.002 floor and twelve times the post-flip 0.001 floor** — and its
+median 0.035 is **17.5× the overstated round-trip cost and 48× the true one**. And the TP-floor
+gate's all-time rejection count was **re-verified at 0** in the same read (`%rejected: tp below fee
+floor%`, all strategies, all modes, all time), which is now explained mechanically rather than
+merely observed.
+
+**So § 3.5's open question — "a plausible suppression channel, this record neither confirms nor
+dismisses it" — is answered in the direction of dismissal, on the exit-target axis.** A 2.8×
+overstatement of a cost cannot plausibly bind a target that already clears the true cost by 48×.
+The one axis where fee truth could still matter is the **entry** decision (whether to trade at
+all), and this read says nothing about that. **The "fee misinformation suppresses targets"
+hypothesis carried in the redesign plan is refuted for targets and untested for entries.**
+
+**Declared magnitude: 0 bps, $0/day, 0 entries admitted, 0 gate rejections changed.** Derived, not
+asserted. **Any post-enable improvement attributed to this flip is refuted in advance**, on the
+same terms § 3.5 refuses it for L5.
+
+**So why ship it.** Not as an improvement. **As a correctness fix and a confound removal**: every
+future entry-side study on this lane would otherwise be run against a model that was told a false
+fact about its own book, and that confound is unremovable after the fact. It is admissible under
+the redesign plan's stance sentence as *evidence for the successor program*, and under no other
+heading.
+
+**Expected-positive — TRANSMISSION, which is deterministic, not behaviour, which is declared null:**
+
+1. The rendered system prompt on the v5 template carries the perp schedule `2/5` and the spot
+   schedule `10/10` as **distinct facts**, and no longer contains the 20-bps-derived "sub-0.6%"
+   sentence. Verified by `pnpm eval:agentic`'s rendered fixture and by the prompt-hash partition
+   moving off `aefafb3c…`.
+2. `takeProfitFloorFraction` never returns below `0.00083619` for any venue.
+
+**Named defects ⇒ rollback:**
+
+1. **The rendered prompt does not change** (hash partition does not move, or the fixture still
+   carries one schedule) ⇒ the lever did not ship at all ⇒ revert the single commit. This is the
+   only clause on which "does not transmit ⇒ roll back" applies, because transmission here is a
+   property of the rendered bytes, not of the model's behaviour.
+2. **First 20 perp trips under v5 carrying `takeProfitPct < 0.002` realise a mean net below
+   +8.3619 bps** ⇒ revert. **This cohort is expected to be EMPTY** — the pre-enable minimum
+   proposal is 0.012 — and **an empty cohort is UNFIRED FOR WANT OF POPULATION, never a pass.** Say
+   so at every read; an unrun check is not a passing one.
+3. **The proposed-TP distribution is declared NOT to move.** Post-enable perp median outside
+   [0.030, 0.040], or minimum below 0.010, over the first 50 v5 perp proposals is a **FINDING to
+   report in whichever direction it points** — not a rollback and not a success. If it moves down
+   toward the newly-legal band, the suppression hypothesis is alive on a channel this read could
+   not see; if it does not move, the null declared above is confirmed.
+
+**Confound stack, declared before the enable.** The v4→v5 partition is clean, but the container
+recreate that deploys it also carries: **migration `0003` + `stop_reason` journaling** (`fe84c61`),
+**per-symbol fill watermarks**, **the reconciliation repair path for orphaned algo-rail stops**, and
+**the authoring budget/mint gate**. Standing alongside: **L1 and L4 still live** since 2026-08-04,
+the **liquidation and perp trade-flow payload channels** live since 2026-08-04, and — the largest —
+**the regime shift measured in § Checkpoint #1**, where gross per trip improved ~87% with zero
+configuration changes. **Nothing measured after this deploy is attributable to L6 alone**, which is
+why every clause above is graded on a mechanical quantity — rendered bytes, floor values, proposal
+distributions — and **never on PnL**.
+
 ### The confound stack, stated so no later reader credits either lever alone
 
 **L1 and L4 shipped in the same instant.** Nothing measured after 2026-08-04T08:00:23Z is

@@ -1177,6 +1177,50 @@ describe('AgenticStrategy journals the batch consultId (persistence)', () => {
   });
 });
 
+// I1 (WATCH-V4-12 follow-on): Anthropic's own stop_reason must reach the journal row the same way
+// AgentProposal.consultId does — pinned at the same strategy boundary (recordJournalEntry), never a
+// call-site-specific mapping.
+describe('AgenticStrategy journals the stopReason (persistence)', () => {
+  class StopReasonClient implements AgentClientPort {
+    constructor(private readonly stopReason?: string) {}
+    propose(): Promise<AgentProposal> {
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'no edge' },
+        ...(this.stopReason ? { stopReason: this.stopReason } : {}),
+      });
+    }
+  }
+
+  it('journals the stop_reason the proposal carried', async () => {
+    const client = new StopReasonClient('tool_use');
+    const entries: Array<{ stopReason?: string | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ stopReason: e.stopReason }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.stopReason).toBe('tool_use');
+  });
+
+  it('journals null when the proposal carried no stopReason (no client call attempted)', async () => {
+    const client = new StopReasonClient();
+    const entries: Array<{ stopReason?: string | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ stopReason: e.stopReason }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.stopReason).toBeNull();
+  });
+});
+
 // Push 3 P7c: minimal-but-full OrderIntent fixture — only source.dedupeKey is ever read
 // (AgenticStrategy.roleForOrder), the rest is filler matching test/unit/risk/property.spec.ts's own
 // convention for a throwaway intent literal.

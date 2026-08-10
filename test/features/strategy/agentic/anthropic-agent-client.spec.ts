@@ -612,6 +612,75 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  // I1 (WATCH-V4-12 follow-on): stop_reason is the cheapest instrument for whether
+  // AGENTIC_OUTPUT_EFFORT actually reaches the API — journal it verbatim on every proposal a call
+  // was actually attempted for, mirroring latencyMs/usage's own conventions.
+  describe('stopReason telemetry (I1)', () => {
+    it('stamps stopReason on a successful tool_use decision', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody(tradeOpen({ thesis: 'x' }), 'tool_use', 'submit_trade')),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.stopReason).toBe('tool_use');
+    });
+
+    it('stamps stopReason=max_tokens on a truncated (no tool_use block) response', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse({
+          stop_reason: 'max_tokens',
+          content: [{ type: 'text' }],
+          usage: { input_tokens: 5000, output_tokens: 1024 },
+        }),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.stopReason).toBe('max_tokens');
+    });
+
+    it('stamps stopReason=refusal on a model refusal', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse({ stop_reason: 'refusal', content: [] }));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.stopReason).toBe('refusal');
+    });
+
+    it('leaves stopReason absent when the envelope itself fails to parse (no stop_reason to extract)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse('not-an-object'));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.stopReason).toBeUndefined();
+    });
+  });
+
   describe('playbook composition and prompt hash', () => {
     it('fills promptHash on every path a call was actually attempted, with playbookVersion undefined when no provider is wired', async () => {
       const fetchFn = vi.fn();

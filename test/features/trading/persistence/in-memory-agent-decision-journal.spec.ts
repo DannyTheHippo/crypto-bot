@@ -122,6 +122,16 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(withoutConsultId!.consultId).toBeUndefined();
   });
 
+  it('round-trips a carried stopReason, and defaults absent stopReason to undefined on the row', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { stopReason: 'tool_use' }));
+    journal.record(entry(2));
+
+    const [withStopReason, withoutStopReason] = await journal.recent(2);
+    expect(withStopReason!.stopReason).toBe('tool_use');
+    expect(withoutStopReason!.stopReason).toBeUndefined();
+  });
+
   it('recentVersioned() returns versioned rows only, honors sinceMs and keeps the newest under the cap', async () => {
     const journal = new InMemoryAgentDecisionJournal();
     journal.record(entry(1, { playbookVersion: 1 }));

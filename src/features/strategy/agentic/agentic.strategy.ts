@@ -3390,6 +3390,10 @@ export class AgenticStrategy implements AsyncStrategy {
         // forwarded to the journal, since the v3 agent_decisions table has no columns for them.
         // R2: regime fingerprint for episodic-memory retrieval — see regimeTagsFor.
         regimeTags: this.regimeTagsFor(input, context),
+        // I1: Anthropic's own stop_reason, verbatim — see AgentDecisionEntry.stopReason. Null on
+        // every degrade that never got a parseable envelope (mirrors usage/latencyMs's own
+        // absent-when-no-call convention above).
+        stopReason: proposal?.stopReason ?? null,
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
@@ -3441,6 +3445,8 @@ export class AgenticStrategy implements AsyncStrategy {
         // R2: tag error rows too — the regime is still knowable from the input, so a later consult can
         // learn "in this regime a decide errored" alongside its real decisions.
         regimeTags: this.regimeTagsFor(input, context),
+        // I1: an error row never carries a parseable envelope — see AgentDecisionEntry.stopReason.
+        stopReason: null,
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.
@@ -3485,6 +3491,8 @@ export class AgenticStrategy implements AsyncStrategy {
         // R2: quiet/prescreen holds are tagged too — a regime in which the lane repeatedly held is
         // itself case-based context worth surfacing.
         regimeTags: this.regimeTagsFor(input, context),
+        // I1: a quiet/prescreen row never called the client — see AgentDecisionEntry.stopReason.
+        stopReason: null,
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.

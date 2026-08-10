@@ -395,6 +395,11 @@ export const agentDecisions = pgTable(
     cacheReadInputTokens: integer('cache_read_input_tokens'),
     cacheCreationInputTokens: integer('cache_creation_input_tokens'),
     latencyMs: integer('latency_ms'),
+    // Anthropic response stop_reason ('tool_use' | 'max_tokens' | 'refusal' | ...), verbatim —
+    // the cheapest instrument for whether AGENTIC_OUTPUT_EFFORT actually reaches the API; null on
+    // rows that never called the client (error/quiet-hold), same absent-vs-null convention as the
+    // token columns above.
+    stopReason: text('stop_reason'),
     playbookVersion: integer('playbook_version'),
     promptHash: text('prompt_hash').notNull(),
     // Rendered market-context JSON the model saw (playbook/system excluded — see agent-prompt.ts's

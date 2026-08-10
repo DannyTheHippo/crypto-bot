@@ -119,6 +119,8 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       cacheReadInputTokens: entry.cacheReadInputTokens ?? null,
       cacheCreationInputTokens: entry.cacheCreationInputTokens ?? null,
       latencyMs: entry.latencyMs,
+      // I1: Anthropic's own stop_reason, verbatim — see AgentDecisionEntry.stopReason.
+      stopReason: entry.stopReason ?? null,
       playbookVersion: entry.playbookVersion,
       promptHash: entry.promptHash,
       inputPayload: entry.inputPayload,
@@ -199,6 +201,7 @@ function toRow(
     cacheReadInputTokens: r.cacheReadInputTokens,
     cacheCreationInputTokens: r.cacheCreationInputTokens,
     latencyMs: r.latencyMs,
+    stopReason: r.stopReason,
     playbookVersion: r.playbookVersion,
     promptHash: r.promptHash,
     inputPayload: r.inputPayload,

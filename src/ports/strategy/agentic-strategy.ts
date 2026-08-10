@@ -583,6 +583,11 @@ export interface AgentProposal {
   // promptHash/latencyMs.
   readonly infoArm?: boolean;
   readonly thinkingArm?: boolean;
+  // WATCH-V4-12 follow-on (I1): Anthropic's own stop_reason, verbatim — the cheapest instrument
+  // for whether AGENTIC_OUTPUT_EFFORT reaches the API (the knob went live but truncation still
+  // fired 16h later with no way to tell if the request even carried it). Absent only when no
+  // client call was attempted at all — same convention as infoArm/thinkingArm.
+  readonly stopReason?: string;
 }
 
 export interface AgentClientPort {
@@ -710,6 +715,9 @@ export interface AgentDecisionEntry {
   // plan_json's jsonb alongside the directive set / schedule (agent-decision-journal.adapter.ts's
   // buildPlanJson), so no new DB column — same no-migration convention as nextConsultBars.
   readonly regimeTags?: RegimeTags | null;
+  // See AgentProposal.stopReason — Anthropic's own stop_reason, verbatim; null/absent whenever no
+  // call was made (error/quiet-hold rows). Optional so pre-this-column writers/fixtures compile.
+  readonly stopReason?: string | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {

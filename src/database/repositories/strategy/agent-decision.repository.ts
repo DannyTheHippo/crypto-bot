@@ -42,6 +42,9 @@ export interface AgentDecisionInsert {
   cacheReadInputTokens?: number | null;
   cacheCreationInputTokens?: number | null;
   latencyMs: number | null;
+  // I1: Anthropic's own stop_reason, verbatim — see AgentDecisionEntry.stopReason. Optional so
+  // pre-this-column callers/fixtures stay valid; absent and null both insert as NULL.
+  stopReason?: string | null;
   playbookVersion: number | null;
   promptHash: string;
   inputPayload: string | null;

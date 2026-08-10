@@ -1010,6 +1010,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         inputPayload,
         infoArm: ctx.infoArm,
         thinkingArm: ctx.thinkingArm,
+        stopReason: envelope.data.stop_reason,
       };
     }
     const toolName = activeTool.name;
@@ -1048,6 +1049,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         inputPayload,
         infoArm: ctx.infoArm,
         thinkingArm: ctx.thinkingArm,
+        stopReason: envelope.data.stop_reason,
       };
     }
     // sizeFractionMax is a zod numeric bound (a fraction, not a money computation) — caps.maxSizeFraction
@@ -1080,6 +1082,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         inputPayload,
         infoArm: ctx.infoArm,
         thinkingArm: ctx.thinkingArm,
+        stopReason: envelope.data.stop_reason,
       };
     }
     // v3 consolidation spec §4.3: capability-violation degrade — 'open_short' structurally parses
@@ -1107,6 +1110,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         inputPayload,
         infoArm: ctx.infoArm,
         thinkingArm: ctx.thinkingArm,
+        stopReason: envelope.data.stop_reason,
       };
     }
     return this.buildProposalFromTradeDecision({
@@ -1125,6 +1129,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       inputPayload,
       infoArm: ctx.infoArm,
       thinkingArm: ctx.thinkingArm,
+      stopReason: envelope.data.stop_reason,
     });
   }
 
@@ -1353,6 +1358,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       return this.softHoldBatch(
         resolved,
         undefined,
+        // stop_reason is unrecoverable here too — the envelope itself failed to parse, same as the
+        // single-symbol malformed-envelope branch above.
+        undefined,
         latencyMs,
         ctx.playbookVersion,
         promptHash,
@@ -1386,6 +1394,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       return this.softHoldBatch(
         resolved,
         usage,
+        envelope.data.stop_reason,
         latencyMs,
         ctx.playbookVersion,
         promptHash,
@@ -1433,6 +1442,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       return this.softHoldBatch(
         resolved,
         usage,
+        envelope.data.stop_reason,
         latencyMs,
         ctx.playbookVersion,
         promptHash,
@@ -1511,6 +1521,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       return this.softHoldBatch(
         resolved,
         usage,
+        envelope.data.stop_reason,
         latencyMs,
         ctx.playbookVersion,
         promptHash,
@@ -1540,6 +1551,8 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     resolved.forEach((r, i) => {
       const usageForThis = i === 0 ? usage : undefined;
+      // See AgentProposal.stopReason — mirrors usageForThis's own first-resolved-only convention.
+      const stopReasonForThis = i === 0 ? envelope.data.stop_reason : undefined;
       const raw = bySymbolTrade.get(r.symbolKey);
       if (raw === undefined) {
         this.cfg.recordSchemaFailure?.('missing_symbol');
@@ -1556,6 +1569,7 @@ export class AnthropicAgentClient implements AgentClientPort {
             ),
           },
           ...(usageForThis ? { usage: usageForThis } : {}),
+          ...(stopReasonForThis ? { stopReason: stopReasonForThis } : {}),
           latencyMs,
           playbookVersion: ctx.playbookVersion,
           promptHash,
@@ -1585,6 +1599,7 @@ export class AnthropicAgentClient implements AgentClientPort {
             rationale: schemaRejectedRationale(firstIssueSummary(parsedElement.error)),
           },
           ...(usageForThis ? { usage: usageForThis } : {}),
+          ...(stopReasonForThis ? { stopReason: stopReasonForThis } : {}),
           latencyMs,
           playbookVersion: ctx.playbookVersion,
           promptHash,
@@ -1612,6 +1627,7 @@ export class AnthropicAgentClient implements AgentClientPort {
             rationale: 'capability_violation:open_short_on_spot',
           },
           ...(usageForThis ? { usage: usageForThis } : {}),
+          ...(stopReasonForThis ? { stopReason: stopReasonForThis } : {}),
           latencyMs,
           playbookVersion: ctx.playbookVersion,
           promptHash,
@@ -1640,6 +1656,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         consultId,
         infoArm: ctx.infoArm,
         thinkingArm: ctx.thinkingArm,
+        stopReason: stopReasonForThis,
       });
       // Stamped on EVERY returned proposal (Design table: "portfolio-level, one per batch
       // response") — including a fee-floor-rejected element, whose own mapping already returns
@@ -1659,6 +1676,10 @@ export class AnthropicAgentClient implements AgentClientPort {
   private softHoldBatch(
     resolved: ReadonlyArray<{ readonly symbolKey: string; readonly inputPayload: string }>,
     usage: AgentUsage | undefined,
+    // See AgentProposal.stopReason — same absent-vs-value convention and same first-resolved-only
+    // stamping as `usage` right above (i === 0 below); absent on the malformed-envelope caller,
+    // which has no parseable envelope.data.stop_reason to extract.
+    stopReason: string | undefined,
     latencyMs: number,
     playbookVersion: number | undefined,
     promptHash: string,
@@ -1683,6 +1704,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         signals: [],
         ...(decision ? { decision } : {}),
         ...(i === 0 && usage ? { usage } : {}),
+        ...(i === 0 && stopReason ? { stopReason } : {}),
         latencyMs,
         playbookVersion,
         promptHash,
@@ -1845,6 +1867,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly consultId?: string;
     readonly infoArm: boolean;
     readonly thinkingArm: boolean;
+    readonly stopReason: string | undefined;
   }): AgentProposal {
     const {
       input,
@@ -1863,6 +1886,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       consultId,
       infoArm,
       thinkingArm,
+      stopReason,
     } = params;
     const { action, thesis } = decision;
     const side = input.context?.position.side ?? 'FLAT';
@@ -1950,6 +1974,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           ...(consultId ? { consultId } : {}),
           infoArm,
           thinkingArm,
+          stopReason,
         };
       }
     }
@@ -2099,6 +2124,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(consultId ? { consultId } : {}),
       infoArm,
       thinkingArm,
+      stopReason,
     };
   }
 

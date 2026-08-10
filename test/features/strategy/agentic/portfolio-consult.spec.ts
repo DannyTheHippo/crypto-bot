@@ -522,6 +522,33 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     });
   });
 
+  // I1: stopReason mirrors usage's own first-resolved-only stamping (see the test right above) —
+  // the invariant `stop_reason IS NOT NULL ⟺ one row per HTTP call` only holds if every OTHER
+  // symbol in the batch omits it.
+  it('stopReason attaches to the FIRST resolved symbol only, absent on every other symbol', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody(
+          [
+            { symbol: 'BTC/USDT', action: 'hold', confidence: 0.5, rationale: 'r' },
+            { symbol: 'ETH/USDT', action: 'hold', confidence: 0.5, rationale: 'r' },
+          ],
+          'tool_use',
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.stopReason).toBe('tool_use');
+    expect(result.proposals.get('ETH/USDT')?.stopReason).toBeUndefined();
+  });
+
   it('stamps ONE identical consultId on every proposal of a batch — including a degraded (malformed) element and a symbol missing from decisions[] entirely', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(buildCfg(), fetchFn);

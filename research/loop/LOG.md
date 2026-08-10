@@ -1069,10 +1069,18 @@ first time since the machinery landed (`924f8b2`, Pass 66). Previous sweeps anno
    firing **2/4 = 50%**, under the absolute 65% ceiling of condition 3(b). `agentPromptCommitSha`
    `3a23dc1823e96d3f…`, `agentPromptBlobSha` `5ed73d67f21a0d8f…`.
 
-**NOTHING WAS SEALED, and that is correct** (amendment § 7): read 1's target is **202 rows** and this
-firing brings the window to **4**. A seal IS a scored read against the family's 6-read budget, so sealing
+**FIRING #2 (pass end, 16:37:49Z)** fired as the amendment's dual-leg cadence requires —
+`gatheredAtMsFromDb=1786379870575`, **2 rows** after rowId-dedupe against firing #1 (`67602` KAITO/USDT:USDT
+**open_long**, `67652` ZEC/USDT:USDT **hold**), same prompt surface (`f719d545…` / `7cddfe56…`, unchanged
+because nothing was deployed between the firings), both `capsSource:"recorded"`, both VOID checks clean.
+**NO GAP this pass: both legs fired.** Transcript artifact: agent `af2b50ff6292ce0af` — same durability
+blocker as firing #1.
+
+**NOTHING WAS SEALED, and that is correct** (amendment § 7): read 1's target is **202 rows** and this pass
+brings the window to **6** (4 + 2). A seal IS a scored read against the family's 6-read budget, so sealing
 early buys an UNDERPOWERED read for a spent slot. At the amendment's own 33.675 rows/day the target lands
-≈2026-08-16.
+≈2026-08-16 — though **this pass delivered 6 rows, not the 11.2 the amendment's per-firing rate projects**,
+so that date is optimistic on today's evidence and the next passes should watch the realised rate.
 
 **FLAGGED — the VOID-4 artifact is not durable, and this pass could not make it durable.** The
 pre-registration requires the deciding subagent's transcript to be _checked before the seal is written_

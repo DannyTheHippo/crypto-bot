@@ -40,7 +40,7 @@
 
 > **The out-of-sample session arm RAN END TO END on real data for the first time**: 4 rows gathered on the DB clock, decided by a blind dispatched subagent on the harness's own composed surface
 > (`systemPromptSha256 f719d545…`), recorded to **`research/oos-arm/decisions-2026-08-10.jsonl`** — every row `capsSource:"recorded"`, `schemaValid:true`, both VOID checks passed BEFORE the append, session
-> entry rate 2/4. **NOTHING SEALED, and that is correct** — read 1's target is **202 rows** and the window stands at **4** (≈2026-08-16 at 33.675 rows/day); a seal IS a scored read against the 6-read budget.
+> entry rate 2/4. **BOTH legs fired (16:07Z and 16:37Z), NO GAP; 6 rows total.** **NOTHING SEALED, and that is correct** — read 1's target is **202 rows**, the window stands at **6**, and a seal IS a scored read against the 6-read budget. **P67 delivered 6 rows, not the 11.2 the amendment projects per pass — watch the realised rate before trusting the ≈08-16 target.**
 > **⛔ FLAGGED BLOCKER: the VOID-4 transcript is NOT durable.** It lives in session-scoped harness storage outside the repo (222 KB, agent `a16c5a955547fa858`); copying it in was **DENIED by the host
 > permission gate**. Unpreserved ⇒ **blindness is unverifiable at seal time and read 1 is void by construction.** Retention design is non-trivial (~1.2 MB/day, ~7 MB to first seal). **Next pass owes it.**
 > **E2 REFUSED TODAY on both its own clauses** (do not re-derive): the d1→d2 flip changes `prompt_hash` (a SHA-256 digest — *"ENABLING V2 MID-FACTORIAL IS FORBIDDEN"*, `agent-prompt.ts:44-49`) and would

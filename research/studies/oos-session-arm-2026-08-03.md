@@ -1208,3 +1208,126 @@ own `4*BAR_MS` bound to "catch up" (which would also break the eligibility invar
   calls `sealBatch` on reaching target was built alongside this amendment. A pass that judges a window
   at target seals it manually, as its own reported action, until such an invoker is separately
   proposed and reviewed.
+
+### Amendment 2026-08-11 (Pass 68) — the VOID-4 artifact CANNOT be copied into this repo, so the CHECK is what gets recorded
+
+_Appended per the rule at § Amendments. Nothing above this heading is edited._
+
+**This amendment changes no statistic, no alpha, no multiplicity ladder, no cluster unit, no imported
+constant, no VOID condition, and no seal target.** Six disjoint scored reads at `8.3333e-3`; base-asset
+clusters; reads 1-2 targeted at 202 rows. It operationalizes VOID condition 4's "checked before the seal
+is written" against a capability limit the 2026-08-10 amendment did not anticipate.
+
+#### 1. The blocker, stated as a capability limit rather than a scheduling choice
+
+The 2026-08-10 amendment § 4 names the dispatched subagent's own transcript as the VOID-4 artifact, to be
+preserved "never summarized, redacted, or regenerated". That transcript is written by the Claude Code
+harness to session-scoped storage OUTSIDE this repository:
+
+```text
+$HOME/.claude/projects/<project-slug>/<sessionId>/subagents/agent-<agentId>.jsonl
+```
+
+**Copying that file into the repository is REFUSED by the host permission gate.** Pass 67 attempted it and
+was denied; Pass 68 attempted it twice more, in two different command shapes, and was denied both times.
+The denial is on the ACTION (reading harness session storage into the project tree), not on the command
+form — reading the file in place, hashing it, and computing over it all succeed. This is a capability the
+loop does not have and cannot grant itself, so it is recorded here as a permanent constraint on the design
+rather than as work deferred.
+
+#### 2. What is recorded instead — an ATTESTATION, which is an ADDITION and never a replacement
+
+`scripts/loop-oos-transcript.mjs` (pure core: `scripts/loop-oos-transcript-core.mjs`; specs:
+`test/features/common/scripts/loop-oos-transcript-core.spec.mjs`, on the production gate) reads the
+transcript IN PLACE and appends one line per firing to **`research/oos-arm/attestations.jsonl`** (tracked
+in git; ~1 KB per firing, so the whole six-read family costs kilobytes rather than the ~23 MB the raw
+corpus would have added to a 45 MB `.git` — the same reasoning `.gitignore:41-43` already applies to
+research corpora).
+
+Each line carries: `passLabel`, `firing`, `agentId`, `sessionId`, `agentType`, `model`, `transcriptPath`,
+**`transcriptSha256` over the raw bytes**, `transcriptBytes`, `lineCount`, `toolCallCount`, the
+`allowedPaths` the firing declared, `blindnessClean`, the full `violations` list, `capturedAtIso`, and the
+`rowIds` the firing decided.
+
+**The attestation is not the artifact and does not claim to be.** The transcript remains the sole evidence
+and is untouched. What the attestation adds is (a) the CHECK, run at capture time while the bytes are
+known to exist, and (b) a cryptographic pin — `transcriptSha256` — so that a seal-time reader who still
+has the bytes can prove they are the same bytes that were checked, and one who does not can at least see
+that the check was performed and against what. Under the pre-registration's own § Blindness is procedural
+("the enforcement is the transcript, checked before the seal is written"), it is the CHECK that the seal
+depends on; this records the check durably and the artifact's identity with it.
+
+#### 3. Failure direction: FAILS CLOSED, and it is the opposite of this study's measurement code
+
+`classifyBlindness` refuses the "clean" verdict on anything it does not positively recognise: a
+`Read`/`Write`/`Edit` outside the declared `allowedPaths`, a `Bash` command referencing any path outside
+the declared scratch prefix, a `Bash` command with no path token at all, ANY other tool
+(`Grep`/`Glob`/`WebFetch`/`Task`/`mcp__*`), or any unparseable transcript line. Zero tool calls is clean.
+This is deliberately the opposite direction from `loop-oos-arm-core.mjs` and `loop-forward-return-core.mjs`,
+which fail OPEN because a broken measurement must never block the thing it measures. This is not a
+measurement: it is the one procedural control that can void an entire sealed window, so an ambiguous read
+must refuse rather than assume.
+
+#### 4. THREE OF THE FOUR FIRINGS SO FAR ARE VOID-4 VIOLATED — and the first version of this check said otherwise
+
+**This subsection replaced a draft that reported Pass 67 as CLEAN. That draft was wrong, it was caught by
+the adversarial review of this pass's own diff, and the correction is recorded here rather than shipped
+quietly.** The first classifier collected only content blocks whose `type` was literally `tool_use` and
+silently dropped every other shape. Real transcripts also carry `{type:'server_tool_use', name:'advisor'}`
+with a matching `{type:'advisor_tool_result'}` — measured across the live corpus at **29 `server_tool_use`
+blocks in 23 of 27 subagent transcripts**. The harness injects an `advisor` tool into dispatched subagents
+by default, so it was present in the decide legs, its result was returned into the deciding context, **and
+the gate could not see it.** The extractor now fails closed on any block type it does not positively
+recognise as inert, and `Bash` is an unconditional violation (§ 5).
+
+Re-attested with the corrected classifier — all four firings the arm has run to date:
+
+| pass · firing | agentId | bytes | sha256 (first 16) | calls | verdict |
+| --- | --- | --- | --- | --- | --- |
+| 67 · 1 | `a16c5a955547fa858` | 222,121 | `62f15ee624f98df9` | 9 | **VIOLATED** — `Bash`, `advisor` |
+| 67 · 2 | `af2b50ff6292ce0af` | 150,920 | `90333383ed239dba` | 6 | **VIOLATED** — `advisor` |
+| 68 · 1 | `a5d2836268725850c` | 270,996 | `954af2697c2650c9` | 8 | **VIOLATED** — `Bash`×2, `advisor` |
+| 68 · 2 | `a130daaa41f278a8b` | 155,615 | `1d3cef6fbb76dda7` | 5 | **CLEAN** |
+
+**What is and is not established.** No transcript shows a read of `research/loop/`, of `agent_decisions`,
+or of candle data beyond the offered payload — the leak this condition most directly targets did not
+happen, and the live lane's own recorded `action` was never in reach. What DID happen is that an external
+reasoner was consulted inside three deciding sessions, which changes the identity of the decider in an arm
+whose entire object is "what a session, reading these bytes, decides".
+
+**Ruling, and it is deliberately the conservative one: the 12 rows decided in those three firings are
+marked VOID-4-FLAGGED, not silently kept.** Read 1's seal must either EXCLUDE them or carry a dated
+argument that the advisor channel is non-contaminating; it may not simply score them. The recommendation
+recorded here is to exclude: this arm is a ceiling probe on one session's reading ability (§ FAIL), and a
+session that consulted a second model is not that object. **This costs rows and buys nothing, which is
+precisely why it is the right default** — the same asymmetry § VOID conditions already relies on ("a VOID
+read consumes its window ... it removes any incentive to void a read one dislikes"). The window's row
+count is unchanged as a count; what changes is that 12 of its 13 rows now carry a flag the seal must
+resolve.
+
+**The one CLEAN firing is the evidence that the remedy works.** Pass 68 firing 2's brief forbade `Bash`
+outright and constrained the subagent to four `Read`s and one `Write`; that subagent declined the advisor
+on its own and said so unprompted. **Every future firing's brief carries that constraint**, so a
+`non_client_tool_call` violation from here on is a real finding rather than a default.
+
+#### 5. Two fail-open holes closed, and the gate was not loosened to make anything green
+
+The adversarial review produced eight false-CLEAN `Bash` commands against the original path-allowlisting
+branch, including `cat <allowed>/../../etc/passwd` (prefix escape by string containment),
+`psql -c "select * from agent_decisions" > <allowed>/out` (reads this study's own ground truth), and
+`cat <allowed>/candidates.json README.md` (a bare filename carries no `/` and was invisible to the
+tokenizer). The original header claimed an over-broad token set "can only produce MORE candidates to
+check, never fewer, so it cannot mask a real violation" — **that claim was false and is retracted.**
+
+`Bash` is now an unconditional violation, the same tier as `Grep`/`Task`, which is what this study's own
+dispatch brief already required. The path-tokenizer is deleted rather than hardened: a classifier that
+retains any `Bash`-clean path is more permissive than the procedure it enforces.
+
+Separately, Pass 68 firing 1 had ALSO tripped the old tokenizer on two `sed` substitution expressions
+(`1s/^.\{37000\}//p`) misread as paths. That false positive is now moot — `Bash` violates regardless — but
+its cause was fixed anyway: `scripts/loop-oos-arm-gather.mjs` writes the candidates file pretty-printed, so
+a subagent pages the same bytes with `Read` offset/limit and never needs a shell. JSON content after parse
+is byte-identical (`readCandidatesFile` does `JSON.parse`), so nothing this study measures changes.
+
+**Nothing in this subsection weakened a gate to clear a failing verdict.** Every change made the classifier
+stricter; the record was regenerated, not edited, and it now reports three violations it previously missed.

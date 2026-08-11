@@ -209,7 +209,16 @@ function main() {
   }
   const candidates = gatherCandidates();
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(candidates), 'utf8');
+  // Pretty-printed (2-space) rather than compact, for a BLINDNESS reason, not a cosmetic one. Compact,
+  // this file is one ~45 KB line, which the blind decide subagent's Read tool truncates mid-line — so
+  // the subagent reaches for a shell (`sed`) to recover the tail, and a shell call in a blind-decide
+  // transcript is exactly what the VOID-4 classifier (scripts/loop-oos-transcript-core.mjs) must treat
+  // as unproven. Pass 68 firing 1 hit this: the transcript attested VIOLATED on two `sed` expressions
+  // that were not paths at all. Line-broken, the subagent pages the same bytes with Read
+  // offset/limit and needs no shell, so a Bash call in one of these transcripts stays a real signal.
+  // JSON content is byte-identical after parse — readCandidatesFile does JSON.parse, so nothing this
+  // study measures changes.
+  writeFileSync(outPath, JSON.stringify(candidates, null, 2), 'utf8');
   process.stdout.write(
     `loop-oos-arm-gather: wrote ${candidates.rows.length} candidate row(s) to ${outPath} ` +
       `(gatheredAtMsFromDb=${candidates.gatheredAtMsFromDb})\n`,

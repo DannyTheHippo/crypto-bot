@@ -59,6 +59,7 @@ export default tseslint.config(
       'test/features/common/scripts/playbook-shared.spec.mjs',
       'test/features/common/scripts/loop-authoring-core.spec.mjs',
       'test/features/common/scripts/log-eval-experiment-gate.spec.mjs',
+      'test/features/common/scripts/loop-oos-transcript-core.spec.mjs',
       // Harness agent worktrees — full repo copies whose files have no tsconfig project context.
       '.claude/**',
     ],

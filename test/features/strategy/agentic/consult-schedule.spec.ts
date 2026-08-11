@@ -223,26 +223,26 @@ describe('AgenticStrategy consult schedule (B2)', () => {
     expect(gates.at(-1)).toBe('forced_rearm');
   });
 
-  it('(e) with no schedule ever set, the fallback cadence consults every fallbackConsultBars (16)', async () => {
+  it('(e) with no schedule ever set, the fallback cadence consults every fallbackConsultBars (8)', async () => {
     const gates: ConsultGateOutcome[] = [];
     const client = new ScheduledClient(undefined); // never returns a schedule — fallback governs
     const strategy = makeStrategy(client, (o) => gates.push(o));
 
-    for (let bar = 0; bar < 15; bar += 1) {
+    for (let bar = 0; bar < 7; bar += 1) {
       await strategy.decide(buildInput(bar));
     }
     expect(client.calls).toHaveLength(0);
 
-    await strategy.decide(buildInput(15));
+    await strategy.decide(buildInput(7));
     expect(client.calls).toHaveLength(1);
     expect(gates.at(-1)).toBe('forced_fallback');
 
-    // Cycle repeats: another 15 quiet bars, then the 32nd bar overall fires again.
-    for (let bar = 16; bar < 31; bar += 1) {
+    // Cycle repeats: another 7 quiet bars, then the 16th bar overall fires again.
+    for (let bar = 8; bar < 15; bar += 1) {
       await strategy.decide(buildInput(bar));
     }
     expect(client.calls).toHaveLength(1);
-    await strategy.decide(buildInput(31));
+    await strategy.decide(buildInput(15));
     expect(client.calls).toHaveLength(2);
     expect(gates.at(-1)).toBe('forced_fallback');
   });
@@ -258,7 +258,7 @@ describe('AgenticStrategy consult schedule (B2)', () => {
     });
 
     for (let bar = 0; bar < 20; bar += 1) {
-      await strategy.decide(buildInput(bar)); // well past the 16-bar fallback
+      await strategy.decide(buildInput(bar)); // well past the 8-bar fallback
     }
     expect(client.calls).toHaveLength(0);
     expect(new Set(gates)).toEqual(new Set(['skipped_scheduled']));

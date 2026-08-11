@@ -314,7 +314,7 @@ function makeAgenticHost(client: AgentClientPort, sink: SignalSinkPort, opts?: A
     SID,
     // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
     // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
-    // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+    // consult (fallbackConsultBars, default 8) — every fixture in this file predates B2 and expects
     // its own single-or-few decide() calls to reach the client, so fallbackConsultBars=1 keeps every
     // bar due on schedule without touching production scheduler semantics.
     { symbol: SYM, venue: V, interval: '1m', warmupBars: 2, fallbackConsultBars: 1 },
@@ -357,7 +357,7 @@ describe('agentic strategy routing (cannot bypass Risk)', () => {
       SID,
       // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
       // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
-      // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+      // consult (fallbackConsultBars, default 8) — every fixture in this file predates B2 and expects
       // its own single-or-few decide() calls to reach the client, so fallbackConsultBars=1 keeps every
       // bar due on schedule without touching production scheduler semantics.
       { symbol: SYM, venue: V, interval: '1m', warmupBars: 2, fallbackConsultBars: 1 },

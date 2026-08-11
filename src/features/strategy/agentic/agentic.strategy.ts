@@ -784,7 +784,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.entryTtlBars = params.entryTtlBars ?? 0;
     this.planMode = params.planMode ?? false;
     this.wakeMovePct = params.wakeMovePct ?? 0.015;
-    this.fallbackConsultBars = Math.max(1, params.fallbackConsultBars ?? 16);
+    this.fallbackConsultBars = Math.max(1, params.fallbackConsultBars ?? 8);
     this.planExitTtlBars = Math.max(2, params.planExitTtlBars ?? 2);
     this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
     this.trackRecordEnabled = params.trackRecordEnabled ?? false;

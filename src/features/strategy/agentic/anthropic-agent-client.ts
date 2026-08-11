@@ -1543,6 +1543,20 @@ export class AnthropicAgentClient implements AgentClientPort {
       );
     }
     const { nextConsultBars } = tradePortfolioParsed.data;
+    const fallbackConsultBars = this.cfg.fallbackConsultBars ?? DEFAULT_FALLBACK_CONSULT_BARS;
+    // Covers the three per-element discard branches below (missing_symbol, failed
+    // tradeElementSchema, capability_violation): a discarded element's own decision was thrown
+    // away, so it must not carry the batch's requested schedule along with it —
+    // agentic.strategy.ts:361's forced_fallback wake only fires once scheduledConsultBars is null,
+    // so an unclamped stamp here would keep that symbol dark past the fallback floor for a decision
+    // nobody acted on. Config already refuses a fallbackConsultBars <= 0 or non-finite at boot
+    // (environment.config.ts:311, z.coerce.number().int().min(1)); the finite/floor guard below is
+    // defence in depth, not the primary check — Math.min/Math.max both propagate a NaN input
+    // straight through, so a bare Math.max(1, ...) would not actually floor a NaN fallback.
+    const clampedConsultBars = Math.min(nextConsultBars, fallbackConsultBars);
+    const discardConsultBars = Number.isFinite(clampedConsultBars)
+      ? Math.max(1, clampedConsultBars)
+      : 1;
     const bySymbolTrade = new Map<string, unknown>();
     for (const raw of tradePortfolioParsed.data.decisions) {
       const symbolField = elementSymbolSchema.safeParse(raw);
@@ -1575,7 +1589,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
-          nextConsultBars,
+          nextConsultBars: discardConsultBars,
           infoArm: ctx.infoArm,
           thinkingArm: ctx.thinkingArm,
         });
@@ -1605,7 +1619,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
-          nextConsultBars,
+          nextConsultBars: discardConsultBars,
           infoArm: ctx.infoArm,
           thinkingArm: ctx.thinkingArm,
         });
@@ -1633,7 +1647,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
-          nextConsultBars,
+          nextConsultBars: discardConsultBars,
           infoArm: ctx.infoArm,
           thinkingArm: ctx.thinkingArm,
         });
@@ -1658,9 +1672,18 @@ export class AnthropicAgentClient implements AgentClientPort {
         thinkingArm: ctx.thinkingArm,
         stopReason: stopReasonForThis,
       });
-      // Stamped on EVERY returned proposal (Design table: "portfolio-level, one per batch
-      // response") — including a fee-floor-rejected element, whose own mapping already returns
-      // without a nextConsultBars of its own.
+      // Stamped RAW (unclamped by discardConsultBars above) on every proposal that reaches this
+      // line (Design table: "portfolio-level, one per batch response") — that is every element that
+      // passed tradeElementSchema and cleared the capability check, which is a WIDER set than
+      // "accepted": buildProposalFromTradeDecision also returns a zero-signal, no-plan REJECTION
+      // through this same path on two branches — the fee-floor rejection ("[rejected: tp below fee
+      // floor]", ~:1965) and the opposite-side-open-while-positioned guard (isOppositeOpen, ~:2031)
+      // — both of which are schema-valid elements the model requested acting on, not discards, so
+      // they were never in scope for the discardConsultBars clamp above. Measured against the live
+      // journal to 2026-08-11: 0 rows match the fee-floor rationale, and 0 rows show an open_*
+      // action journalled against an own-position marker of the opposite side (positive control: 349
+      // LONG / 257 SHORT / 1560 FLAT rows exist to journal against) — both paths are LATENT, not
+      // active, which is why this is recorded here rather than clamped.
       proposals.set(r.symbolKey, { ...proposal, nextConsultBars });
     });
 

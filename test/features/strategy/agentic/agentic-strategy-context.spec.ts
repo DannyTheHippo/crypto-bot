@@ -256,7 +256,7 @@ function makeStrategy(
     model: 'test-model',
     // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
     // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
-    // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+    // consult (fallbackConsultBars, default 8) — every fixture in this file predates B2 and expects
     // each decide() call to reach the client (CapturingAgentClient's script is indexed by call
     // count), so fallbackConsultBars=1 keeps every bar due on schedule (forced_fallback, since none
     // of these fixtures ever set a real nextConsultBars) without touching production scheduler

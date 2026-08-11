@@ -1571,8 +1571,9 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(8);
   });
 
-  it('(c) the single portfolio-level nextConsultBars is stamped on EVERY proposal — resolved, malformed-element, and missing-symbol alike', async () => {
+  it('(c) the portfolio-level nextConsultBars is stamped on EVERY proposal — RAW on a resolved decision, clamped to the fallback on a discarded (malformed-element/missing-symbol) one', async () => {
     const fetchFn = vi.fn();
+    // No fallbackConsultBars override — DEFAULT_FALLBACK_CONSULT_BARS (8) governs the clamp.
     const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
     fetchFn.mockResolvedValue(
       apiResponse(
@@ -1594,9 +1595,107 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
       buildInput('SOL/USDT', 'agentic-3'),
     ]);
 
-    for (const symbol of ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']) {
-      expect(result.proposals.get(symbol)?.nextConsultBars, symbol).toBe(12);
-    }
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(12);
+    expect(result.proposals.get('ETH/USDT')?.nextConsultBars).toBe(8);
+    expect(result.proposals.get('SOL/USDT')?.nextConsultBars).toBe(8);
+  });
+
+  // The three per-element discard branches (missing_symbol, failed tradeElementSchema,
+  // capability_violation) used to stamp the batch's RAW nextConsultBars unclamped — only the
+  // whole-batch schema-failure branch above clamped it. A discarded element's decision was thrown
+  // away, so the schedule attached to it must not be honoured either: agentic.strategy.ts's
+  // forced_fallback wake only fires once scheduledConsultBars is null, so an unclamped stamp here
+  // kept that symbol dark past the fallback floor for a decision nobody acted on (measured: 111 live
+  // rows, up to 32 bars = 8h against an intended 8-bar/2h floor).
+  it("a missing_symbol discard stamps nextConsultBars clamped to the fallback, never the batch's raw (above-fallback) value", async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(apiResponse(tradePortfolioBody([openLongElement('BTC/USDT')], 32)));
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('ETH/USDT')?.nextConsultBars).toBe(8);
+    // Pins the BRANCH actually taken, not just the clamped number — 8 is ALSO what the
+    // whole-batch-schema-failure recovery clamp produces, so the number alone would stay green if a
+    // future fixture change made this discard route through that clamp instead of the per-element one.
+    expect(result.proposals.get('ETH/USDT')?.decision?.rationale).toMatch(
+      /^schema_rejected: symbol ETH\/USDT missing from/,
+    );
+  });
+
+  it("an element that fails tradeElementSchema stamps nextConsultBars clamped to the fallback, never the batch's raw (above-fallback) value", async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            openLongElement('BTC/USDT'),
+            // Missing entry/entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars — required on
+            // 'open_long' by requireTradeDirectives; malformed for ETH/USDT only.
+            { symbol: 'ETH/USDT', action: 'open_long', sizeFraction: 0.01 },
+          ],
+          32,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('ETH/USDT')?.nextConsultBars).toBe(8);
+    // Pins the BRANCH actually taken (see the missing_symbol test above for why the number alone
+    // is not enough).
+    expect(result.proposals.get('ETH/USDT')?.decision?.rationale).toMatch(/^schema_rejected: /);
+  });
+
+  it("a capability_violation (open_short on a spot symbol) stamps nextConsultBars clamped to the fallback, never the batch's raw (above-fallback) value", async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(tradePortfolioBody([openLongElement('BTC/USDT', { action: 'open_short' })], 32)),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(8);
+    // Pins the BRANCH actually taken (see the missing_symbol test above for why the number alone
+    // is not enough).
+    expect(result.proposals.get('BTC/USDT')?.decision?.rationale).toBe(
+      'capability_violation:open_short_on_spot',
+    );
+  });
+
+  it('a resolved (accepted) decision still stamps the RAW model-requested nextConsultBars, unclamped — only discarded elements are clamped', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 8 }), fetchFn);
+    fetchFn.mockResolvedValue(apiResponse(tradePortfolioBody([openLongElement('BTC/USDT')], 32)));
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.nextConsultBars).toBe(32);
+  });
+
+  // FIX 2 (adversarial review): every OTHER test in this file uses fallbackConsultBars: 8, the same
+  // value as DEFAULT_FALLBACK_CONSULT_BARS — a clamp hardcoded to 8 (or a dropped config read) would
+  // stay green against every one of them. A non-default fallback is the only way to pin that the
+  // clamp actually reads cfg.fallbackConsultBars.
+  it('a missing_symbol discard clamps to a NON-default cfg.fallbackConsultBars (5), not the DEFAULT_FALLBACK_CONSULT_BARS (8) constant', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ fallbackConsultBars: 5 }), fetchFn);
+    fetchFn.mockResolvedValue(apiResponse(tradePortfolioBody([openLongElement('BTC/USDT')], 32)));
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('ETH/USDT')?.nextConsultBars).toBe(5);
   });
 
   it('(d) one HTTP request answers every resolvable symbol in a v2 batch — never one fetch per symbol (budget reserved once per batch upstream)', async () => {

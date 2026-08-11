@@ -15,188 +15,7 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, and **Pass 63's at Pass 68** (five-entry retention). Nothing deleted._
-
-## 2026-08-05 — Pass 64 (a fifth of every portfolio consult was paid for and thrown away, and the fix nearly blinded the loop's own liveness probe)
-
-**Pass type: REPAIR.** CANDIDATE was mechanically ELIGIBLE — the newest `playbook-authoring-attempt` row
-is `authoring-attempt-2026-08-04` (id 17), so the 08-05 UTC slot was unspent — and was **deliberately not
-taken**: §4 ranks trading-path correctness above candidate work, the daily mint has produced zero
-candidates in four consecutive days, and a live defect was discarding 21.4% of consults. The slot is
-still unspent and available to a later pass today.
-
-**Window:** 2026-08-05T00:07Z → 01:30Z. Lease 00:07:34Z (nonce `7d4749e9d652d12e`), single lease, no
-collision, released at pass end. `loop:sweep` 00:07:43Z: **1 alarm** — the frozen
-`venue_reject_rate_high [binance]` 16/20, recorded, ages out 2026-08-06T23:15Z, not investigated per §3's
-generalised exemption — 14 annotations, 25 Prometheus rules loaded / 0 firing. Pre-pass build `37587f6`,
-boot `e423875b`, `RestartCount` 0, working-tree tip `51069ed`.
-
-**The four mandatory signals, read directly rather than off the sweep:** `kill_switch_state{RUNNING}`;
-`reconciliation_last_success_timestamp_seconds` ~1.5 min old; `agentic_budget_remaining_usd` $2.8485606 of
-the $3/day breaker; real decides flowing (lifetime 1318 → 1319, newest 00:15:21Z);
-`agent_client_latch_cause` all three children 0.
-
-**The book, ONE `evaluate()` sample, 2026-08-05T00:07:43Z:** `windowDays=12.010497858796297`,
-`roundTrips=54`, `netPnlUsd=-69.9567868244`, `llmCostUsd=31.1806829`, `winRate=0.24074074074074073`,
-`ready=false`, reasons `[NON_POSITIVE_NET_PNL, INSUFFICIENT_WINDOW, BELOW_PASSIVE_BENCHMARK]`. Against
-Pass 63 (11.857d / 50 trips / −66.4741 / 30.0386, 16h earlier): **+4 round trips, net −$3.48 worse, LLM
-+$1.14 ⇒ gross −$2.34 over those 4 trips.** **The window still binds: 12.01 of 14 days, ~2.0 days to
-run.** `agentic_promotion_passive_benchmark_pnl_usd` reads **−1.2295550254578758** (Pass 63 read −1.6955),
-state `COMPUTED` — it moves, so it is a live computation, and the strategy remains ~$68.7 worse than doing
-nothing. **WATCH-V3-1 HOLDS:** measured the way the watch mandates, from a Prometheus range query starting
-past the 45-min grace — 70 samples over 5.75h, 779.4 → 786.3 MiB, peak 789.1 MiB, **least-squares slope
-+0.73 MiB/h** (endpoint +1.20), sitting on the +0.75 MiB/h control and far under the ~900 MiB signal.
-
-### The incident gate cleared, and one resolved critical was verified rather than assumed
-
-`prometheus_alert_resolved_critical` named `ReconcilerStalled`. Rather than trust the Pass-63 carve-out,
-the firing window was read from Prometheus' own `ALERTS` series: **4 samples, 18:06:05Z → 18:06:50Z**,
-against container `StartedAt` 18:06:01.719Z — i.e. **+3.3s to +48s after start.** That is the recorded
-redeploy carve-out. **Pass 63's own figures are corrected: it recorded "two samples, 8 s after the
-container started"; it was four samples, first at +3.3 s.**
-
-**All 28 `anthropic_api_fatal_error_status_latching` events in 7 days fall between 2026-07-29T18:15Z and
-07-30T12:15Z** — the known unfunded-account episode — with **zero since funding**. Positive control: the
-series carries data throughout the window. Not an incident, and no pass needs to re-derive it again.
-
-### THE HEADLINE — 48 whole batches discarded in 7 days, and the two causes were not the same defect
-
-`app_log_events_total` is a Prometheus counter with 90d retention, so the history survives even though the
-log tail reaches back only 6h. Over 7 days: **48 `submit_portfolio_payload_failed` events against 224
-consults = 21.4% of portfolio consults discarded whole**, present in **20 of 28 six-hour buckets**, every
-single day since 07-30, plus a sibling `..._element_for_symbol` at 25. `increase()` under-counts a label
-child first seen inside the window, so 48 is a **floor**.
-
-**A metrics-only triangulation refuted the obvious hypothesis before any code was read.** Bucketing
-`agent_decide_total{outcome="truncated"}` against the payload-failure counter at 6h resolution shows
-**eight of the twenty-one non-empty buckets carry payload failures with ZERO truncations** — so the two
-are different failure modes, and `AGENTIC_OUTPUT_EFFORT` cannot fix the second. Per-row evidence then
-confirmed it exactly:
-
-- `4db9283d` 22:00:24Z — `output_tokens` **272**, `stop_reason != max_tokens`, tag `schema_rejected`, 1
-  symbol (KAITO). The model emitted `decisions` as a JSON **string** whose quoting degraded mid-value. The
-  tool schema is `strict:true` and its description has forbidden a string-encoded array since `651aa2a`
-  (2026-07-25), ten days earlier — **there is no prompt fix left; the remedy had to be on ingest.**
-- `39e43751` 00:01:22Z — `output_tokens` **4096** exactly, tag `truncated_max_tokens`, 2 symbols.
-
-**3 symbol-decides lost, $0.099215 of inference paid for and discarded.** Extrapolating that per-event
-mean across 48 events ≈ **$2.4/7d ≈ $0.34/day, ~11% of the breaker** — n=2 is a thin basis and the figure
-is quoted as such. `agent_decide_total` counts **per symbol** (22 rows = 22 decides this boot, exact
-match), so it does not under-count; the under-counts are `agentic_schema_rejections_total{kind="batch"}`
-(per-batch: 2 for 3 lost decides) and case (1) being misfiled into `hold`.
-
-**No retry exists.** `attemptWithRetry` only retries thrown `AgentProposeError`s, and a 200 carrying a
-schema-invalid payload never throws. The lane holds every symbol and returns. Fails CLOSED — correct
-direction, zero recovery.
-
-### L1 IS FALSIFIED ON ITS PRIMARY SIGNATURE — the knob is live and truncation fired anyway
-
-`AGENTIC_OUTPUT_EFFORT=medium` was traced **end to end across seven hops** and is not a dead hop: `.env.app`
-→ zod → AppConfig → port → module env record → client config → the outbound `output_config: {effort}`.
-Verified in the **compiled `dist` actually running**, in the container env, and in the boot's
-`config_snapshots` row (hash `89848501`, `output_effort = medium`). It went live in the client at
-**2026-08-04T08:00:23Z** — `prompt_hash` moved `46359ad3` → `aefafb3c` with `playbook_version` constant at
-10, no code commits in the window, and `b2f7f53` touched only `.env.app` + `STATUS.md`, where
-`AGENTIC_OUTPUT_EFFORT` is the sole key entering `feedTags`. **Truncation still fired 16h later at exactly
-4096 output tokens.** WATCH-V4-12's declared expected-positive (`truncated_max_tokens` → 0) is therefore
-**not met with the lever live** — a finding, in whichever direction it points. Open and UNVERIFIED: whether
-`effort: medium` is honoured for this model, or whether the unconditional `thinking: {type:'adaptive'}`
-consumes budget ahead of tool JSON regardless. **`stop_reason` is recorded nowhere** and is recoverable
-only by inferring it from the rationale tag prefix — the cheapest way to make that answerable.
-
-### Shipped — `de28b12`, `fbb3800`
-
-**`de28b12`** adds a `claude-opus-4-8` entry to `AGENTIC_TOKEN_PRICES_JSON`. **The dollar error today is
-exactly $0.00**, and that is the only reason the edit is safe: narrowing a cost is generically the UNSAFE
-direction for a permission gate. Opus 4.8 and Opus 5 are both $5/$25 per MTok (verified against the current
-pricing reference, not from memory), and opus-5 already dominated the map on all four components, so
-max-of-configured already landed on the true rate. Confirmed by reconstructing the gauge from first
-principles: **$26.1690759 + $0.5438130 + $4.4677940 = $31.1806829**, matching the live gauge to the last
-digit. What it fixes is **latent**: the fallback is `max()` over an operator-editable map, so adding any
-pricier model later would silently re-price those 58 frozen rows and inject ~$4.47 of phantom cost with no
-new warn (the warn is latched once per process, so its count of 1 carries no information).
-**Two record corrections:** `llm_usage` is **NOT vestigial** — `promotion-stats.repository.ts:149-172`
-folds BOTH `agent_decisions` and `llm_usage` (`kind='reflection'`) into `llmCostUsd`, making it one of two
-authoritative inputs; and `.env.app:82`'s claim that the gate re-prices "all 69 of them" through the map
-was false (11 of 69) and this entry makes it true.
-
-**`fbb3800`** ships the three discard fixes: salvage a string-encoded `decisions` (fails CLOSED — any
-doubt falls through to the unchanged discard, and neither schema is widened); preserve the model's
-`nextConsultBars` on a whole-batch discard; and split `empty_tool_input:` out of `schema_rejected:`.
-
-### THE REVIEW CAUGHT THE FIX INTRODUCING THE EXACT DEFECT THIS PROGRAM EXISTS TO ABOLISH
-
-The new tag went into `DEGRADED_DECIDE_RATIONALE_TAGS` and into **neither of its two declared
-hand-mirrors** — `scripts/loop-sweep.mjs`'s `realDecides` probe and `docs/runbook.md`'s liveness SQL, both
-carrying a comment stating they must be edited with it. Every `empty_tool_input:` row would have satisfied
-the probe's predicate, so **a dead lane would have read ALIVE in the loop's own liveness probe** — while
-the TS-side readers stayed correct off the shared constant, so nothing else in the suite would have
-disagreed. Both mirrors fixed. **The sweep this pass rehydrated from is unaffected: zero such rows existed,
-because the tag did not exist.**
-
-**Nothing enforced those mirrors, which is why it was possible.** `degrade-tag-mirrors.spec.ts` (new) now
-asserts every tag in the constant appears in both mirrors and that neither carries a stale extra — a
-comment-enforced invariant converted to a machine-checked one. **Verified by mutation: removing the mirror
-line fails 2 tests and exits 1; before the fix the same drift left the entire gate green.**
-
-The review's other three MUST-FIX were **missing tests**, each proven by mutation against the full gate and
-each **re-verified independently by the orchestrator** rather than taken on the lane's report: deleting the
-`empty_tool_input` producer branch (now fails 1), removing the clamp (2), stripping
-`nextConsultBarsOnlySchema`'s bounds (3). **All three previously left 3835/3835 green.** A drifted `.min()`
-would have admitted `nextConsultBars: -1`, making `barsSinceConsult >= -1` true every bar — consulting on
-every single bar against the $3/day breaker.
-
-**A behaviour change the review forced, not just a comment fix.** Adopting the model's `nextConsultBars`
-unclamped would have stretched the post-degrade blind window from 2h to **8h**, past the 4h cadence
-`.env.app:108` already records as starving evidence pace — off a field read out of a payload the schema had
-just rejected. It is now **clamped to `AGENTIC_FALLBACK_CONSULT_BARS`**: a recovered schedule may only ever
-make the lane consult SOONER, never widen the blind window. The declared failure direction was rewritten to
-say so.
-
-### Not shipped, each with its reason — this pass answers Pass 63's standing recommendation
-
-Pass 63 asked the next pass to pick one of two remedies for the serial-tail bottleneck. **This pass adopts
-option 2: latent defects are recorded, not shipped, while live ones are fixed in-pass.** Three items:
-
-1. **The `llmCostSinceMs` gauge — DROPPED, and a lane claim refuted.** A lane reported the code comment
-   "both bounds of this read are now PUBLISHED" as false. Reading it, the comment explicitly scopes that to
-   the **`evidence` object** ("is in `evidence` below"), where both bounds genuinely are. Only the metrics
-   surface carries just the upper bound, and `llmCostSinceMs` is always `epochMs` — a static deploy
-   constant reconstructible from config. Confirmed by two independent scrapes. **Adequate as-is.**
-2. **The derivatives-feed spot-ticker error counter — recorded, not shipped.** `derivatives_feed_poll_errors_total`
-   structurally cannot count spot-ticker sub-poll failures (reads 0 despite 2 real ones this boot), because
-   `fetchSpotTicker` catches its own rejections and never touches `errorCount`. **Currently INERT:**
-   `AGENTIC_DERIVATIVES_V2_ENABLED` is absent from the container and defaults false, so `spotPerpBasisBps`
-   is not rendered into the prompt at all. **Trigger to ship it: any enable of derivatives v2.** Also
-   established as correct-by-design: `api.binance.com` is deliberate (read-only context from production
-   because demo books are synthetic; orders stay sandboxed), both failures were single-cycle and self-healed
-   on the next 60s poll, and the HYPE/USDT exclusion is correct-and-informative.
-3. **The frozen binance reject alarm** — untouched, per its recorded exemption.
-
-### Gates, deploy, soak
-
-`format:check` / `lint` / `lint:md` / `typecheck` clean; **`test` 198 files / 3863 passed** (baseline 197 /
-3835 ⇒ +1 file, +28 tests); `build` clean; **`eval:agentic` 95 passed | 20 skipped, run BEFORE the
-commits.** Deployed `fbb3800` at 01:11:05Z with the `GIT_SHA=` prefix — **`build_info{git_sha="fbb3800"}`
-confirmed live**, new boot `90dbb484`, `RestartCount` 0.
-
-**The redeploy carve-outs re-confirmed a fifth time, and now timed precisely:** `mode_info` read
-`effective="paper"` at +39s and had resolved to `testnet` by +69s; `reconciliation_last_success_timestamp_seconds`
-and `agentic_budget_remaining_usd` were both 0 at +69s and initialised by +99s ($2.8348842). A scrape inside
-that window is a mid-boot artifact, **not** a downgrade and **not** a stall.
-`agentic_schema_rejections_total{kind="batch_stringified_recovered"}` materialises at 0 on boot, confirming
-the new counter child zero-seeds congruently.
-
-### Flagged / next-pass candidates
-
-- **WATCH-V4-12 needs restating, not re-deriving.** L1 is live and its primary signature is unmet. The next
-  question is whether `effort` is honoured for this model at all; recording `stop_reason` on the journal row
-  is the cheapest instrument for it.
-- **The new WATCH (below) reads at the first `empty_tool_input:` or `batch_stringified_recovered`.** Both
-  counters are zero-seeded, so a zero is a real absence rather than a missing series.
-- **CANDIDATE's 08-05 slot is unspent** and the mint has produced zero candidates in four days.
-- **Pass 63's serial-tail recommendation is now answered** (option 2 adopted, above); this pass still ran
-  4 read lanes + 1 write lane + 1 review + 1 remediation lane, and the tail was again the binding cost.
+_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, **Pass 63's at Pass 68**, and **Pass 64's at Pass 69** (five-entry retention). Nothing deleted._
 
 ## 2026-08-06 — Pass 65 (one host suspend exposed three latent defects, every instrument that should have caught them was blind, and the fixes for them introduced three more)
 
@@ -1233,3 +1052,233 @@ entries myself.
    `Write` target equals the declared answers path. Also latent: a `path_not_allowed` violation's `detail`
    embeds the offending absolute path verbatim, which could reintroduce a username into the tracked record
    on a future real violation.
+
+## 2026-08-11 — Pass 69 (an unread limb of a watch was hiding a live defect, and the guard I wrote for the loop's own record could have wedged the lease)
+
+**Window:** 2026-08-11T08:02Z → 09:29Z (end = this entry's own commit instant, the pass's last durable
+artifact; the `loop:unlock` that follows it is seconds later and inside the audit's 30-min tolerance).
+Leases: `1add6a24fcba7d71` taken 08:02:38Z, released and
+re-armed mid-pass as `f034df3320f7fbd2` at 09:14:39Z (the sanctioned way to run past the 2h lease;
+the re-arm was deliberately held until the lane editing `scripts/loop-*.mjs` had finished, because
+`loop:unlock` now invokes those very modules). `date -u` anchored at start (08:02:22Z) and re-anchored
+five times mid-pass, per Pass 68's own correction.
+
+**Pass type: REPAIR** (§4 priority 1, trading-path correctness). CANDIDATE was **mechanically
+INELIGIBLE**, established by a FRESH recomputation rather than by memory: the Pass-66 event gate mints
+only when the incumbent reads adverse-POWERED (`powered ∧ ciHi < 0`, `flat_only`, h=4 or h=8), and
+`pnpm loop:forward-return` returns v10 `flat_only` **h=4 CI [−17.1, +13.9]** and **h=8 CI [−27.1,
++7.2]** — both `ciHi > 0`. Not adverse, so no mint, and the $4.31 + the UTC day slot went unspent.
+PROMOTION ineligible (`ready=false`).
+
+### The sweep — 0 alarms, 15 annotations
+
+`2026-08-11T08:02:45Z`. Boot `a5279f26` (pre-deploy), StartedAt 2026-08-10T09:49:33Z, RestartCount 0,
+running build `917e542`, 26 rules loaded / 0 firing, container healthy. §3 did not fire, so this pass
+selected a §4 type — and then found its defect inside the §4 work anyway.
+
+**The four mandatory signals, read POSITIVELY (never inferred from an absent alarm):**
+
+| signal | 08:03Z |
+| --- | --- |
+| `kill_switch_state{RUNNING}` | 1 |
+| reconcile clean-stamp age | 91s |
+| `agentic_budget_remaining_usd` | 2.1283 (~$0.87 spent in 8.05h ⇒ ~$2.60/day vs the $3 breaker) |
+| real decides | 1820 lifetime, newest 07:30:41Z |
+
+Also `agentic_last_gate_timestamp_seconds` age 110s (**WATCH-V4-22 holds**, 2700s bound);
+`agentic_capability_violations_total` **0**; all three `agent_client_latch_cause` children **0**;
+`mode_info{requested="testnet",effective="testnet"}`; live menu 11 symbols (9 perp, 2 spot).
+
+**Promotion scoreboard** (one `evaluate()`, 08:02:45Z): `windowDays=18.375136770833333`,
+`roundTrips=84`, `netPnlUsd=-82.3375183144`, `llmCostUsd=41.9356841`, `winRate=0.2857142857142857`,
+`ready=false`, reasons `[NON_POSITIVE_NET_PNL, BELOW_PASSIVE_BENCHMARK]`. Against Checkpoint #1's
+2026-08-10T08:52:03Z tuple (17.500/80/−81.2138/40.0934/0.275): **+4 round trips, net PnL −$1.1237,
+LLM +$1.8423 ⇒ gross +$0.7186 over 0.875 days**, and win rate 0.275 → 0.2857. **n=4 — a window delta,
+never a trend**, and gross-positive stretches of this size have appeared before without persisting.
+
+**Checkpoint #1 re-read is NOT due and was NOT pulled forward** — the gate is the first pass after
+2026-08-11T12:00Z and this pass ran 08:02–09:35Z. P66's 27h-early checkpoint forced a re-derivation;
+that lesson held.
+
+### WATCH-V4-20 limb 3 was never read, and reading it found a LIVE defect
+
+The watch's third limb — _every discard-stamped `nextConsultBars` is ≤ `AGENTIC_FALLBACK_CONSULT_BARS`_ —
+had gone unread since Pass 64, and STATUS said so plainly ("an unrun check is not a passing one").
+**Verdict: NOT WIRED.** `proposeBatch` clamped on exactly ONE of its four stamping discard branches
+(the whole-batch schema failure, `anthropic-agent-client.ts:1541`); the three per-element branches —
+`missing_symbol`, failed `tradeElementSchema`, `capability_violation` — stamped the batch's raw value.
+
+Why that is a trading-path defect and not bookkeeping: `agentic.strategy.ts:993` adopts
+`proposal.nextConsultBars` unconditionally, and `:361`'s `forced_fallback` wake fires only when
+`scheduledConsultBars === null`. **A discard that stamps a schedule therefore kills the fallback for
+that symbol** — the floor cannot rescue it; only wake-on-move or a fill can.
+
+Measured, and **re-verified by the orchestrator's own query rather than relayed** (the recurring
+process failure in §§61–65 is exactly the orchestrator asserting what a lane told it): 181
+discard-stamped rows lifetime, distribution `1×8, 4×11, 6×3, 8×48, 10×1, 12×61, 13×6, 16×42, 32×1`,
+**111 of them above the 8-bar (2h) floor, max 32 bars = 8h**. The clean end-to-end instance is
+KAITO/USDT:USDT discarded 2026-08-10T19:15Z with a stamp of 12, which then went silent for **exactly
+12 bars — 180 minutes, four bars past the floor**. The clamped branch is provably binding by contrast:
+its 13 rows max at exactly 8 against a 75.5% base rate of values above 8 (P ≈ 5e-9 under a no-clamp null).
+
+Shipped `76dbbed`. The coverage hole that let it ship is closed with it: `portfolio-consult.spec.ts`
+pinned the clamp for the whole-batch branch only, and its sibling assertion **actively encoded the
+bug** (all three symbols expected to carry the raw 12). That test is rewritten and one regression test
+per discard branch added; all four **fail against pre-change source** (`expected 12/32 to be 8`) and
+pass after — proved by reverting the source, running, and restoring.
+
+**This fix SPENDS, and the number is recorded rather than reassured away.** Discarded symbols now
+return within 8 bars instead of up to 32, buying back consults: **~+$0.09/day median, +$0.37/day on
+the worst observed day (2026-07-31)**, which on that day's actual $2.97 would have crossed the $3/day
+breaker — whose consequence is concrete, not theoretical (`settleBatch` returns `budget_exhausted`
+holds for every symbol for the rest of the UTC day). It is an **upper bound**: wake-on-move at
+`AGENTIC_WAKE_MOVE_PCT=0.012` already truncated many of those dark windows. **WATCH-V4-26** carries the
+rollback trigger.
+
+**Two rejection paths are NOT fixed, and that is a measured call, not an oversight.** The adversarial
+review found that `buildProposalFromTradeDecision` also reaches the raw stamp on two REJECTION paths —
+the fee-floor rejection and `isOppositeOpen` — and that my first comment asserted the opposite ("an
+ACCEPTED decision is honoured by design"). **That claim was false and is corrected in place, not
+deleted.** Both are **LATENT with positive controls**: 0 rows match the fee-floor rationale, and 0 rows
+show an `open_*` action journalled against an own-position marker of the opposite side (control: 349
+LONG / 257 SHORT / 1560 FLAT rows exist to journal against). The reviewer explicitly could NOT measure
+`isOppositeOpen` and flagged its negative as uncontrolled; **I measured it myself and it is zero** —
+my first attempt used a loose `"side":"SHORT"` LIKE that matched other symbols' blocks and returned a
+spurious 47, corrected by anchoring on the `"position":{"side":"…"` marker.
+
+**Telemetry note for future queries:** a clamped discard now records gate outcome `consulted`, not
+`forced_fallback`. Any research query treating `forced_fallback` as the went-dark-then-woke signal will
+under-count from this boot forward.
+
+Also aligned: `agentic.strategy.ts:787`'s fallback default 16 → 8, matching `environment.config.ts`,
+`anthropic-agent-client.ts` and `agentic-strategy.module.ts`. Production wires the param
+unconditionally from zod-validated config, so this is **drift correction with zero runtime behaviour
+change** — the 13 clamped rows maxing at exactly 8 are the positive control that the running process
+already resolves 8. Four now-false "default 16" comments in three sibling specs corrected.
+
+### The loop's own record was broken, and my fix for it nearly broke the lease
+
+`loop:sweep` annotated `pass_record_audit_undetermined`: **Pass 68's entry carried no `**Window:**`
+line at all**, and `classifyUnrecordedSweeps` blanks its WHOLE verdict when any one retained entry
+fails to parse. Restored with measured bounds (00:07Z from Pass 68's own `date -u`; 08:01Z from commit
+`29d0ae7`'s committer instant), annotated in place. The audit returns a real verdict again:
+`status=clean, evaluated=10`.
+
+Second consecutive occurrence (P67 placeholder, P68 omission), so the **N-recurrences rule** applies and
+the fix is mechanical: `classifyPassRecordReadiness` + wiring into **both** `loop:lock` and
+`loop:unlock`, shipped `f816747`.
+
+**Its adversarial review returned MUST-FIX, and the failure had the same shape as Pass 68's headline —
+a guard that could take down the thing it guards.** Two mechanisms, both reproduced: (1) it imported
+from `loop-sweep-core.mjs`, whose first statement is `import Decimal from 'decimal.js'`; ESM resolution
+precedes all module code, so no try/catch covered it — in a tree with no `node_modules`, `loop:unlock`
+died `ERR_MODULE_NOT_FOUND`, exit 1, **leaving the lock file in place**. A documentation check had
+acquired the ability to wedge the concurrency lease. (2) Both catch handlers used `String(err)`, which
+itself throws on a non-Error with a throwing `toString`; in the shell that exited 1 **after** the lock
+file was written, so a caller reading `$?` concludes acquire failed while the lease is held. Closed by
+extracting the parser into `loop-pass-record-core.mjs` (**zero imports**), restoring the shell's
+dependency-free property, plus a non-throwing `safeErrorText` and a `redactHostPaths` that keeps an
+ENOENT message's absolute path and username out of a warning this loop quotes verbatim into tracked
+markdown.
+
+**Two corrections to my own framing, both from that review and both adopted:** the audit was **NOT**
+silently lost — `pass-record-audit.spec.ts` has asserted since 2026-07-31, on the production gate, that
+every LOG.md entry parses, which means **commit `29d0ae7` shipped test-RED** and the next `pnpm test`
+would have failed loudly. What this change adds is **timing** (at the lock ceremony, while the
+offending pass can still fix its own entry) and **fail direction** (the existing gate is fail-CLOSED on
+a documentation problem; this one is fail-OPEN and never blocks a lease). Live smoke test: the re-arm
+at 09:14Z printed **nothing** on either release or acquire, which is correct on a clean LOG.md.
+
+### The OOS arm — window 13 → 15 rows, and the row rate is supply-blind, not supply-starved
+
+**Firing 1 (08:03Z): ZERO rows — a controlled zero, not a gap and not a failure.** Positive control:
+exactly **1** eligible FLAT candle row existed in the 60-min window (07:15:00Z) and P68's firing 2 had
+already consumed it. No subagent was dispatched, so there is no transcript and **no attestation line** —
+that is a zero-row firing, and a future pass must not read it as a WATCH-V4-25 gap.
+
+**Firing 2 (08:17Z): 2 rows, `70171` HYPE/USDT:USDT and `70170` NEAR/USDT:USDT**, both bar 08:00:00Z,
+**k=1** (inside the registered `k ≤ 3`), single playbook version 10 so the multi-version refusal did not
+apply. `capsSource="recorded"` and `schemaValid=true` on both. Decisions: `hold` and `open_short`.
+**VOID-4 CHECK: CLEAN** — 5 tool calls, zero violations (`agentId ade0ac95546687e53`, sha256
+`ad3d5d05c0c38f43…`). **Second consecutive clean firing (68·2, 69·2), so the tightened brief is
+confirmed as the remedy** and WATCH-V4-25's expected-positive is MET again. The brief was copied
+verbatim from 68·2: `Bash` forbidden by name, the harness-injected advisor forbidden explicitly, four
+`Read`s and one `Write`.
+
+**The decisive row-rate finding, and it reframes the seal projection.** Supply is **not** the
+constraint: eligible FLAT candle rows run **~90/day** (08-07→08-10: 86 / 104 / 89 / 81). The arm
+captured **7 of 08-11's 27** = **26%**. That matches a structural prediction exactly: the decide leg
+rides the pass carrier, so the arm can only see rows within 60 min of a pass being live — 3 passes/day
+× ~2h of reach ≈ **6h of 24h ≈ 25%**. **~75% of the corpus expires unseen because nobody is looking,
+not because it is not there.** At the realised ~6.5 rows/pass × 3 passes/day ≈ 19.5/day, the remaining
+187 rows to the 202 target land ≈ **2026-08-20**, before the 08-31 close — but that is n=3 passes and
+this pass's own firing 1 returned 0, so treat it as a rate with wide error, not a date. **Do not quote
+33.675/day or the ≈08-16 target.**
+
+**Behavioural observation, recorded because it bears on what the arm measures:** the deciding session
+reported that the system prompt marks the quoted PLAYBOOK block as advisory and inert with respect to
+direction, so it did **not** apply v10's inversion rule mechanically. The live lane receives the same
+prompt and faces the same tension. Not scored, not a finding about returns — but the arm's primary is a
+behavioural statistic, so this is the kind of thing that could move it.
+
+### Diff, gates, deploy, soak
+
+| commit | what |
+| --- | --- |
+| `76dbbed` | `fix(agentic)` — the discard clamp, 7 files (2 src, 5 spec) |
+| `f816747` | `fix(loop)` — Window restoration + the readiness guard, 5 files |
+
+**Gates (final tree, after both review rounds):** `pnpm checks` (format:check, lint:md, lint,
+typecheck, test:cov) **exit 0**, coverage **93.24 / 87.06 / 92.17 / 94.58** against 90/85/90/90;
+`pnpm build` green; `pnpm eval:agentic` **102 passed / 22 skipped**; loop-sweep suite **386 → 394**;
+agentic suite 994 → 995.
+
+**Deploy:** `GIT_SHA=f816747 docker compose up -d --build app` at 09:17:55Z. New boot
+**`940dcadc-53d4-4210-84c3-1d0608e3cc4d`**, `build_info{git_sha="f816747"}` confirmed on the metrics
+endpoint (not inferred), container healthy, RestartCount 0. Prometheus deliberately NOT recreated —
+neither `alerts.rules.yml` nor `prometheus.yml` was touched.
+
+**Soak: PASS.** Post-deploy sweep `2026-08-11T09:27:51Z` — **ZERO alarms**, 15 annotations, boot
+`940dcadc`, **running build `f816747` == working-tree tip**, container healthy, RestartCount 0, 26
+rules loaded / 0 firing, 0 host suspends, `fatal=0 error=0`. **The Window fix's expected observable is
+confirmed in production: `pass_record_audit_undetermined` is GONE from the annotation list** — the
+audit Pass 68's missing line had blanked now returns a real verdict.
+
+The documented redeploy carve-outs reproduced for the **eighth** time and then cleared, which is the
+point of reading them twice: `reconciliation_last_success_timestamp_seconds` 0 at +30s → age 58.4s at
++90s; `agentic_budget_remaining_usd` 0 → **2.0448**. `agentic_last_gate_timestamp_seconds` was
+**non-zero within one scrape of boot (age 7.6s)** — **WATCH-V4-22's expected-positive MET again**, the
+seed holding. `kill_switch_state{RUNNING}`=1 and `mode_info{effective="testnet"}` throughout. The
+all-zero consult-gate counters at +10min are the documented bar-phase carve-out, not a stall.
+
+**WATCH-V4-26 first reading: UNFIRED, as expected** — discards run ~3.6/day and the soak is ~10 min,
+so this is low-information by construction and is recorded as such rather than as confirmation.
+Scoreboard at the soak sweep: `roundTrips=85`, `netPnlUsd=-82.3478558644`, `llmCostUsd=42.0191771`,
+`winRate=0.2941176470588235`.
+
+**E1's soak is perturbed but not cancelled** — the L6 fee-truth enable (`917e542`, boot
+2026-08-10T09:49:33Z) had run ~23.5h when this deploy restarted the process. E1's evidence accrues on
+rows and trips, not on boot continuity, so the window continues; the boot-scoped counters reset and
+that is stated rather than smoothed.
+
+### Flagged / next
+
+1. **WATCH-V4-26 opened** (`watches.md`) — the clamp's expected-positive plus its **spend** rollback
+   trigger. Discards run ~3.6/day, so a short soak legitimately sees none; UNFIRED is the expected
+   first reading.
+2. **The two latent rejection paths** (fee-floor, `isOppositeOpen`) are recorded with a named trigger:
+   **the first journalled occurrence of either** — both are 0 today with positive controls. Do not
+   re-derive; re-measure.
+3. **Checkpoint #1 re-read is owed at the first pass after 2026-08-11T12:00Z** — still not done, and
+   deliberately not pulled forward by this pass either.
+4. **E2 stays DATED-BLOCKED to ≥2026-08-17**; untouched. **L1's `stop_reason` read due 2026-08-17** —
+   untouched, and **no payload or prompt flag flipped into that window** this pass.
+5. **Carried open from Pass 68, still unfixed and now stated as a choice:** `loop-oos-transcript.mjs`'s
+   `rowIds` binding is operator-asserted — a mistyped `--agent` yields a clean-looking attestation for
+   the WRONG transcript — and its own exports carry no test coverage. Not shipped here because a
+   money-path defect outranked it; **trigger to ship: the pass before read 1's first seal**, since the
+   seal is what leans on those attestations.
+6. **Process note.** Both adversarial reviews returned MUST-FIX on work that had already passed every
+   gate — the **fifth consecutive pass** for which that is true. Green gates remain not-evidence. Both
+   must-fixes this pass were in code the ORCHESTRATOR briefed, and one of them (the false "ACCEPTED
+   decision" comment) was a claim I put in the dispatch prompt myself.

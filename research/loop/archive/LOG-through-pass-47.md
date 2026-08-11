@@ -9102,3 +9102,184 @@ samples (roundTrips 52 → 53 → 54; `netPnlUsd` −70.22 → −69.28 → −6
 is trading, not measurement. **`STATUS.md` closes at exactly 200 lines, at its cap for the first time in
 several passes** (Pass 62 closed at 207) — the § Index table moved to `charter.md` § Loop file index and
 four banners were rewrapped wider; **no fact was trimmed, only relocated.**
+
+## 2026-08-05 — Pass 64 (a fifth of every portfolio consult was paid for and thrown away, and the fix nearly blinded the loop's own liveness probe)
+
+**Pass type: REPAIR.** CANDIDATE was mechanically ELIGIBLE — the newest `playbook-authoring-attempt` row
+is `authoring-attempt-2026-08-04` (id 17), so the 08-05 UTC slot was unspent — and was **deliberately not
+taken**: §4 ranks trading-path correctness above candidate work, the daily mint has produced zero
+candidates in four consecutive days, and a live defect was discarding 21.4% of consults. The slot is
+still unspent and available to a later pass today.
+
+**Window:** 2026-08-05T00:07Z → 01:30Z. Lease 00:07:34Z (nonce `7d4749e9d652d12e`), single lease, no
+collision, released at pass end. `loop:sweep` 00:07:43Z: **1 alarm** — the frozen
+`venue_reject_rate_high [binance]` 16/20, recorded, ages out 2026-08-06T23:15Z, not investigated per §3's
+generalised exemption — 14 annotations, 25 Prometheus rules loaded / 0 firing. Pre-pass build `37587f6`,
+boot `e423875b`, `RestartCount` 0, working-tree tip `51069ed`.
+
+**The four mandatory signals, read directly rather than off the sweep:** `kill_switch_state{RUNNING}`;
+`reconciliation_last_success_timestamp_seconds` ~1.5 min old; `agentic_budget_remaining_usd` $2.8485606 of
+the $3/day breaker; real decides flowing (lifetime 1318 → 1319, newest 00:15:21Z);
+`agent_client_latch_cause` all three children 0.
+
+**The book, ONE `evaluate()` sample, 2026-08-05T00:07:43Z:** `windowDays=12.010497858796297`,
+`roundTrips=54`, `netPnlUsd=-69.9567868244`, `llmCostUsd=31.1806829`, `winRate=0.24074074074074073`,
+`ready=false`, reasons `[NON_POSITIVE_NET_PNL, INSUFFICIENT_WINDOW, BELOW_PASSIVE_BENCHMARK]`. Against
+Pass 63 (11.857d / 50 trips / −66.4741 / 30.0386, 16h earlier): **+4 round trips, net −$3.48 worse, LLM
++$1.14 ⇒ gross −$2.34 over those 4 trips.** **The window still binds: 12.01 of 14 days, ~2.0 days to
+run.** `agentic_promotion_passive_benchmark_pnl_usd` reads **−1.2295550254578758** (Pass 63 read −1.6955),
+state `COMPUTED` — it moves, so it is a live computation, and the strategy remains ~$68.7 worse than doing
+nothing. **WATCH-V3-1 HOLDS:** measured the way the watch mandates, from a Prometheus range query starting
+past the 45-min grace — 70 samples over 5.75h, 779.4 → 786.3 MiB, peak 789.1 MiB, **least-squares slope
++0.73 MiB/h** (endpoint +1.20), sitting on the +0.75 MiB/h control and far under the ~900 MiB signal.
+
+### The incident gate cleared, and one resolved critical was verified rather than assumed
+
+`prometheus_alert_resolved_critical` named `ReconcilerStalled`. Rather than trust the Pass-63 carve-out,
+the firing window was read from Prometheus' own `ALERTS` series: **4 samples, 18:06:05Z → 18:06:50Z**,
+against container `StartedAt` 18:06:01.719Z — i.e. **+3.3s to +48s after start.** That is the recorded
+redeploy carve-out. **Pass 63's own figures are corrected: it recorded "two samples, 8 s after the
+container started"; it was four samples, first at +3.3 s.**
+
+**All 28 `anthropic_api_fatal_error_status_latching` events in 7 days fall between 2026-07-29T18:15Z and
+07-30T12:15Z** — the known unfunded-account episode — with **zero since funding**. Positive control: the
+series carries data throughout the window. Not an incident, and no pass needs to re-derive it again.
+
+### THE HEADLINE — 48 whole batches discarded in 7 days, and the two causes were not the same defect
+
+`app_log_events_total` is a Prometheus counter with 90d retention, so the history survives even though the
+log tail reaches back only 6h. Over 7 days: **48 `submit_portfolio_payload_failed` events against 224
+consults = 21.4% of portfolio consults discarded whole**, present in **20 of 28 six-hour buckets**, every
+single day since 07-30, plus a sibling `..._element_for_symbol` at 25. `increase()` under-counts a label
+child first seen inside the window, so 48 is a **floor**.
+
+**A metrics-only triangulation refuted the obvious hypothesis before any code was read.** Bucketing
+`agent_decide_total{outcome="truncated"}` against the payload-failure counter at 6h resolution shows
+**eight of the twenty-one non-empty buckets carry payload failures with ZERO truncations** — so the two
+are different failure modes, and `AGENTIC_OUTPUT_EFFORT` cannot fix the second. Per-row evidence then
+confirmed it exactly:
+
+- `4db9283d` 22:00:24Z — `output_tokens` **272**, `stop_reason != max_tokens`, tag `schema_rejected`, 1
+  symbol (KAITO). The model emitted `decisions` as a JSON **string** whose quoting degraded mid-value. The
+  tool schema is `strict:true` and its description has forbidden a string-encoded array since `651aa2a`
+  (2026-07-25), ten days earlier — **there is no prompt fix left; the remedy had to be on ingest.**
+- `39e43751` 00:01:22Z — `output_tokens` **4096** exactly, tag `truncated_max_tokens`, 2 symbols.
+
+**3 symbol-decides lost, $0.099215 of inference paid for and discarded.** Extrapolating that per-event
+mean across 48 events ≈ **$2.4/7d ≈ $0.34/day, ~11% of the breaker** — n=2 is a thin basis and the figure
+is quoted as such. `agent_decide_total` counts **per symbol** (22 rows = 22 decides this boot, exact
+match), so it does not under-count; the under-counts are `agentic_schema_rejections_total{kind="batch"}`
+(per-batch: 2 for 3 lost decides) and case (1) being misfiled into `hold`.
+
+**No retry exists.** `attemptWithRetry` only retries thrown `AgentProposeError`s, and a 200 carrying a
+schema-invalid payload never throws. The lane holds every symbol and returns. Fails CLOSED — correct
+direction, zero recovery.
+
+### L1 IS FALSIFIED ON ITS PRIMARY SIGNATURE — the knob is live and truncation fired anyway
+
+`AGENTIC_OUTPUT_EFFORT=medium` was traced **end to end across seven hops** and is not a dead hop: `.env.app`
+→ zod → AppConfig → port → module env record → client config → the outbound `output_config: {effort}`.
+Verified in the **compiled `dist` actually running**, in the container env, and in the boot's
+`config_snapshots` row (hash `89848501`, `output_effort = medium`). It went live in the client at
+**2026-08-04T08:00:23Z** — `prompt_hash` moved `46359ad3` → `aefafb3c` with `playbook_version` constant at
+10, no code commits in the window, and `b2f7f53` touched only `.env.app` + `STATUS.md`, where
+`AGENTIC_OUTPUT_EFFORT` is the sole key entering `feedTags`. **Truncation still fired 16h later at exactly
+4096 output tokens.** WATCH-V4-12's declared expected-positive (`truncated_max_tokens` → 0) is therefore
+**not met with the lever live** — a finding, in whichever direction it points. Open and UNVERIFIED: whether
+`effort: medium` is honoured for this model, or whether the unconditional `thinking: {type:'adaptive'}`
+consumes budget ahead of tool JSON regardless. **`stop_reason` is recorded nowhere** and is recoverable
+only by inferring it from the rationale tag prefix — the cheapest way to make that answerable.
+
+### Shipped — `de28b12`, `fbb3800`
+
+**`de28b12`** adds a `claude-opus-4-8` entry to `AGENTIC_TOKEN_PRICES_JSON`. **The dollar error today is
+exactly $0.00**, and that is the only reason the edit is safe: narrowing a cost is generically the UNSAFE
+direction for a permission gate. Opus 4.8 and Opus 5 are both $5/$25 per MTok (verified against the current
+pricing reference, not from memory), and opus-5 already dominated the map on all four components, so
+max-of-configured already landed on the true rate. Confirmed by reconstructing the gauge from first
+principles: **$26.1690759 + $0.5438130 + $4.4677940 = $31.1806829**, matching the live gauge to the last
+digit. What it fixes is **latent**: the fallback is `max()` over an operator-editable map, so adding any
+pricier model later would silently re-price those 58 frozen rows and inject ~$4.47 of phantom cost with no
+new warn (the warn is latched once per process, so its count of 1 carries no information).
+**Two record corrections:** `llm_usage` is **NOT vestigial** — `promotion-stats.repository.ts:149-172`
+folds BOTH `agent_decisions` and `llm_usage` (`kind='reflection'`) into `llmCostUsd`, making it one of two
+authoritative inputs; and `.env.app:82`'s claim that the gate re-prices "all 69 of them" through the map
+was false (11 of 69) and this entry makes it true.
+
+**`fbb3800`** ships the three discard fixes: salvage a string-encoded `decisions` (fails CLOSED — any
+doubt falls through to the unchanged discard, and neither schema is widened); preserve the model's
+`nextConsultBars` on a whole-batch discard; and split `empty_tool_input:` out of `schema_rejected:`.
+
+### THE REVIEW CAUGHT THE FIX INTRODUCING THE EXACT DEFECT THIS PROGRAM EXISTS TO ABOLISH
+
+The new tag went into `DEGRADED_DECIDE_RATIONALE_TAGS` and into **neither of its two declared
+hand-mirrors** — `scripts/loop-sweep.mjs`'s `realDecides` probe and `docs/runbook.md`'s liveness SQL, both
+carrying a comment stating they must be edited with it. Every `empty_tool_input:` row would have satisfied
+the probe's predicate, so **a dead lane would have read ALIVE in the loop's own liveness probe** — while
+the TS-side readers stayed correct off the shared constant, so nothing else in the suite would have
+disagreed. Both mirrors fixed. **The sweep this pass rehydrated from is unaffected: zero such rows existed,
+because the tag did not exist.**
+
+**Nothing enforced those mirrors, which is why it was possible.** `degrade-tag-mirrors.spec.ts` (new) now
+asserts every tag in the constant appears in both mirrors and that neither carries a stale extra — a
+comment-enforced invariant converted to a machine-checked one. **Verified by mutation: removing the mirror
+line fails 2 tests and exits 1; before the fix the same drift left the entire gate green.**
+
+The review's other three MUST-FIX were **missing tests**, each proven by mutation against the full gate and
+each **re-verified independently by the orchestrator** rather than taken on the lane's report: deleting the
+`empty_tool_input` producer branch (now fails 1), removing the clamp (2), stripping
+`nextConsultBarsOnlySchema`'s bounds (3). **All three previously left 3835/3835 green.** A drifted `.min()`
+would have admitted `nextConsultBars: -1`, making `barsSinceConsult >= -1` true every bar — consulting on
+every single bar against the $3/day breaker.
+
+**A behaviour change the review forced, not just a comment fix.** Adopting the model's `nextConsultBars`
+unclamped would have stretched the post-degrade blind window from 2h to **8h**, past the 4h cadence
+`.env.app:108` already records as starving evidence pace — off a field read out of a payload the schema had
+just rejected. It is now **clamped to `AGENTIC_FALLBACK_CONSULT_BARS`**: a recovered schedule may only ever
+make the lane consult SOONER, never widen the blind window. The declared failure direction was rewritten to
+say so.
+
+### Not shipped, each with its reason — this pass answers Pass 63's standing recommendation
+
+Pass 63 asked the next pass to pick one of two remedies for the serial-tail bottleneck. **This pass adopts
+option 2: latent defects are recorded, not shipped, while live ones are fixed in-pass.** Three items:
+
+1. **The `llmCostSinceMs` gauge — DROPPED, and a lane claim refuted.** A lane reported the code comment
+   "both bounds of this read are now PUBLISHED" as false. Reading it, the comment explicitly scopes that to
+   the **`evidence` object** ("is in `evidence` below"), where both bounds genuinely are. Only the metrics
+   surface carries just the upper bound, and `llmCostSinceMs` is always `epochMs` — a static deploy
+   constant reconstructible from config. Confirmed by two independent scrapes. **Adequate as-is.**
+2. **The derivatives-feed spot-ticker error counter — recorded, not shipped.** `derivatives_feed_poll_errors_total`
+   structurally cannot count spot-ticker sub-poll failures (reads 0 despite 2 real ones this boot), because
+   `fetchSpotTicker` catches its own rejections and never touches `errorCount`. **Currently INERT:**
+   `AGENTIC_DERIVATIVES_V2_ENABLED` is absent from the container and defaults false, so `spotPerpBasisBps`
+   is not rendered into the prompt at all. **Trigger to ship it: any enable of derivatives v2.** Also
+   established as correct-by-design: `api.binance.com` is deliberate (read-only context from production
+   because demo books are synthetic; orders stay sandboxed), both failures were single-cycle and self-healed
+   on the next 60s poll, and the HYPE/USDT exclusion is correct-and-informative.
+3. **The frozen binance reject alarm** — untouched, per its recorded exemption.
+
+### Gates, deploy, soak
+
+`format:check` / `lint` / `lint:md` / `typecheck` clean; **`test` 198 files / 3863 passed** (baseline 197 /
+3835 ⇒ +1 file, +28 tests); `build` clean; **`eval:agentic` 95 passed | 20 skipped, run BEFORE the
+commits.** Deployed `fbb3800` at 01:11:05Z with the `GIT_SHA=` prefix — **`build_info{git_sha="fbb3800"}`
+confirmed live**, new boot `90dbb484`, `RestartCount` 0.
+
+**The redeploy carve-outs re-confirmed a fifth time, and now timed precisely:** `mode_info` read
+`effective="paper"` at +39s and had resolved to `testnet` by +69s; `reconciliation_last_success_timestamp_seconds`
+and `agentic_budget_remaining_usd` were both 0 at +69s and initialised by +99s ($2.8348842). A scrape inside
+that window is a mid-boot artifact, **not** a downgrade and **not** a stall.
+`agentic_schema_rejections_total{kind="batch_stringified_recovered"}` materialises at 0 on boot, confirming
+the new counter child zero-seeds congruently.
+
+### Flagged / next-pass candidates
+
+- **WATCH-V4-12 needs restating, not re-deriving.** L1 is live and its primary signature is unmet. The next
+  question is whether `effort` is honoured for this model at all; recording `stop_reason` on the journal row
+  is the cheapest instrument for it.
+- **The new WATCH (below) reads at the first `empty_tool_input:` or `batch_stringified_recovered`.** Both
+  counters are zero-seeded, so a zero is a real absence rather than a missing series.
+- **CANDIDATE's 08-05 slot is unspent** and the mint has produced zero candidates in four days.
+- **Pass 63's serial-tail recommendation is now answered** (option 2 adopted, above); this pass still ran
+  4 read lanes + 1 write lane + 1 review + 1 remediation lane, and the tail was again the binding cost.

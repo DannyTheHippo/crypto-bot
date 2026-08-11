@@ -1103,6 +1103,58 @@ against it, including a prefix escape (`<allowed>/../../etc/passwd`) and
 recorded calls, never an automatic void — but it is now raised by a gate that has been shown to catch
 what it previously missed.
 
+### WATCH-V4-26 — a discarded element no longer carries the schedule of the decision nobody acted on (2026-08-11, Pass 69)
+
+**Shipped:** `76dbbed` — `discardConsultBars = Math.min(nextConsultBars, fallbackConsultBars)` applied
+at the three per-element discard branches in `proposeBatch` (`missing_symbol`, failed
+`tradeElementSchema`, `capability_violation`), which previously stamped the batch's RAW value while only
+the whole-batch schema-failure branch clamped. Deployed at 2026-08-11T09:17:55Z, boot `940dcadc`. Full
+context and the measured baseline in `LOG.md` § Pass 69. Closes WATCH-V4-20's third limb, which had
+never been read.
+
+**Baseline as of the fix (lifetime, pre-deploy):** 181 discard-stamped rows,
+`1×8, 4×11, 6×3, 8×48, 10×1, 12×61, 13×6, 16×42, 32×1` — **111 above the 8-bar floor, max 32 bars = 8h**.
+
+**Expected-positive:** on boot `940dcadc` and after, **no** `agent_decisions` row whose rationale carries
+a discard tag (`schema_rejected:` / `capability_violation:`) stamps `plan_json->>'nextConsultBars'`
+greater than `AGENTIC_FALLBACK_CONSULT_BARS` (8). Discards run ~3.6/day, so **UNFIRED is the expected
+first reading** and a short soak legitimately sees none — absence here is low-information, not
+confirmation.
+
+**Named defect outcomes:**
+
+- **A per-element discard row still stamping > 8** ⇒ the clamp missed a branch. Re-enumerate ALL stamp
+  sites in `anthropic-agent-client.ts` and `batching-agent-client.ts`, not just the three fixed — the
+  original defect was precisely a clamp on 1 of 4 branches.
+- **A row stamping > 8 whose rationale is NOT a discard tag** ⇒ that is the SUCCESS path, which stamps the
+  model's raw value by design and is correct. Do not "fix" it; over-clamping every proposal would consult
+  every symbol on the floor cadence and multiply spend. A regression test pins the raw 32 for exactly this
+  reason.
+- **Daily LLM spend sustained above ~$2.90/day, or `agentic_budget_remaining_usd` reaching 0 before
+  ~22:00Z** ⇒ the recovered consults cost more than modelled. **This is the rollback trigger.** Modelled
+  cost: **~+$0.09/day median, +$0.37/day worst observed (2026-07-31)**, which on that day's actual $2.97
+  would have crossed the $3 breaker — whose consequence is `settleBatch` returning `budget_exhausted`
+  holds for every symbol for the rest of the UTC day. Economize via cadence or prompt; **never raise the
+  breaker** (`redesign-scoreboard-2026-08-04.md` refusal list).
+- **A symbol taking a discard and then NOT being consulted within 8 bars** ⇒ the clamp is stamping
+  correctly but `agentic.strategy.ts:993`'s adoption or `:361`'s `forced_fallback` is still not reached;
+  the defect was never in the stamp value.
+- **`forced_fallback` counts falling to ~0 while discards continue** ⇒ EXPECTED, not a defect: a clamped
+  discard now schedules a consult, so that wake records gate outcome `consulted` rather than
+  `forced_fallback`. Any research query using `forced_fallback` as the went-dark-then-woke signal
+  under-counts from boot `940dcadc` forward.
+
+**Two rejection paths deliberately NOT clamped, with their trigger.** `buildProposalFromTradeDecision`
+also reaches the raw stamp on the fee-floor rejection and on `isOppositeOpen` — both return zero signals
+and no plan, so by this watch's own principle they are rejections. Both are **LATENT with positive
+controls, measured 2026-08-11**: 0 rows match the fee-floor rationale; 0 rows show an `open_*` action
+journalled against an own-position marker of the opposite side (control: 349 LONG / 257 SHORT / 1560 FLAT
+rows exist to journal against). **Trigger to fix: the first journalled occurrence of either.** Re-measure
+before acting; do not re-derive from this line.
+
+**Resolution deadline:** 2026-08-18, or the first reading of any named outcome above, whichever comes
+first.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

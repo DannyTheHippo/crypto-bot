@@ -1040,3 +1040,130 @@ trade-flow payload channels going live 2026-08-04 — and a fourth sits under th
 configuration changes in the 08-06 → 08-10 window). The decomposition above assigns the _mechanism_
 — fewer calls, not cheaper calls — which is what distinguishes the two levers; it does not assign
 the _credit_, and this record does not claim to.
+
+## Checkpoint #2 — recorded 2026-08-11T16:08:01.978Z, 4h08m LATE against the 2026-08-11T12:00Z row
+
+_Appended under § 2.5. The frozen body above is untouched, as is § Checkpoint #1. This checkpoint
+extends nothing and adjusts nothing (§ 2.5 rule 3); it re-derives a date. Recorded by Pass 70 — the
+first pass to run after the 12:00Z gate, which Passes 68 and 69 both correctly declined to pull
+forward._
+
+**Why late, and why that is not a moving target.** The § 2.5 line is a pure function of elapsed time
+from A1, declared before any result was seen, so evaluating it at this read's instant is reading the
+same line at a different `x` — the identical justification § Checkpoint #1 gave for being 27h08m
+EARLY. Both the elapsed-time evaluation and the literal declared row are reported below, so neither
+framing can flatter the result.
+
+**Tuple C — ONE `PromotionReadinessService.evaluate()` sample, 2026-08-11T16:08:01.978Z** (never
+assembled from separate reads, § 2.5 rule 1; taken from `loop:sweep`'s own `_promotion_evidence_`
+annotation, which samples all seven fields from a single `evaluate()` call):
+
+```text
+windowDays=18.90106894675926  roundTrips=88  netPnlUsd=−82.0551198244
+llmCostUsd=42.4896401         winRate=0.3068181818181818  ready=false
+reasons=[NON_POSITIVE_NET_PNL, BELOW_PASSIVE_BENCHMARK]
+```
+
+`INSUFFICIENT_WINDOW` stays cleared (18.90 > 14 days) and the gate still does not open — the same
+structural point § 2 made and § Checkpoint #1 confirmed: the window was never what held it shut.
+
+### The comparison, in both directions (§ 2.5 rule 2)
+
+```text
+elapsed A1 → C         = 2026-08-03T22:02:24Z → 2026-08-11T16:08:01.978Z = 7.7539118 d
+projected at −$5.2088/d = −63.5326 − 5.2088 × 7.7539118 = −$103.9212
+measured                =                                  −$82.0551
+```
+
+**BETTER than projection by $21.87 (21.0%).** Against the literal declared 2026-08-11T12:00Z row of
+**−$103.02**, the measured book 4h08m later is ahead by **$20.96**. Both readings agree in sign and
+magnitude, so the lateness does not carry the result.
+
+**This is the second consecutive checkpoint to come in ahead of projection**, and the gap widened
+from $15.92 (16.4%) to $21.87 (21.0%). § Checkpoint #1's instruction not to bank it applies here
+unchanged and with more force, because the mechanism named there — a regime shift, not a lever — is
+still the leading explanation and is still not under this program's control.
+
+### Re-derived rates, each with its denominator named
+
+```text
+gross = net + llm = −82.0551198244 + 42.4896401 = −$39.5654797244
+wall-clock since epoch (2026-07-21T11:21:00Z → C) = 21.1993284 d
+forward window (§ Checkpoint #1's own anchor, P65 tuple 2026-08-06T16:33:53Z → C) = 4.9820484 d
+  Δnet = −$9.3173214   Δllm = +$9.2957514   Δgross = −$0.0215700   Δtrips = 27
+```
+
+| rate | arithmetic | value |
+| --- | --- | --- |
+| net-of-cost, wall-clock since epoch | 82.0551198244 ÷ 21.1993284 | **−$3.8706/day** |
+| net-of-cost, on the gate's own `windowDays` (conservative) | 82.0551198244 ÷ 18.9010689 | **−$4.3413/day** |
+| gross only, wall-clock since epoch | 39.5654797244 ÷ 21.1993284 | **−$1.8664/day** |
+| LLM, epoch average | 42.4896401 ÷ 21.1993284 | **$2.0043/day** |
+| **net-of-cost, forward window** | 9.3173214 ÷ 4.9820484 | **−$1.8702/day** |
+| LLM, forward window | 9.2957514 ÷ 4.9820484 | **$1.8659/day** |
+| gross only, forward window | 0.0215700 ÷ 4.9820484 | **−$0.0043/day** |
+
+**⛔ THE ONE LINE IN THIS TABLE THAT IS NOT A ROUNDING DETAIL: over the last 4.98 days and 27 closed
+round trips, GROSS IS FLAT — total Δgross −$0.0216, a rate of −$0.0043/day.** Across the same window
+the book lost **$9.3173** net-of-cost, of which **$9.2958 (99.77%) is the LLM bill**. On this window
+the strategy neither made nor lost money before costs, and the entire deficit is the cost of deciding.
+That is § Standing Finding 2 ("the LLM bill is the dominant per-trip cost") reproduced on a fresh,
+independent window — reported, **not banked**: 27 trips is a small denominator, the window is fully
+confounded (regime, L6, and the Pass 69 `nextConsultBars` clamp all land inside it), and a flat gross
+is not a positive edge. **It does not license cost work as a profitability lever** — `verdicts.md`'s
+prohibition stands, and § 2.4's zero-LLM counterfactual already showed that zeroing the bill leaves a
+book that still does not clear the bar.
+
+### Restated S3 date — every rate still lands after the window close
+
+```text
+headroom on the −$200 arm = 200 − 82.0551198244 = $117.9448801756
+```
+
+| rate used | days to −$200 | date |
+| --- | --- | --- |
+| forward window −$1.8702/day | 63.07 | **2026-10-13** |
+| wall-clock epoch average −$3.8707/day | 30.47 | **2026-09-11** |
+| gate `windowDays` −$4.3413/day (conservative) | 27.17 | **2026-09-07** |
+| the pre-declared composed −$5.2088/day | 22.64 | **2026-09-03** |
+
+**§ Checkpoint #1's central finding is CONFIRMED on an independent read and strengthened.** Every
+restated rate lands after the **2026-08-31** close; the nearest is **2026-09-03** and the forward-rate
+reading has moved further out (2026-09-30 → 2026-10-13). The window still closes 2026-08-31 and the
+−$200 trigger is still −$200 (§ 2.5 rule 3). **Expect this program to end on the written verdict, not
+on a triggered S3** — now the settled expectation across two checkpoints rather than one.
+
+The LLM arm remains slack and non-binding (§ 2.3 unchanged): headroom `150 − 42.4896401 = $107.5104`;
+at the forward $1.8659/day that is 57.6 days (~2026-10-08). **The −$200 arm still binds first.**
+
+### § 2.5 rule 4 — the one lever enabled since Checkpoint #1, compared at its declared number
+
+**L6 (the fee-truth prompt path, `917e542`) went live at boot 2026-08-10T09:49:33Z — 57 minutes AFTER
+Checkpoint #1's 08:52:03Z instant** — so rule 4 binds at this checkpoint and is discharged here.
+
+**Declared magnitude, quoted from § L6 verbatim and not chosen afterwards: "0 bps, $0/day, 0 entries
+admitted, 0 gate rejections changed."**
+
+Measurement over the only window that is post-enable throughout (Checkpoint #1's tuple B → C):
+
+```text
+elapsed B → C = 2026-08-10T08:52:03Z → 2026-08-11T16:08:01.978Z = 1.3027660 d
+Δnet = −$0.8412927   Δllm = +$2.3962200   Δgross = +$1.5549273   Δtrips = 8
+```
+
+**Verdict: compared, and NOT RESOLVABLE AT THIS n — which is the expected outcome for a magnitude
+declared zero, not a failure of the lever or of the test.** Δgross is +$1.55 over **8 round trips and
+1.30 days**; at this book's per-trip dispersion that is indistinguishable from zero, and the window
+additionally contains the Pass 69 `nextConsultBars` clamp (`76dbbed`, deployed 2026-08-11T09:17:55Z)
+and the same unresolved regime term. **§ L6's own clause governs and is applied here: "Any post-enable
+improvement attributed to this flip is refuted in advance." The +$1.55 is therefore NOT credited to
+L6**, and no later reader may pick it up as evidence that L6 delivered. L6's admissible
+expected-positive was always the deterministic TRANSMISSION check, not PnL.
+
+### What this checkpoint does not claim
+
+It does not extend the window, does not touch the −$200 or $150 triggers, does not re-adjudicate L1
+or L4, and does not treat two consecutive better-than-projection reads as a trend: `roundTrips` grew
+80 → 88 between the checkpoints, and **n=8 is a window delta, never a trajectory**. The next
+checkpoints are **2026-08-18T12:00Z** and **2026-08-25T12:00Z**, read against the same frozen § 2.5
+table.

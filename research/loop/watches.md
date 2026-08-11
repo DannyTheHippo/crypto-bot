@@ -1043,6 +1043,66 @@ fires does not depend on the denominator.
 **Status: FIRED (defects 1 and 2). The fix is deployed, harmless, and did not do what it shipped to
 do.**
 
+### WATCH-V4-25 — the OOS blind-decide transcript is checked, and the check is recorded (2026-08-11, Pass 68)
+
+**Shipped:** `scripts/loop-oos-transcript.mjs` + core + spec, `pnpm loop:oos-transcript`. Record:
+`research/oos-arm/attestations.jsonl` (tracked). Study amendment: `oos-session-arm-2026-08-03.md`
+§ Amendment 2026-08-11. Full context in `LOG.md` § Pass 68.
+
+**Expected-positive:** every future OOS decide firing appends exactly one attestation line whose
+`agentId` matches the subagent the pass dispatched, whose `rowIds` match the rows that firing recorded
+into `research/oos-arm/decisions-*.jsonl`, and whose `blindnessClean` is `true` — and, from the first
+firing after the pretty-print fix, with `toolCallCount` composed only of `Read`/`Write` calls on the
+offered surface and **zero `Bash` calls**.
+
+**Named defect outcomes — each says what it would mean, not just that it is bad:**
+
+- **A `Bash` call reappears in a blind-decide transcript** ⇒ the `loop-oos-arm-gather.mjs` pretty-print
+  fix did not remove the subagent's reason to reach for a shell (its `Read` is still truncating), so
+  the false-positive class of Pass 68 firing 1 is back and every attestation needs hand-adjudication
+  again. Re-measure the candidates file's line lengths before touching the classifier.
+- **`blindnessClean: false` with a `path_not_allowed` or `disallowed_tool` violation** ⇒ this is the
+  REAL thing the watch exists for: the deciding subagent read outside its offered surface, and those
+  rows are void under VOID condition 4. **Do not re-run the firing to get a cleaner transcript** — the
+  rows are spent (pre-registration § VOID conditions: "a VOID read consumes its window"). Record it,
+  and exclude those rowIds at seal time.
+- **An attestation line missing for a firing that DID record decisions** ⇒ the pass fired the decide leg
+  and skipped the attestation, which is the exact gap this watch closes; those rows reach the seal
+  un-blindness-checkable and read 1 is void by construction for them.
+- **`transcriptBytes`/`transcriptSha256` unresolvable at seal time** ⇒ the harness reaped session
+  storage before the seal. The attestation still carries the capture-time verdict and the hash, which is
+  the designed fallback; what is LOST is the ability to re-derive the verdict from the bytes. Note it at
+  seal time rather than treating the read as void — the check was performed, only its re-derivation is
+  gone.
+- **`agentType` reads something other than `general-purpose`** ⇒ the dispatch shape changed mid-window.
+  Not a defect in itself, but it breaks comparability with the Pass 67/68 rows and must be recorded.
+
+**Resolution deadline:** the first seal of read 1 (target 202 rows; window stood at 18 after Pass 68).
+At that seal the attestation file is the input to the VOID-4 check — if it does not cover every rowId in
+the sealed window, the seal names the gap explicitly.
+
+**A sixth named defect, added the same pass the watch opened, because it already fired:**
+
+- **A `non_client_tool_call` violation naming `advisor` (or any `server_tool_use`)** ⇒ the dispatch brief
+  did not suppress the harness-injected advisor tool. This is the DEFAULT state, not an exception: the
+  harness injects `advisor` into dispatched subagents, measured at **29 `server_tool_use` blocks across 23
+  of 27 transcripts**. Three of the arm's first four firings carry one. **The remedy is procedural and
+  proven** — Pass 68 firing 2's brief forbade `Bash` and constrained the subagent to four `Read`s and one
+  `Write`, and that subagent declined the advisor unprompted. **Every future brief must carry that
+  constraint**; a firing that does not is a process miss, not a model surprise.
+
+**Correction, recorded rather than smoothed:** the first version of this classifier collected only
+`type === 'tool_use'` blocks and **certified Pass 67's two firings CLEAN when both were not**. The
+extractor failed OPEN on unknown block types while the classifier failed CLOSED on unknown tool names —
+opposite directions in the same pipeline. Found by the Pass 68 adversarial review, verified independently
+by the orchestrator, fixed at the entry layer (unrecognised block types are now violations), and the
+attestation record was REGENERATED before any of it was committed. **`Bash` is now an unconditional
+violation and the path-tokenizer is deleted** — the review produced eight false-CLEAN Bash commands
+against it, including a prefix escape (`<allowed>/../../etc/passwd`) and
+`psql -c "select * from agent_decisions"`. A `VIOLATED` verdict is a trigger to adjudicate against the
+recorded calls, never an automatic void — but it is now raised by a gate that has been shown to catch
+what it previously missed.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

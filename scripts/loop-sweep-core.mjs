@@ -30,6 +30,13 @@
 // never a pass and never a throw — a partial digest with failures named beats a confident blank.
 
 import Decimal from 'decimal.js';
+import { parseLogPassEntries, classifyPassRecordReadiness } from './loop-pass-record-core.mjs';
+
+// Re-exported so existing importers (test/features/strategy/loop-sweep/pass-record-audit.spec.ts,
+// pass-record-readiness.spec.ts) keep working unchanged — the parsing/readiness logic itself now
+// lives in loop-pass-record-core.mjs, a stdlib-only module loop-pass-lock.mjs depends on directly
+// (see that file's header for why it cannot go through this one, which imports decimal.js).
+export { parseLogPassEntries, classifyPassRecordReadiness };
 
 // The venue ids this sweep reads reconciliations for — mirrors domain/venue/types/venue-map.ts's
 // SPOT_VENUE/PERP_VENUE (a node script outside the tsconfig graph cannot import that .ts directly;
@@ -1063,76 +1070,6 @@ export function parseDigestStampMs(name) {
   return Number.isFinite(ms) ? ms : null;
 }
 
-// LOG.md's own conventions, read off the file rather than assumed: one `## <date> — Pass <n> (title)`
-// heading per pass, where <date> is `2026-07-29` or the two-day `2026-07-28/29`, and the first
-// `**Window:**` line under it carries the span. Sub-headings are `###` and never match.
-const PASS_HEADING_RE = /^##\s+(\d{4}-\d{2}-\d{2})(?:\/\d{1,2})?\s+—\s+Pass\s+(\d+)\b/;
-const WINDOW_LINE_RE = /^\*\*Window:\*\*\s*(.+)$/;
-// Both stamp shapes the retained entries actually use — fully qualified, or bare `HH:MMZ` inheriting
-// the date to its left. ANCHORED on purpose: an unanchored match would happily lift a time out of the
-// prose that trails the window on the same line and call it the pass boundary.
-const WINDOW_ABS_STAMP_RE = /^\s*(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})Z/;
-const WINDOW_TIME_ONLY_RE = /^\s*(\d{2}):(\d{2})Z/;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function parseWindowSide(text, defaultDate) {
-  const abs = WINDOW_ABS_STAMP_RE.exec(text);
-  if (abs) {
-    const ms = Date.parse(`${abs[1]}T${abs[2]}:${abs[3]}:00Z`);
-    return Number.isFinite(ms) ? ms : null;
-  }
-  const rel = WINDOW_TIME_ONLY_RE.exec(text);
-  if (!rel) return null;
-  const ms = Date.parse(`${defaultDate}T${rel[1]}:${rel[2]}:00Z`);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-// Either both bounds parse or the entry counts as UNPARSED — a half-read window would silently shrink
-// a pass's coverage and manufacture the exact false accusation this detector must not make. Ends that
-// are prose ('→ in progress', archived Pass 43) take that path by construction.
-function parsePassWindow(raw, headingDate) {
-  const sides = String(raw).split('→');
-  if (sides.length < 2) return { startMs: null, endMs: null };
-  const startMs = parseWindowSide(sides[0], headingDate);
-  if (!Number.isFinite(startMs)) return { startMs: null, endMs: null };
-  const startDate = new Date(startMs).toISOString().slice(0, 10);
-  let endMs = parseWindowSide(sides[1], startDate);
-  if (!Number.isFinite(endMs)) return { startMs: null, endMs: null };
-  // A bare end time earlier than the start is the next calendar day — the overnight pass the
-  // `## 2026-07-28/29 — Pass 45` heading shape exists for (16:07Z → 07:00Z).
-  if (endMs < startMs) endMs += DAY_MS;
-  return { startMs, endMs };
-}
-
-export function parseLogPassEntries(logText) {
-  if (typeof logText !== 'string') return [];
-  const entries = [];
-  let cur = null;
-  for (const line of logText.split('\n')) {
-    const heading = PASS_HEADING_RE.exec(line);
-    if (heading) {
-      cur = {
-        heading: line.trim(),
-        pass: Number(heading[2]),
-        date: heading[1],
-        window: null,
-        startMs: null,
-        endMs: null,
-      };
-      entries.push(cur);
-      continue;
-    }
-    if (!cur || cur.window !== null) continue;
-    const window = WINDOW_LINE_RE.exec(line);
-    if (!window) continue;
-    cur.window = window[1].trim();
-    const span = parsePassWindow(window[1], cur.date);
-    cur.startMs = span.startMs;
-    cur.endMs = span.endMs;
-  }
-  return entries;
-}
-
 // Every count is zero here on purpose: an undetermined audit evaluated nothing, and reporting a
 // partial tally next to a verdict that does not exist is the same "absence reads as a reading" defect
 // the annotation is written to prevent.
@@ -1262,6 +1199,11 @@ export function classifyUnrecordedSweeps({ digestNames, logText }) {
     annotations,
   };
 }
+
+// classifyPassRecordReadiness (the mechanical check that catches a Pass-67/68-shaped record defect at
+// lock-acquire/release time) now lives in loop-pass-record-core.mjs, alongside parseLogPassEntries —
+// see that file's header for why the split exists. Re-exported above so nothing importing it from
+// this module needs to change.
 
 // ── per-venue order-reject rate: the instrument that would have caught Pass 51's headline ─────────
 // Written for the 2026-07-31 finding: binance spot ran 156 submits / 122 InsufficientFunds rejects

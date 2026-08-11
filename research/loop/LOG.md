@@ -928,6 +928,13 @@ warm-up grace, so the Δ327 MB **neither establishes nor refutes** a slope and i
 
 ## 2026-08-11 — Pass 68 (the VOID-4 blocker is a capability limit, not a scheduling choice — so the pass shipped the CHECK instead of the copy)
 
+**Window:** 2026-08-11T00:07Z → 08:01Z. Lease `e43c2cdd94d35f88` taken 00:07:34Z, re-armed mid-pass as
+`b52a413a31452995` after the 425-min execution gap below; end bound is commit `29d0ae7`'s committer
+instant (08:01:25Z), the pass's last durable artifact. **This line was MISSING from the entry as
+written and was restored by Pass 69** — its absence blanked the sweep's whole unrecorded-sweep
+verdict (`pass_record_audit_undetermined`, one unparseable window suppresses the verdict for every
+retained entry). See Pass 69 for the mechanical guard that now catches the omission.
+
 **Pass type: EVIDENCE-INTEGRITY** (promotion-ready-evidence tier, §4 priority 2). Sweep clean, so §3
 did not force a defect investigation; the pass took STATUS's own named highest-priority owed item —
 the OOS arm's VOID-4 transcript durability blocker. **Nothing was deployed** (no app-code change, so

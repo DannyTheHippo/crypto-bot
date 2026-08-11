@@ -29,9 +29,51 @@ import {
   classifyRelease,
   parseArgs,
 } from './loop-pass-lock-core.mjs';
+// ONLY from loop-pass-record-core.mjs, never loop-sweep-core.mjs — the latter imports decimal.js, and
+// this shell must stay dependency-free (node builtins + loop-pass-lock-core.mjs/loop-pass-record-
+// core.mjs, both zero-import) so a broken package resolution can never wedge the concurrency lease
+// (2026-08-11 review, MUST-FIX A — see loop-pass-record-core.mjs's header for the reproduction).
+import {
+  classifyPassRecordReadiness,
+  describePassRecordWarning,
+  safeErrorText,
+} from './loop-pass-record-core.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LOCK_FILE = join(SCRIPT_DIR, '..', 'research', 'loop', '.pass.lock');
+const LOG_FILE = join(SCRIPT_DIR, '..', 'research', 'loop', 'LOG.md');
+
+// Pass-record readiness check (scripts/loop-pass-record-core.mjs). MEASUREMENT/VETO-ONLY, so it fails
+// OPEN: it never changes the exit code, never blocks an acquire or release, and never throws out of
+// this shell — releasing the lease is what stops the NEXT pass colliding in this working tree, so
+// wedging that over a documentation-parse problem would trade a real concurrency guarantee for a
+// bookkeeping one. A thin read-then-delegate-then-warn wrapper on purpose: the warn/silent decision
+// itself lives in describePassRecordWarning (pure, unit-tested), so a polarity inversion here is
+// catchable by a test instead of only visible in console output. classifyPassRecordReadiness is
+// documented to never throw; the surrounding try/catch is defense-in-depth, not the load-bearing
+// guard — both catches use safeErrorText, which likewise cannot throw (see its own comment).
+function warnOnPassRecordReadiness() {
+  let logText;
+  let readFailed = false;
+  let readErrorText = '';
+  try {
+    logText = readFileSync(LOG_FILE, 'utf8');
+  } catch (err) {
+    readFailed = true;
+    readErrorText = safeErrorText(err);
+  }
+  let verdict = null;
+  if (!readFailed) {
+    try {
+      verdict = classifyPassRecordReadiness({ logText });
+    } catch (err) {
+      readFailed = true;
+      readErrorText = safeErrorText(err);
+    }
+  }
+  const { warn, message } = describePassRecordWarning({ readFailed, readErrorText, verdict });
+  if (warn) console.warn(message);
+}
 
 function readRaw() {
   if (!existsSync(LOCK_FILE)) return null;
@@ -92,6 +134,9 @@ function acquire(label) {
   console.log(
     `loop-pass-lock: nonce=${lock.nonce}  → release with: pnpm loop:unlock ${lock.nonce}`,
   );
+  // AFTER acquire succeeds: at pass start the newest LOG.md entry belongs to the PREVIOUS pass, so a
+  // warning here tells the incoming pass it inherited a malformed record.
+  warnOnPassRecordReadiness();
 }
 
 function release(nonce) {
@@ -102,6 +147,10 @@ function release(nonce) {
   }
   if (existsSync(LOCK_FILE)) rmSync(LOCK_FILE);
   console.log(`loop-pass-lock: released (${decision.reason})`);
+  // AFTER release succeeds: at pass end the newest LOG.md entry is the pass's OWN, so a warning here
+  // catches an omission in the pass that made it — this is where Pass 68's missing window would have
+  // been caught.
+  warnOnPassRecordReadiness();
 }
 
 function status() {

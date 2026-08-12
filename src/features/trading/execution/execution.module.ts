@@ -41,7 +41,10 @@ import {
 import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 import { BootRecoveryService } from './boot-recovery.service';
 import { CrashRecoveryService } from './crash-recovery.service';
-import { DemoFillPollerService } from './demo-fill-poller.service';
+import {
+  DemoFillPollerService,
+  DEMO_FILL_OVERLAP_RECOVERED_COUNTER,
+} from './demo-fill-poller.service';
 import { EquityMonitorService } from './equity-monitor.service';
 import { EquitySamplerService } from './equity-sampler.service';
 import { ExecReportConsumerService } from './exec-report-consumer.service';
@@ -256,6 +259,7 @@ const providers: Provider[] = [
   CrashRecoveryService,
   BootRecoveryService,
   DemoFillPollerService,
+  DEMO_FILL_OVERLAP_RECOVERED_COUNTER,
   AlgoStopRecoveryService,
   RecoveryCoordinatorService,
   RECOVERY_AUTO_RESUME_COUNTER,

@@ -20,10 +20,12 @@
 //     the session's own read). It is SKIPPED and COUNTED, never silently dropped — a truncated batch
 //     that reports its own truncation is honest; one that does not is the exact "silent skip" this
 //     module's docstring calls a defect class in itself.
-//   - checkCapsFaithfulness/checkEntryRateBound run BEFORE appendDecisionRecords, and a voided batch
+//   - checkCapsFaithfulness (VOID condition 1) runs BEFORE appendDecisionRecords, and a voided batch
 //     writes NOTHING — the fail-closed direction the append-only decision record needs: once a line
 //     is written it is never retracted (this module's sibling, oos-arm-record.ts, only appends), so
-//     the gate belongs before the write, not after it.
+//     the gate belongs before the write, not after it. measureEntryRate is NOT a gate — VOID
+//     condition 3(b) is a seal-time condition over the sealed rows (scripts/loop-oos-arm-core.mjs:436),
+//     not a per-firing one; this leg only measures and reports the rate alongside the write.
 //
 // This file NEVER runs against a real candidates/answers file in this repo's own validation — the
 // task that built this module is machinery only ("do not run the arm, do not seal anything, do not
@@ -42,11 +44,11 @@ import {
   assertEligible,
   decideOosRow,
   checkCapsFaithfulness,
-  checkEntryRateBound,
+  measureEntryRate,
   type OosCandidateRow,
   type OosRowOutcome,
   type SessionAnswerLine,
-  type EntryRateBoundCheck,
+  type EntryRateMeasurement,
   type CapsFaithfulnessCheck,
 } from './oos-arm-decide';
 import {
@@ -268,6 +270,103 @@ describe('decideCandidateBatch — always-on coverage, zero I/O beyond the injec
       decideCandidateBatch(rows, answers, NOW_MS, DEFAULT_CFG, systemPrompt, playbookBlock),
     ).rejects.toThrow(/ineligible/);
   });
+
+  // Defect #140 regression: measureEntryRate must never gate the write, even at rate 1.0 on a
+  // 1-6-row firing (exactly the shape that used to VOID and destroy rows — Pass 70 firing 2 and
+  // Pass 71 firing 1). checkCapsFaithfulness (VOID condition 1) is the only thing this pipeline
+  // still lets abort the write.
+  it('a firing where every decided row is an entry does NOT void and appends every record', async () => {
+    const rows = [row('r1', 0), row('r2', 1), row('r3', 2)];
+    const openLong = {
+      action: 'open_long',
+      sizeFraction: 0.1,
+      entry: { style: 'maker', offsetBps: 10 },
+      entryValidityBars: 2,
+      stopLossPct: 0.02,
+      takeProfitPct: 0.04,
+      maxHoldBars: 3,
+    };
+    const answers = new Map<string, SessionAnswerLine>([
+      ['r1', { rowId: 'r1', toolInput: openLong }],
+      ['r2', { rowId: 'r2', toolInput: openLong }],
+      ['r3', { rowId: 'r3', toolInput: openLong }],
+    ]);
+    const { outcomes, decidedRows, missingAnswerRowIds } = await decideCandidateBatch(
+      rows,
+      answers,
+      NOW_MS,
+      DEFAULT_CFG,
+      systemPrompt,
+      playbookBlock,
+    );
+    expect(missingAnswerRowIds).toEqual([]);
+    expect(outcomes.every((o) => o.result.ok && o.result.action === 'open_long')).toBe(true);
+
+    const capsCheck = checkCapsFaithfulness(outcomes);
+    expect(capsCheck.void).toBe(false);
+    const rateMeasurement = measureEntryRate(outcomes);
+    expect(rateMeasurement.rate).toBe(1);
+    expect(rateMeasurement.entries).toBe(3);
+    expect(rateMeasurement.decided).toBe(3);
+    expect('void' in rateMeasurement).toBe(false);
+
+    const { systemPromptSha256, toolSchemaSha256 } = buildLiveSystemPrompt(DEFAULT_FLOOR_PROFILE);
+    const fingerprint = agentPromptModuleFingerprint();
+    const records: DecisionRecord[] = outcomes.map((outcome, i) => {
+      const decidedRow = decidedRows[i]!;
+      return buildDecisionRecord({
+        rowId: outcome.rowId,
+        symbol: outcome.symbol,
+        eventTime: outcome.eventTime,
+        venue: decidedRow.venue,
+        playbookVersion: decidedRow.playbookVersion,
+        hashes: {
+          systemPromptSha256,
+          playbookContentSha256: sha256Hex(playbookBlock),
+          toolSchemaSha256,
+          agentPromptBlobSha: fingerprint.worktreeBlobSha,
+        },
+        agentPromptCommitSha: fingerprint.commitSha,
+        capsSource: outcome.result.capsSource ?? 'config',
+        result: outcome.result,
+      });
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'oos-arm-run-spec-write-'));
+    const file = decisionsFilePath('2026-08-12', dir);
+    appendDecisionRecords(file, records);
+    const written = readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as DecisionRecord);
+    expect(written).toHaveLength(3);
+    expect(written.map((r) => r.rowId)).toEqual(['r1', 'r2', 'r3']);
+    expect(written.every((r) => r.action === 'open_long')).toBe(true);
+  });
+
+  // measureEntryRate on zero decided rows still reports `rate: null`, and caps-faithfulness (VOID
+  // condition 1) still voids and blocks the write — the fix narrows only the entry-rate scope, it
+  // does not weaken the surviving condition.
+  it('measureEntryRate reports rate null on zero decided rows; caps-faithfulness VOID still blocks the write', () => {
+    const empty = measureEntryRate([]);
+    expect(empty.rate).toBeNull();
+    expect(empty.entries).toBe(0);
+    expect(empty.decided).toBe(0);
+
+    const outcomes: OosRowOutcome[] = [
+      {
+        rowId: 'r1',
+        symbol: 'BTC/USDT',
+        eventTime: NOW_MS,
+        result: { ok: true, action: 'hold', capsSource: 'config' },
+        promptFidelity: { ok: true, violations: [] },
+      },
+    ];
+    const capsCheck = checkCapsFaithfulness(outcomes);
+    expect(capsCheck.void).toBe(true);
+    expect(capsCheck.offendingRowIds).toEqual(['r1']);
+    // FAIL CLOSED: the caller must never reach appendDecisionRecords once capsCheck.void is true —
+    // asserted here as the contract this pipeline's env-gated leg depends on.
+  });
 });
 
 describe('readCandidatesFile — shape check, no gate required', () => {
@@ -310,7 +409,7 @@ const ANSWERS_FILE = process.env['OOS_ARM_ANSWERS_FILE'] ?? '';
 
 describe.runIf(RUN)('oos-arm-run — decide leg, real candidates and answers files', () => {
   it(
-    'decides every eligible, answered candidate row and appends a record for each — VOID aborts the write',
+    'decides every eligible, answered candidate row and appends a record for each — caps-faithfulness VOID aborts the write; entry rate is measured and reported only',
     async () => {
       expect(CANDIDATES_FILE, 'OOS_ARM_CANDIDATES_FILE is required').not.toBe('');
       expect(ANSWERS_FILE, 'OOS_ARM_ANSWERS_FILE is required').not.toBe('');
@@ -332,23 +431,26 @@ describe.runIf(RUN)('oos-arm-run — decide leg, real candidates and answers fil
           playbookBlock,
         );
 
-      // The missing-answer count is REPORTED, not silently absorbed (module header) — this is the one
-      // line an operator reading CI/pass output sees regardless of whether they inspect the return
-      // value.
+      const capsCheck: CapsFaithfulnessCheck = checkCapsFaithfulness(outcomes);
+      const rateMeasurement: EntryRateMeasurement = measureEntryRate(outcomes);
+
+      // The missing-answer count and the measured entry rate are REPORTED, not silently absorbed
+      // (module header) — this is the one line an operator reading CI/pass output sees regardless of
+      // whether they inspect the return value. The rate is telemetry only (measureEntryRate never
+      // voids) — VOID condition 3(b) is enforced at seal time, over the sealed rows.
       console.log(
         `oos-arm-run: ${outcomes.length} decided, ${missingAnswerRowIds.length} of ` +
           `${candidates.rows.length} rows had no answer on file and were skipped: ` +
-          `[${missingAnswerRowIds.join(', ')}]`,
+          `[${missingAnswerRowIds.join(', ')}], entry rate ${rateMeasurement.rate ?? 'n/a'} ` +
+          `(${rateMeasurement.entries}/${rateMeasurement.decided})`,
       );
 
-      const capsCheck: CapsFaithfulnessCheck = checkCapsFaithfulness(outcomes);
-      const rateCheck: EntryRateBoundCheck = checkEntryRateBound(outcomes);
       // FAIL CLOSED: a voided batch writes NOTHING (module header) — checked BEFORE
-      // appendDecisionRecords, never after.
+      // appendDecisionRecords, never after. Only VOID condition 1 (caps faithfulness) gates the
+      // write; the entry rate is not a per-firing condition (see measureEntryRate's docstring).
       expect(capsCheck.void, `capsSource VOID: ${capsCheck.offendingRowIds.join(', ')}`).toBe(
         false,
       );
-      expect(rateCheck.void, `entry-rate VOID: rate=${rateCheck.rate}`).toBe(false);
 
       const records: DecisionRecord[] = outcomes.map((outcome, i) => {
         const decidedRow = decidedRows[i]!;

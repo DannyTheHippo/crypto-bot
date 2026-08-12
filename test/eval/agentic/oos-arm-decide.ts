@@ -182,35 +182,30 @@ export function checkCapsFaithfulness(
   return { void: offendingRowIds.length > 0, offendingRowIds };
 }
 
-export interface EntryRateBoundCheck {
-  readonly void: boolean;
+export interface EntryRateMeasurement {
   readonly rate: number | null;
   readonly entries: number;
   readonly decided: number;
 }
 
-const MAX_ENTRY_RATE_ABS = 0.65;
-
 /**
- * VOID condition 3(b) ONLY — the absolute 65% ceiling. Arm (a) (S/L outside [1/6, 6.0], amended
- * 2026-08-04) is NOT checkable here: it needs the live lane's rate on the same rows, and the decide
- * leg is blind to it by VOID condition 4. Arm (a) is enforced at score time in
- * scripts/loop-oos-arm-core.mjs, where the live join already exists. `rate: null` (zero decided
- * rows) is never void here.
+ * MEASUREMENT ONLY — never voids. VOID condition 3(b) (the absolute 65% ceiling) is a SEAL-TIME
+ * condition defined over the sealed rows (§ 1 of the pre-registration, per the 2026-08-04
+ * amendment) and is already enforced there: scripts/loop-oos-arm-core.mjs:436, against the
+ * registered scripts/loop-oos-arm-core.mjs:82 constant. A firing here gathers only 1–6 rows, so the
+ * condition cannot carry any statistical meaning at that n, and voiding on it would select against
+ * entry-heavy firings while keeping hold-heavy ones — a selection effect on the arm's own primary
+ * statistic. FAILS OPEN (rules/code-hygiene.md: measurement/veto-only gates fail open): this
+ * function only reports `rate` as telemetry for the caller to log alongside the write; it never
+ * blocks appendDecisionRecords. `rate: null` on zero decided rows.
  */
-export function checkEntryRateBound(
+export function measureEntryRate(
   outcomes: readonly { readonly result: { readonly ok: boolean; readonly action?: string } }[],
-): EntryRateBoundCheck {
+): EntryRateMeasurement {
   const decided = outcomes.filter((o) => o.result.ok);
   const entries = decided.filter(
     (o) => o.result.action === 'open_long' || o.result.action === 'open_short',
   ).length;
-  if (decided.length === 0) return { void: false, rate: null, entries: 0, decided: 0 };
-  const rate = entries / decided.length;
-  return {
-    void: rate > MAX_ENTRY_RATE_ABS,
-    rate,
-    entries,
-    decided: decided.length,
-  };
+  if (decided.length === 0) return { rate: null, entries: 0, decided: 0 };
+  return { rate: entries / decided.length, entries, decided: decided.length };
 }

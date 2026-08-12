@@ -1331,3 +1331,53 @@ is byte-identical (`readCandidatesFile` does `JSON.parse`), so nothing this stud
 
 **Nothing in this subsection weakened a gate to clear a failing verdict.** Every change made the classifier
 stricter; the record was regenerated, not edited, and it now reports three violations it previously missed.
+
+### Amendment 2026-08-12 (Pass 71) — VOID condition 3(b) was enforced per firing, not per the sealed rows it is defined over; the duplicate is removed
+
+_Appended per the rule at § Amendments. Nothing above this heading is edited._
+
+**This amendment changes NO registered condition, NO constant, NO alpha, and NO seal target.** VOID
+condition 3, as amended 2026-08-04 (§ 932 above), is unchanged: `S > 65%` absolute (arm (b)) is still
+the rule, `0.65` is still the value, and it is still a condition defined over **the sealed rows** (§ 1)
+— a SEAL-TIME condition, not a per-firing one. This is an IMPLEMENTATION-CONFORMANCE fix: the code
+applied that seal-time condition a second time, per firing, at a scope the registered text never named.
+
+#### 1. The defect
+
+`test/eval/agentic/oos-arm-decide.ts`'s `checkEntryRateBound` re-implemented arm (b)'s `0.65` ceiling
+and voided a firing's own batch — 1 to 6 decided rows, gathered by one decide-leg pass — whenever that
+tiny batch's own entry rate exceeded 65%. VOID condition 3(b) is already correctly enforced where the
+sealed window actually exists: `scripts/loop-oos-arm-core.mjs:82` (`MAX_ENTRY_RATE_ABS = 0.65`) and
+`:436-444` (the `entry_rate_ceiling` void reason), scored against the sealed rows at seal time. That code
+is unchanged by this amendment. The per-firing copy in `oos-arm-decide.ts` was never registered anywhere
+in this document — it was added at implementation time and is now removed.
+
+**Why removing the duplicate loses no registered protection.** Arm (b) still voids a read whose sealed
+rate exceeds 65%, exactly as written above, at the only scope the condition was ever defined over.
+Nothing that was checkable under the registered text stops being checked.
+
+#### 2. Why the per-firing copy was actively wrong, not merely redundant
+
+At n = 1..6 decided rows, the set of possible rates is `{0, 1/6, 2/6, ..., 1}` — coarse enough that a
+single entry-heavy firing (e.g. 3 of 3, or 1 of 1) crosses 65% on ordinary variation, with no
+statistical content at that sample size. Voiding on it does not test the registered condition; it
+**discards firings whose own entry rate is high and keeps firings whose entry rate is low or zero** —
+a selection effect operating directly on the arm's own primary statistic (§ PRIMARY — behavioural
+agreement). A duplicate applied at the wrong scope is not a no-op copy of the real gate; it is a
+different, unregistered gate that biases the recorded corpus.
+
+#### 3. The cost already paid, and it is not backfilled
+
+Two firings VOIDed and wrote nothing under the per-firing check: **Pass 70 firing 2** (1 decided row, 1
+entry, rate 1.0) and **Pass 71 firing 1** (3 decided rows, 3 entries, rate 1.0). Four rows total. Per
+§ Row-window bookkeeping, a gap in the row window is a WAIT, never a backfill — these four rows are
+lost and are not reconstructed retroactively; the window simply accumulates more slowly than it would
+have without the defect.
+
+#### 4. Which firings ran under which behaviour
+
+Every firing up to and including **Pass 71 firing 1** ran under the per-firing VOID (the defect
+described above). Firings from **Pass 71 firing 2** onward run under the corrected code: the decide leg
+measures and reports the batch's entry rate as telemetry (`measureEntryRate`, `oos-arm-decide.ts`) but
+never voids on it; only VOID condition 1 (caps faithfulness) can still abort a firing's write. VOID
+condition 3(b) continues to be enforced exactly once, at seal time, over the sealed rows.

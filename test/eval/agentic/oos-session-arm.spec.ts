@@ -42,7 +42,7 @@ import {
   assertEligible,
   decideOosRow,
   checkCapsFaithfulness,
-  checkEntryRateBound,
+  measureEntryRate,
   type OosCandidateRow,
 } from './oos-arm-decide';
 import {
@@ -270,8 +270,8 @@ describe('oos-session-arm — free preconditions and unit checks', () => {
     expect(dirty.offendingRowIds).toEqual(['2']);
   });
 
-  it('checkEntryRateBound VOIDs above the 65% absolute ceiling and never on an empty batch (VOID condition 3(b), amended 2026-08-04)', () => {
-    const low = checkEntryRateBound(
+  it('measureEntryRate is a MEASUREMENT ONLY — it never voids, at any rate including 100% (VOID condition 3(b) is enforced at seal time, scripts/loop-oos-arm-core.mjs:436, not per firing)', () => {
+    const low = measureEntryRate(
       Array.from({ length: 100 }, (_, i) => ({
         result: { ok: true, action: i === 0 ? 'open_long' : 'hold' },
       })),
@@ -279,29 +279,27 @@ describe('oos-session-arm — free preconditions and unit checks', () => {
     // Exact, not approximate: 1/100 is the same IEEE754 double as its literal, so equality is both
     // correct and stricter here. `toBeCloseTo` is banned repo-wide (money rule).
     expect(low.rate).toBe(0.01);
-    // A low rate is no longer void at decide time (defect #140) — there is no absolute floor; arm
-    // (a) of the amended condition needs the live lane's rate and is checked only at score time.
-    expect(low.void).toBe(false);
-    const high = checkEntryRateBound(
+    const allEntries = measureEntryRate(
       Array.from({ length: 10 }, () => ({ result: { ok: true, action: 'open_long' } })),
     );
-    expect(high.rate).toBe(1);
-    expect(high.void).toBe(true);
-    const atBoundaryBelow = checkEntryRateBound([
+    // Above the registered 65% ceiling — still not void here; a 1-6-row firing cannot carry a
+    // seal-time condition, and voiding on it would select against entry-heavy firings.
+    expect(allEntries.rate).toBe(1);
+    expect('void' in allEntries).toBe(false);
+    const atFifty = measureEntryRate([
       ...Array.from({ length: 50 }, () => ({ result: { ok: true, action: 'open_long' } })),
       ...Array.from({ length: 50 }, () => ({ result: { ok: true, action: 'hold' } })),
     ]);
-    expect(atBoundaryBelow.rate).toBe(0.5);
-    expect(atBoundaryBelow.void).toBe(false);
-    const aboveCeiling = checkEntryRateBound([
+    expect(atFifty.rate).toBe(0.5);
+    const aboveCeiling = measureEntryRate([
       ...Array.from({ length: 7 }, () => ({ result: { ok: true, action: 'open_long' } })),
       ...Array.from({ length: 3 }, () => ({ result: { ok: true, action: 'hold' } })),
     ]);
     expect(aboveCeiling.rate).toBe(0.7);
-    expect(aboveCeiling.void).toBe(true);
-    const empty = checkEntryRateBound([]);
+    const empty = measureEntryRate([]);
     expect(empty.rate).toBeNull();
-    expect(empty.void).toBe(false);
+    expect(empty.entries).toBe(0);
+    expect(empty.decided).toBe(0);
   });
 
   it("ALLOWED_RECORD_KEYS never includes anything action-like beyond the session's own `action`", () => {

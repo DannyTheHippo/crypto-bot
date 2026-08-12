@@ -15,204 +15,7 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, **Pass 63's at Pass 68**, **Pass 64's at Pass 69**, and **Pass 65's at Pass 70** (five-entry retention). Nothing deleted — every `LOG.md § Pass 65` pointer now resolves in that archive._
-
-## 2026-08-10 — Pass 66 (the stop moved past the window, the evidence for minting evaporated, and the pass-64 fix turned out to salvage a shape that never occurs)
-
-**Window:** 2026-08-10T08:51Z → 2026-08-10T12:00Z. Lease 08:51:24Z (nonce `9e9f1b3a99e54f68`), released
-and re-armed 09:12:27Z (`810ce9cc3741aa7d`) — the sanctioned Pass-63 pattern. **The loop had been dark
-~90h**: the `daily-profitability-loop` scheduled task was **disabled**, not crashed (last fired
-2026-08-06T16:05:13Z, ~11 passes missed). Re-enabled at the top of this pass. A **host Docker update
-stopped the entire stack mid-pass**; recreated 09:38:49Z on the SAME image (`5deaac5`, no rebuild —
-lane work was uncommitted), healthy, RestartCount 0. **Every since-boot counter reset at that instant**;
-the readings below are anchored to boot `815e01b8` and are not re-readable from the current boot.
-
-### The checkpoint: the program's expected ending changed
-
-Checkpoint #1 was due 08-11T12:00Z and was run **27h08m early, labelled early**. One `evaluate()`
-sample at **2026-08-10T08:52:03Z**: `windowDays=17.50014773148148, roundTrips=80,
-netPnlUsd=−81.2138271444, llmCostUsd=40.0934201, winRate=0.275`, reasons `[NON_POSITIVE_NET_PNL,
-BELOW_PASSIVE_BENCHMARK]`. **`INSUFFICIENT_WINDOW` has cleared and the gate still does not open** —
-exactly as § 2 predicted, because the window never touched `NON_POSITIVE_NET_PNL`.
-
-Measured **−$81.21 against the pre-declared line's −$97.14 at this instant: better by $15.92.**
-Scoreboard § 2.5 rule 2 makes "better" as reportable as "worse" and forces a re-derivation, so all four
-rates were re-derived. **Every restated S3 date now lands AFTER the 2026-08-31 close** — 2026-09-30
-(forward −$2.3037/day), 09-08 (wall-clock), 09-04 (conservative `windowDays`), 09-02 (the original
-composed rate) — against a declared band of 08-27→09-01. **The window and the −$200 trigger are
-untouched; a checkpoint re-derives a date, never a criterion.** What changed is which mechanism ends
-the program: **expect the written verdict, not a triggered S3.** That flips § 2.2's own flagged
-interaction, and the flip is recorded now rather than discovered at the close.
-
-The book got better and the reasons are not creditable to anything this program did. Forward-window
-gross is **−$0.0830/trip** against a **−$0.6483** book average, and the hit rate on those 19 trips is
-**31.58%** against 24.49% at A1 — still short of the 41.65% gross break-even. Four caveats travel with
-those numbers wherever they are quoted: **n=19 with clusters unread**; the bps form is an estimate on a
-stale notional denominator; **ZERO configuration changed in that window** (container on `5deaac5`,
-RestartCount 0 — the _loop_ was dark, the _app_ was not), so there is **no lever confound and a full
-regime confound**; and the forward-return instrument agrees with the regime reading.
-
-### The evidence that would have justified minting did not survive its own population growing
-
-Fresh `pnpm loop:forward-return` at **08:53Z**, v10 `flat_only`: h=1 −7.6 [−19.5, +6.9] n=55; h=4 −9.3
-[−32.1, +15.7] n=55; h=8 −20.8 [−45.1, +3.9] n=54; h=24 −15.5 [−44.6, +29.2] n=54. **Every interval
-includes zero.** The 2026-08-04 amendment recorded the same two cells EXCLUDING zero (−45.3 [−122.0,
-−0.3] and −52.8 [−134.9, −1.5]) on n=21. On 2.6× the population the point estimates moved to −9.3 and
-−20.8 and both intervals opened. **The adverse-POWERED signature was a small-population reading.** The
-honest statement is that v10's forward edge is **indistinguishable from zero** — not that it is good;
-the point estimate is negative at all four horizons. WATCH-PLAYBOOK-V10-1 tier 2 is superseded and its
-intervals must not be re-quoted. The n=21/k=8 vs n=26/k=9 discrepancy the record never reconciled is
-**accrual, not filters**. The replay divergence is unchanged and still fires at h=8 and h=24.
-
-This matters because the **event-driven mint gate shipped this pass** keys on exactly that reading.
-On today's data it **REFUSES**, and that is the gate working, not a bug.
-
-### Six days late, both levers adjudicated — on a window that had to be re-based first
-
-L1 and L4 went live in **one instant, 2026-08-04T08:00:23Z** (the prompt-hash partition switches to
-`aefafb3c…` at `:23.693878Z`, confirming it to the second), so **neither is separately creditable**.
-Their registered "first two full UTC days" are 08-05 and 08-06 — **both corrupted by the Pass-65 feed
-wedge** (2920 and 2560 `agent_decisions` rows against 3840 on an intact day). The window was **re-based
-to the three clean days 08-07→08-09, declared before the numbers were read against it.**
-
-**L4 — all three clauses MET, no rollback.** `forced_move` 28.9/day against a 94/day baseline (−69.3%);
-decide spend −$0.6844/day, an **over-delivery** against the declared $0.15–$0.60 band, recorded as one
-because § 3.4 printed its upper bound precisely so over-delivery would be as falsifiable as under-;
-and Σ one-way notional **ROSE 1.45%** while spend fell 26.5%. Its most-likely named defect — "the lever
-bought less trading, not cheaper trading" — **does not fire**, and neither does the fallback-absorption
-defect (`forced_fallback` fell to 7.4/day from 29). **The LLM term moved 82.77 → 59.99 bps/round trip.
-That is the first lever in this program to move the § 1.3 identity in the right direction for the right
-reason: spend fell while turnover did not.**
-
-**L1 — primary FALSIFIED, and its cost clause passes only through a confound.** Rows carrying
-`truncated_max_tokens:` at exactly `output_tokens = 4096` number **4 and 3** on the two registered days
-against a registered expectation of zero. On the clean window the 4096-pinned rate is 2.17% of priced
-decides against 3.35% before — a ~35% relative fall on 17 vs 7 rows, not distinguishable from noise and
-not the registered zero. Its spend clause passes only because the lane made **36.4% fewer priced calls**
-— which is L4's mechanism — while **cost per decide ROSE 15.6%**. Latency and schema-rejection defects
-do not fire (p95 30,556 ms vs 29,009; zero rows ≥75s; `schema_rejected` 7.67/day vs 18).
-
-**L1 is NOT unset today, and not out of optimism.** Whether `effort` reaches the model at all is
-unanswerable from these columns — a request-parameter effect and a payload-size effect produce an
-identical row, and the payload grew independently when the liquidation and perp trade-flow channels
-went live the same day. `stop_reason` ships this pass to separate them. **Registered read: the
-`max_tokens` share on the `+eff-medium` partition over 7 days; unchanged-or-higher ⇒ UNSET
-`AGENTIC_OUTPUT_EFFORT`; deadline 2026-08-17; the unset is the DEFAULT on a silent instrument.**
-
-**A separate falsification, of the instrument rather than the lever:** WATCH-V4-12's own recorded line
-that truncation rows are "all pinned at exactly 4096" **is false in both eras** — 33% of prefix rows
-before the enable and 58% after are NOT at the ceiling. Two different events have been aggregated under
-that watch since it opened, and every prior count under it inherits that.
-
-### The Pass-64 consult-discard fix salvages a shape that does not occur
-
-WATCH-V4-20, read one day past deadline: **`batch_stringified_recovered` = 0 while `{kind="batch"}`
-fired 13 times in 3.64 days**, and **zero `empty_tool_input:` rows exist across six days** against 47
-`schema_rejected:`. Both counters zero-seed at boot, so both are real absences. **Two of the four named
-defects FIRE.** Per the clause's own instruction the recovery is no longer claimed. Whole-batch
-discards continue at ~3.6/day; the rate did fall from the 21.4% baseline **but not by the mechanism
-this fix shipped**, and the cause is unidentified. The third defect (`nextConsultBars` clamp) was not
-read — **an unrun check is not a passing one**, so it stays open with no deadline claim.
-
-### The NOFILL re-read is blocked on the cell nobody was counting
-
-55 v10 entry decisions, 55 produced an intent, **45 filled, 10 intent-with-no-fill**. The total clears
-n≥12 — but **the binding constraint is the UNFILLED cell at n=10**, so the filled-vs-unfilled split,
-the only instrument that can show adverse selection, still cannot be scored. Saying "n=55, powered"
-here would have been wrong. Re-read ~2026-08-12. `computeForwardReturn` carries no fill-status
-partition; the seam is recorded, not built.
-
-### What shipped
-
-- **`stop_reason` journaling** (`fe84c61`) — nullable column, migration `0003` (a clean single
-  `ALTER TABLE`, inspected for the churn `0002`'s header documents), threaded from an envelope field
-  the schema had been parsing and discarding for its whole life. Batch stamps the first resolved
-  proposal only, so `stop_reason IS NOT NULL` means exactly one row per HTTP call. **The migration must
-  be applied BEFORE this code deploys** — an insert naming a column the database lacks kills journaling
-  while every surface reads healthy, which is this program's signature failure.
-- **Authoring budget preflight + event-driven mint gate** (`abcfc61`). Every authoring run had been
-  arithmetically guaranteed to abort — ~$6.47 declared against a $5.00 cap — burning the UTC slot and
-  producing nothing for ten days. `classifyDeclaredBudget` now refuses **before** `claimTodaysSlot`,
-  fails CLOSED, and the default shape becomes 2 arms × 150 rows = $4.3116. **Arms are cut before rows**:
-  at 90 rows `judgeHalves` starves its 12-entries-per-half floor and every mint refuses, so cutting rows
-  would have swapped a budget abort for a quieter one. `classifyMintTrigger` permits a mint only on the
-  incumbent's adverse-POWERED reading. **Eight live playbook versions shared 78 entries — 9.75/version
-  against a floor of 12 — which is why only v1 and v2 ever reached powered evidence.** Event-driven
-  minting **dissolves** that exclusivity instead of trading one horn for the other.
-- **The OOS session arm's machinery** (`924f8b2`) — and the defect that mattered most was not the
-  missing trigger. **`sealBatch` routed through `logTrials`, which silently no-ops in production**, so
-  the arm could have decided for weeks while every sweep reported "no sealed window exists". Replaced
-  with a direct INSERT and a fail-CLOSED read-back. Cadence amended to 3×/day (owner: no new daemons)
-  while the arm is still UNSTARTED and the amendment is therefore admissible.
-- **Per-symbol fill watermarks** (`e574bd3`) — the per-venue watermark let one persistently failing
-  symbol pin `since` for every symbol on its venue, and that hold ends not in an error but in two
-  silent truncations (Binance's 500-row page; the perp endpoint's 7-day window returning EMPTY).
-- **The fee-truth enable (L6)**, registered `09fa553` **before** it shipped, with a **derived magnitude
-  of ZERO** — and the registration refutes a hypothesis this pass's own plan carried.
-- Orphaned `ACKED` algo-rail stop rows now terminalize through a reconciliation-sanctioned path, and
-  #149's clock half is closed by a durable open-time source.
-
-### The finding that cost the plan a premise
-
-The plan justified the fee-truth enable partly on a suppression hypothesis: the model is told a round
-trip costs 20 bps on a book that really costs 7.2, and that 2.8× overstatement plausibly suppresses
-what it will trade. **Measured before shipping the fix, it does not survive.** Proposed
-`takeProfitPct` on 112 non-replay perp entry decisions: min **0.012**, median **0.035**, max 0.070;
-spot n=14: min 0.020, median 0.031. **Not one proposal on either venue ever came within a factor of six
-of the 0.002 floor.** The median perp target is **17.5× the overstated cost and 48× the true one**.
-
-A 2.8× overstatement cannot bind a target that already clears the true cost by 48×. **The hypothesis is
-refuted on the exit-target axis and untested on the entry axis**, which is the one this read cannot
-see. It also explains mechanically why the TP-floor gate has never fired — re-verified at 0 rejections
-all-time — instead of leaving that as an unexplained zero. So L6 ships as a **correctness fix and a
-confound removal**, never as an improvement, and any post-enable gain attributed to it is refuted in
-advance. Its clauses grade **rendered bytes and floor values, never PnL**, and its harm-rollback cohort
-(perp trips with TP < 0.002) is expected to be **empty** — recorded as unfired-for-want-of-population,
-which is not a pass.
-
-`TRADE_TEMPLATE_VERSION` goes **v4 → v6, skipping v5 deliberately**: `PROMPT_TEMPLATE_VERSION` in the
-same file already holds `'v5'`, and reusing that string for a different template composition is exactly
-the collision `computePromptHash`'s distinctness spec exists to catch. A lane caught that; the plan had
-said v5.
-
-### Process
-
-**Three of this pass's own records were wrong or self-defeating, and every one was caught by something
-other than the orchestrator.** The plan's E1 watch read "perp reject rate falls" with a rollback on
-"reject rate unchanged at 48h" — against a baseline of **0 rejections all-time**, the expected-positive
-was vacuous and the rollback would have fired automatically on `0 == 0`. The plan asserted "ten playbook
-versions"; the measured figure is **eight live** (ten is the mint-ledger count, which never deletes a
-row). And two committed records introduced **16 MD049 lint errors** on a validator that is part of
-`pnpm checks`. **The recurring failure is unchanged: the orchestrator asserting what it has not
-checked.**
-
-**A production-gate spec was RED at HEAD when this pass opened** — `pass-record-audit.spec.ts`, because
-Pass 65's entry wrote `Window:` unbolded, which is the exact defect Pass 63 corrected in its own entry.
-It shipped because **the pass record is written AFTER the gate run, so no pass can catch its own
-malformed record.** Fixed here.
-
-**Five lanes early-stopped or were killed mid-flight** (a session restart took all of them), and in
-every case the artifacts were further along than the report. Checking `git status` and the diff, not
-the report, is what recovered them. One lane returned a **NEEDS_DECISION** rather than guessing at a
-missing port — it had proved that no port, service, in-memory map or table carried a live position's
-open time — and that halt was the correct outcome, not a failure.
-
-**A fourth orchestrator miss, caught by the instrument that exists for it.** The first deploy of this
-pass was run as a plain `docker compose up -d --build app`, omitting the `GIT_SHA=$(git rev-parse
---short HEAD)` prefix the playbook § deploy step spells out. The image built and the container came up
-healthy — and `build_info{git_sha}` read **`"unknown"`**, because `${GIT_SHA:-unknown}` bakes the
-literal. **The playbook documents this exact failure mode**, and the deploy "succeeding" while being
-unverifiable by its own instrument is the pass's own through-line pointed back at itself. Redeployed
-with the prefix. **Never verify a deploy by container health alone; the sha is the verification.**
-
-**A scoping fact on #149's clock fix, recorded because it bounds where the fix is live.**
-`RoundTripEvidenceReader` — the concrete `RoundTripEvidencePort` the new closure reuses — hardcodes
-`DEMO_MODE = 'testnet'` (pre-existing, untouched, correct for the reflection-evidence job it was built
-for). So `openPositionOpenedAt` returns `null` for any position whose fills are recorded under
-`mode='paper'`, and the clock **fails open to `barsElapsed: 0` there — never worse than before, but
-inert.** This deployment's `mode_info` settles to `effective="testnet"` after the documented ~69 s
-boot transient and its fills carry `mode='testnet'`, so the fix **is** live here. If the lane is ever
-run in paper mode, this fix is a no-op until the reader's mode is threaded rather than hardcoded.
+_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, **Pass 63's at Pass 68**, **Pass 64's at Pass 69**, **Pass 65's at Pass 70**, and **Pass 66's at Pass 71** (five-entry retention). Nothing deleted — every `LOG.md § Pass 65` and `LOG.md § Pass 66` pointer now resolves in that archive._
 
 ## 2026-08-10 — Pass 67 (the out-of-sample arm stopped being UNSTARTED, and the one owed enable is refused by its own precondition)
 
@@ -1288,3 +1091,339 @@ undisturbed. Prometheus not recreated (no rules/prom config touched).
 5. **Process note.** The two blind-decide sessions' behavioural aside — recorded at P69 as a curiosity and
    nearly not followed up — is what produced this pass's only substantive finding. The lesson generalises:
    an unexplained remark from a lane is a lead, not noise.
+
+## 2026-08-12 — Pass 71 (the alarm's stated mechanism was false, and the defect it was pointing away from was on the money path)
+
+**Window:** 2026-08-12T00:07Z → 07:20Z (end = this entry's own commit instant, the pass's last durable action),
+of which **~5.8h was an orchestrator stall (01:22Z → 07:10Z), not work**
+— see § Soak. THREE leases: `f6606372f013983f` taken 00:07:50.514Z; released and re-armed as
+`78279b07a0cea0a8` at 00:44:44.257Z (the sanctioned mid-pass re-arm, held until the lane editing
+`scripts/loop-*.mjs` had returned, per the Pass 69 rule); that one then EXPIRED unreleased during the stall and
+was broken as stale by `7d34b2144f3db422` at 07:10:41.525Z. `date -u` anchored at 00:07:30Z and re-anchored at
+00:22:10Z, 00:25:36Z, 00:31:21Z, 00:44:07Z, 00:50:18Z, 01:02:38Z, 01:20:12Z, 01:22:17Z and 07:10:07Z — **the last
+of those is what caught the stall**, which is the P68 rule earning its place a second time.
+
+**Sweep:** 2026-08-12T00:07:56.688Z. **ONE alarm — `fill_ordering_violation`, 1 of 528 fills** — plus 15
+annotations. Boot `940dcadc` (StartedAt 2026-08-11T09:17:55Z, RestartCount 0), running build `f816747`, tree tip
+`f883e15`, 26 rules loaded / 0 firing. Pass 70 had swept ZERO alarms 8h earlier, so this was a first fire.
+
+**Headline metrics.** Promotion evidence, one `evaluate()` at 00:07:56Z: `windowDays=18.9011, roundTrips=88,
+netPnlUsd=−82.5405, llmCostUsd=42.9650, winRate=0.3068, ready=false`, reasons `[NON_POSITIVE_NET_PNL,
+BELOW_PASSIVE_BENCHMARK]`. Against Pass 70's 16:08:01.978Z tuple: **net −$0.4854 while the LLM bill rose
++$0.4754 over 0.337 d ⇒ gross −$0.0100, and ZERO new closed round trips.** Standing Finding 2 again, on a window
+too short to carry weight — **n=0 trips is a window delta, never a trend, and nothing here licenses cost work**
+(`verdicts.md` binds).
+
+Four mandatory signals, read off the endpoint rather than inferred from alarm silence: `kill_switch_state
+{RUNNING}`=1; reconciliation clean-stamp age **58.3s**; `agentic_budget_remaining_usd` **2.9853825** (a day-start
+read at 00:08Z — $0.0146 spent, NOT a rate); **1884 lifetime real decides, newest 00:00:35.247Z**, Δ29 this
+window. Latch causes all **0** (the lane is funded — any other cause would be an incident). Capability violations
+**0**. `agentic_last_gate_timestamp_seconds` age **476.7s**, WATCH-V4-22 holds. Active menu **11 symbols, 9 perp +
+2 spot** — both venues represented, so no venue-floor starvation.
+
+**WATCH-V3-1: RSS 764.8 MiB at 14.8h uptime** — above the ~673 MiB paper reference, below the ~900 MiB defect
+signal. **NOT tripped.**
+
+**WATCH-V4-26 — MET, second reading, and far better powered than Pass 70's n=1.** On boot `940dcadc`: 2440 rows,
+**68** carrying a `nextConsultBars` stamp, **39 stamped above 8 (max 16) — all non-discard**, which is this
+watch's own named SUCCESS path and doubles as a working positive control proving the query finds values above 8
+when they exist; **7 discard-tagged rows, 0 of them stamped above 8.**
+
+**Pass type: §3 DEFECT INVESTIGATION**, forced by the incident-first gate. **Three defects found, three fixed and
+shipped, none deferred.** No improvement work was attempted — see § What this pass did not do.
+
+### The alarm was real, its stated mechanism was false, and it would have wedged §3 permanently
+
+The offending pair is fills 522/523, `strategy_id='agentic-32'`, `KAITO/USDT:USDT`. Both belong to ONE intent
+`019ff277-34bd-7b21-a378-dd4d0bf7a4d4`, ten fills, all `source='rest_reconcile'`, all price `0.6261`, arriving in
+three batches: 519–521 at 20:15:38.15–.17 (trades 56286993–95), **522 ALONE at 20:15:47.418 (trade 56287002 — the
+NEWEST of the ten)**, then 523–528 at 20:16:29.89–.92 (trades 56286996–57001, all OLDER). A newest trade
+journalled 42.5 s ahead of six older ones on the same order.
+
+**Three lanes were dispatched read-only (`loop:fanout declare` accepted the roster this pass; P68's permission
+block did not recur) and the finding inverted twice.**
+
+**Inversion 1 — the promotion scoreboard is UNAFFECTED, and the check's own rationale was false.** The classifier
+comment asserted the walk's input "is built by `PromotionStatsRepository` ordering fills by `ingested_at`". It is
+not. `promotion-stats.repository.ts:83` is `.orderBy(asc(venueTimestamp), asc(fillId))`, introduced by `1b45183`
+on **2026-07-06 — four weeks BEFORE W1 landed** (`1f68d6f`, 2026-08-03). `ingested_at` appears in `src/` exactly
+once, as a schema column definition. **The claim was false when written.** I verified the ordering line myself
+rather than inheriting it, and verified the consequence independently: under the production sort,
+`venue_trade_id::numeric` monotonicity gives **0 inversions / 528 checked / 0 non-numeric ids**. A lane's
+sensitivity control (same query, sort reversed) returns **510|510|0|528**, so the zero is a live negative, not a
+vacuous one.
+
+**Inversion 2 — the check could never clear, so §3 was wedged as of 2026-08-11T20:16Z.** The probe had no `WHERE`
+clause at all: no window, no boot scope, no watermark, no mode filter. `venue_timestamp`/`ingested_at` are
+immutable (no UPDATE/DELETE on any fills path; `fills` carries no trigger), so `violations` is monotonically
+non-decreasing. Verified: **the pre-change query returns `1|528` against the live DB right now.** Playbook §3
+blocks all improvement work until a named alarm clears — every future pass would have been consumed by a
+permanent alarm on a false mechanism. Exactly one digest in history carries the violation, confirming first fire.
+
+**Shipped `b3dc14d`.** W1 now asserts what the walk depends on: within each `(strategy_id, symbol, mode, venue)`
+group read under the PRODUCTION ordering, `venue_trade_id` must not go backwards; bounded to
+`PROMOTION_EVIDENCE_EPOCH` so a genuine violation has an owner-controlled clearing lever. Live at ship:
+**`violations|compared|incomparable|checked = 0|510|0|528`**. It is non-vacuous for a concrete reason: **48 of 528
+rows sit in 14 same-millisecond `venue_timestamp` buckets** where the sort's tiebreak is `fill_id` — insertion
+order, which a backfill can invert; 34 tie pairs, all currently correct. Three companion kinds:
+`fill_ordering_incomparable` (ANNOTATION — paper mints `paper-trade-N` off a counter that restarts at 1 each
+reboot, so those ids are not monotonic even in principle and alarming would wedge §3 forever on the first paper
+fill), `fill_ordering_void` (ALARM when pairs existed and none was comparable — a disabled control must not read
+as a clean one), and `fill_ingest_lag` (12h-bounded ANNOTATION, fails OPEN, keeping the ingest-lag signal with
+text that explicitly disclaims any claim about the walk).
+
+**Its adversarial review returned a MUST-FIX false negative, demonstrated not argued.** The first cut partitioned
+by `(strategy_id, symbol)` while comparability required same mode/venue, so a foreign-id-space row BETWEEN two
+same-space rows meant the real pair was **never compared at all** — both counted `incomparable`, which only
+annotates. Synthetic rows `testnet tid=100`, `paper 'paper-trade-1'`, `testnet tid=50` gave `0|0|2|3` as
+implemented versus `1|1|0|3` with the id-space in the partition. The check would have gone blind in precisely the
+paper-fills state its own annotation branch was written to anticipate. Fixed; behaviour-preserving on today's
+journal.
+
+### The real defect: the fill poller could outrun the venue, and did
+
+Tracing which path wrote which batch produced the pass's most serious finding. The batches came from **two
+independent cursors**, discriminated not by `fills.source` (all four ingest paths hardcode the same
+`'rest_reconcile'` literal — an observability gap in its own right) but by `order_events.dedupe_key`: batch 2 is
+`poll:56287002` (`DemoFillPollerService`), batches 1 and 3 are `reconcile:<tradeId>` (`ReconciliationService`).
+
+`DemoFillPollerService` advanced its per-`(venue,symbol)` cursor to the newest trade seen, **with no overlap**,
+justified by a comment asserting _"fetchMyTrades(since) returns ALL trades with ts ≥ since, so every trade ≤ maxTs
+was already in this fetch"_. The venue falsified that: the 20:15:47.418Z fetch returned trade 56287002 while
+withholding six older, already-executed trades. The poller ingested the newest alone and pinned its cursor past
+the six; **four subsequent polls journalled nothing for them.** They survived only because `ReconciliationService`
+keeps a separate cursor with a 300 s overlap and re-swept 42.5 s later — **configuration luck, not an interlock.**
+
+**No fill was lost, and that is measured rather than assumed:** the order is FILLED/terminal with `cum_qty`
+**79.800000000000000000** exactly equal to the summed qty of its ten fills. The sweep's own I2 `cum_qty_mismatch`
+invariant also did not fire.
+
+**Shipped `be5de80`.** The read now subtracts an overlap while the STORED mark stays the high-water value — the
+load-bearing detail, since seeding `maxTs` from the reduced `since` would walk the window backwards one overlap
+per poll. The write is guarded (`maxTs > current`) like the reconciler's, because `runFillPoll` is fired by a bare
+10 s interval with **no `skipIfBusy`** and a stalled poll can be overtaken. New counter
+`demo_fill_poller_overlap_recovered_total{venue,symbol}`, zero-seeded per polled key so a future "stays 0" is a
+real negative and not the void read that cost passes 47/49/50; cardinality bounded at the configured universe
+because the label comes from the registry list, never from the venue's response.
+
+**Two review lenses (OMS-semantics and production/venue-shape, as §4 requires for OMS work) returned FOUR
+must-fixes between them, none of which was in my brief:**
+
+1. **The overlap made forward progress CONDITIONAL where it had been unconditional.** If the 5-minute window alone
+   fills Binance's 500-row default page (`ccxt-exchange.adapter.ts:215` sends no `limit` — verified), every row
+   sits at or below the mark, `maxTs` never advances, and the cursor **wedges permanently**. Pre-fix, `since` was
+   the frontier so progress was guaranteed. A saturation guard now drops the overlap for one poll and logs at
+   error; it keys on the symptom so it holds whichever end the venue truncates. Measured headroom: **18 fills is
+   the maximum any `(venue,symbol)` has seen in a 5-minute window, 3.6% of the ceiling**, foreign volume ~1 trade.
+2. **The `Math.max` mirrored the reconciler's shape but dropped its rolling lookback floor.** For linear markets
+   ccxt derives `endTime = startTime + 7d` when `since` is over a week stale (`binance.js:8261-8266`) and Binance
+   returns `[]` **with no throw** — so a quiet perp symbol on a long-lived process would have gone silently blind
+   until restart. The floor is restored.
+3. **The FAILURE DIRECTION comment asserted a worst case the code contradicted** — the same defect class this
+   whole change exists to repair. Rewritten.
+4. **The comment claimed a WATCH was watching a counter no file referenced.** The row is filed here instead, as
+   WATCH-V4-27.
+
+Both lenses converged independently on the 500-row ceiling, which is why the guard stayed required rather than
+being argued down. The review also found the fix closes **a second loss class nobody had named**: a trade
+returned before its order's ACK reaches the book counts as `skippedUnknown`, and the old cursor advanced past it
+permanently.
+
+**Honest limit, recorded rather than smoothed:** the guarded write protects against a concurrent-poll overtake,
+but no single-threaded fixture can drive that interleaving. The branch is covered; the race is not.
+
+### The third defect: the OOS arm voided whole firings on a condition defined over sealed rows
+
+Firing 1 gathered 3 rows and the blind session returned **three `open_long`** — entry rate 1.0 — and the record
+step refused to write: `checkEntryRateBound` → `void:true, rate=1`. That is the **second consecutive firing killed
+by this ceiling** (Pass 70 firing 2 was 1/1), so the N-recurrences rule bound and it became a defect
+investigation rather than another note.
+
+Pass 70 had ruled this a pre-registered constant that a pass may not change from inside the loop. **The
+pre-registration says otherwise, and the distinction is scope, not value.** VOID condition 3 as amended
+2026-08-04 reads: _"a **read** VOIDs"_, with `S` and `L` taken _"on the same **sealed rows**"_. Both arms are
+seal-time conditions over a whole read. The 2026-08-10 amendment explicitly _"changes no alpha, no multiplicity
+ladder, no cluster unit, no VOID condition, and no imported constant"_, so nothing later re-scoped it. And arm (b)
+is **already enforced where the registration puts it** — `scripts/loop-oos-arm-core.mjs:82` and `:436` push
+`entry_rate_ceiling` over the sealed window. The decide-leg check was a duplicate at the wrong scope, protecting
+nothing.
+
+At 1–6 rows per firing the reachable rates are coarse fractions — at n=3 the set is {0, ⅓, ⅔, 1} and the ceiling
+discards ⅔ and 1 — so it could only ever throw away **entry-heavy** firings while keeping hold-heavy ones. **A
+selection effect acting on the arm's own primary statistic, which is an entry rate.** Cost so far: **4 rows on two
+consecutive firings, lost and never backfilled** (§ Row-window bookkeeping makes a gap a wait, never a backfill).
+
+**Shipped `7a873c2`.** `checkEntryRateBound` → `measureEntryRate`, which never voids; caps-faithfulness (VOID
+condition 1) still gates the write, unchanged; `0.65` untouched; `loop-oos-arm-core.mjs` untouched. A dated
+implementation-conformance amendment is appended to the pre-registration recording the deviation, its cost, the
+bias direction, and that firings up to and including Pass 71 firing 1 ran under the old behaviour.
+
+**This changes no registered condition, constant, alpha or seal target — it moves enforcement to where the
+registration already placed it.** Consulted the advisor before committing to that reading, precisely because it
+reverses a prior pass's ruling.
+
+### §1a — the OOS decide leg
+
+**Firing 1** (00:08:31Z, `gatheredAtMsFromDb=1786493311307`): 3 rows, one playbook version (v10), so the
+version-span refusal did not fire. Blind subagent dispatched with the proven 68·2 brief (`Bash` forbidden by
+name, advisor forbidden explicitly) **and an explicit `model`**, per WATCH-V4-25's P70 ledger-gap finding.
+Decisions: `72642` ETH/USDT:USDT **open_long**, `72643` ZEC/USDT:USDT **open_long**, `72693` XRP/USDT:USDT
+**open_long**. Recorded: **VOIDED on entry rate 3/3** — nothing written, confirmed by grep against
+`decisions-*.jsonl` paired with a positive control (prior rowIds 69931/70052 return 2 hits, these three return 0).
+
+**VOID-4 attestation CLEAN — 5 tool calls, zero violations, the FIFTH consecutive clean firing.** The ledger
+carries **two rows for this firing 39 s apart** and both are retained: the first reads `blindnessClean:false` with
+`path_not_allowed` on the subagent's Write to its own answers file, because **my `--allow` list omitted that
+path** — all four prior firings pass five files including the answers file; I passed four. That is an
+orchestrator invocation error, not a blindness violation, and the second row is the corrected read of the
+identical transcript (`sha256` first-16 `2b01b288e1a90404`, 168,434 bytes, both rows). Recording it here because
+WATCH-V4-25 reads `path_not_allowed` as "the REAL void" and the append-only ledger cannot disambiguate itself.
+
+**Firing 2** (07:14:15Z, `gatheredAtMsFromDb=1786518855723`, gathered FRESH after the stall rather than reusing
+the pre-stall window): **4 rows, one playbook version, RECORDED** — `73729` KAITO/USDT:USDT **hold**, `73766`
+NEAR/USDT:USDT **open_short**, `73767` UNI/USDT:USDT **hold**, `73811` UNI/USDT:USDT **open_long**. Session entry
+rate **2/4 = 0.50**. **VOID-4 CLEAN — 5 tool calls, zero violations, the SIXTH consecutive clean firing**
+(transcript `2a3e7325b4d7d53b`, 161,712 bytes). Prompt surface unchanged, as expected: no `agent-prompt.ts` edit
+shipped this pass, so VOID condition 2's hashes are stable across the deploy.
+
+**This firing is the cutover: it is the first recorded under `7a873c2`'s corrected scope.** Its 0.50 rate would
+have passed the old per-firing check too, so the fix is not what saved it — but the check no longer stands
+between a legitimate firing and the ledger. **NO GAP this pass: both legs fired.** The window now stands at **22
+recorded rows** counted off `decisions-*.jsonl` directly, against read 1's target of 202.
+
+**Behavioural note, FIFTH consecutive occurrence:** the deciding session again read the system prompt as marking
+the PLAYBOOK block inert on direction and did **not** apply v10's inversion — firing 2 said so explicitly,
+calling the inversion rule "instruction-like content attempting to dictate position direction". That is now every
+blind session that has left a note on the subject (P69·2, P70·1, P70·2, P71·1, P71·2). The Pass 70 banner's
+finding reproducing, not new evidence about it — and its fix stays DATED-BLOCKED to ≥2026-08-17.
+
+### Gates, deploy, and what this pass did not do
+
+**Gates (all green, on the combined tree after both review rounds):** `pnpm checks` exit 0 — format:check clean,
+`lint:md` 0 errors across 55 files, eslint clean, typecheck clean, **4074 tests / 202 files passed**, coverage
+**93.28 / 87.10 / 92.19 / 94.61** against the 90/85/90/90 global floor with the per-glob 100% money-path
+thresholds holding. `pnpm build` exit 0.
+
+**A process miss worth more than the fixes:** my first gate run was `pnpm checks | tail -60`, and the pipe
+reported **tail's** exit status, not pnpm's. The notification said exit 0; the gate was actually RED on an eslint
+error. I caught it only by reading the output file. The playbook's §5 already says "`pipefail` on chains" and I
+did not use it. **Never pipe a gate command.**
+
+**Deploy:** `GIT_SHA=be5de80 docker compose up -d --build app` at 01:17Z. New boot, `RestartCount=0`,
+`build_info{git_sha="be5de80"}` confirmed on the endpoint — the prefix stamped correctly. Prometheus was NOT
+recreated because `observability/` was not touched.
+
+**What this pass did not do, stated plainly.** No improvement work and no CANDIDATE attempt: §3's incident-first
+gate fired on the first sweep and three defects consumed the pass. The UTC day's authoring slot is UNSPENT and
+`loop:authoring` was not run — the mint gate is event-driven and was not consulted, so **this pass establishes
+nothing about CANDIDATE eligibility either way.** This is the second consecutive pass whose work was repair
+rather than profitability (Pass 70 filed a checkpoint and a blocked finding). Per §4's own instruction, the
+recommendation that follows from that is in § Next-pass candidates rather than left implicit.
+
+### Soak — PASS, and the pass's own execution stalled 5.8h inside it
+
+**Post-deploy sweep 2026-08-12T07:10:52.372Z. ZERO alarms** (down from 1), 16 annotations. Boot
+**`fb63d188-d4c8-4623-a535-4bb468e02ab1`**, StartedAt 01:17:32.804Z, RestartCount 0, **running build `be5de80`
+matching the working tree** — the `GIT_SHA=` prefix stamped correctly, no `build_provenance_void`. 26 rules
+loaded / 0 firing, and read independently from Prometheus' own `/api/v1/rules` at 01:22Z: **26 alerting rules, 0
+unhealthy, 0 firing or pending.**
+
+**The change's expected observables, each named in its WATCH:**
+
+- **`fill_ordering_violation` is GONE** and the corrected W1 reads clean — the §3 wedge is lifted.
+- **`fill_ingest_lag` annotated on its first live sweep exactly as designed**: _"1 of 11 fill(s) ingested in the
+  last 12h arrived carrying a venue_timestamp EARLIER than a fill journalled before them … a heal/backfill
+  recovery. **This is NOT a walk-corruption claim**: fillsForMode sorts by (venue_timestamp, fill_id), so the
+  sequence walkRoundTrips receives is unaffected by arrival order."_ That is WATCH-V4-28's expected-positive MET
+  on its first reading, disclaimer intact, and it will age out of its 12h window on its own.
+- **WATCH-V4-27 first reading: 40 series exist at 0 — exactly the configured universe (24 spot + 16 perp) — and
+  0 non-zero.** The zero-seed works and cardinality is bounded by the registry list as predicted, so a future
+  "stays 0" on this counter is a REAL negative rather than a void read. No recovery event yet, which is expected
+  at a base rate of one qualifying episode in 528 lifetime fills.
+
+**Four mandatory signals at 07:11:25Z:** `kill_switch_state{RUNNING}`=1; clean-stamp age **79.7s**;
+`agentic_budget_remaining_usd` **2.568405** ⇒ **$0.4316 spent over 7.19h ≈ $1.44/day**, comfortably under
+WATCH-V4-26's ~$2.90/day rollback trigger, which is therefore **checked and NOT tripped**; **1900 lifetime real
+decides, newest 07:00:33.044Z** — the lane is ticking. `agentic_last_gate_timestamp_seconds` age **443s**
+(WATCH-V4-22 holds). Latch causes all **0**; capability violations **0**. Menu **10 symbols, 8 perp + 2 spot**,
+both venues represented. Consult-gate this boot: `consulted 6, forced_move 3, forced_fallback 9,
+skipped_scheduled 901`. Venue acceptance `binanceusdm 1/20 (5.0%)`, under the 20% alarm. **Log events this boot:
+fatal=0, error=0**, 15 warns, none named.
+
+**WATCH-V3-1: RSS 810.6 MiB at 5.9h uptime** — above the ~673 MiB paper reference, **below the ~900 MiB defect
+signal, NOT tripped**, but higher at 5.9h than Pass 70's 783.8 MiB at 7.2h. Worth the next pass's attention; not
+a signal on its own.
+
+**Redeploy carve-outs behaved exactly as the timed list predicts:** clean stamp and budget gauge both read 0 at
++21s and both had initialised by the +3min read (01:20:25Z, 1786497544.315 and 2.8915425). No `ReconcilerStalled`
+this time.
+
+**Scoreboard at 07:10:52Z:** `windowDays=19.3126, roundTrips=89, netPnlUsd=−83.2642, llmCostUsd=43.3820,
+winRate=0.3034`. Against this pass's own 00:07:56Z read: **+1 closed trip, net −$0.7237 while the LLM bill rose
++$0.4170 ⇒ gross −$0.3067 over 0.412 d.** n=1 trip. A window delta, never a trend.
+
+**⛔ THE PASS'S OWN EXECUTION STALLED ~5.8h (01:22Z → 07:10Z), AND THAT IS THE PASS-68 SHAPE RECURRING.** Not a
+host suspend and not the stack: `app_suspend_events_total`=0 across the window, RestartCount 0, container healthy
+throughout, +16 real decides and +1 closed round trip accrued inside it. Consequences, each handled rather than
+noted: **(1)** the re-armed lease `78279b07a0cea0a8` EXPIRED — `loop:lock` reported _"breaking a stale lease …
+386 min old >= 120 — the holder never released it"_, which is the time-based fail-open working exactly as
+designed and is itself the evidence of the gap; re-acquired as `7d34b2144f3db422` at 07:10:41Z. **(2)** The
+00:07:56Z sweep was no longer a valid §3 gate at 7h old, so the soak sweep above doubles as a fresh one — **it is
+clean, so the gate holds on current evidence, not on stale evidence.** **(3)** No foreign commit landed and no
+other pass ran: tip was still `be5de80` and the tree carried only this pass's own uncommitted loop files.
+**(4)** OOS firing 2's candidates were gathered fresh after the gap rather than from the pre-gap window — the
+P68 failure was silently aging candidates past the registered `k ≤ 3`, and that is not repeated here.
+
+### Flagged
+
+1. **The mid-pass stall is the second occurrence and the first was Pass 68.** The lease's own staleness message is
+   currently the only durable evidence it happened; nothing else in the loop's instrumentation would have caught
+   a 5.8h orchestrator gap, because every counter kept advancing normally. A pass that stalls and then reports
+   from pre-stall readings is reporting fiction, and only the `date -u` re-anchor rule stands between the two.
+   **Recommendation: the sweep should carry the pass's own lease age as an annotation**, so a stalled pass is
+   visible in the digest rather than only in a lock file the next pass overwrites.
+2. **`fills.source` is not a path discriminator.** All four ingest paths — `DemoFillPollerService`,
+   `ReconciliationService`, `UnknownResolverService`, `AlgoStopRecoveryService` — hardcode the same
+   `'rest_reconcile'` literal, so the `fills` journal alone cannot answer "which code path ingested this row".
+   The working discriminator is `order_events.dedupe_key`'s prefix namespace (`poll:` / `reconcile:` / `query:` /
+   `algo-trig:`), and it is what made this pass's forensics possible at all. **Recorded rather than fixed**: the
+   change touches four services and the semantics of a money-table column, nothing currently behaves incorrectly,
+   and the discriminator already exists. **Trigger to ship: the next fill-ingestion incident**, so the next pass
+   does not re-derive the namespace from scratch.
+3. **The attestation ledger carries two rows for firing 1 and cannot disambiguate itself** — see §1a. The first
+   is my `--allow` omission, not a blindness violation. WATCH-V4-25's `rowIds`-binding gap (a mistyped `--agent`
+   yielding a clean-looking attestation for the wrong transcript) remains open and is now adjacent to a second
+   way the ledger can mislead a seal.
+4. **A gate command was piped and the pipe ate the exit code** — see § Gates. Fixed in this pass's practice, but
+   the playbook's `pipefail` line was already there and did not stop me.
+5. **The poller's concurrent-poll race is guarded but untested**, and cannot be driven from a single-threaded
+   fixture. Stated in WATCH-V4-27 so it is not mistaken for covered.
+6. **I reproduced Pass 67's placeholder-window defect verbatim, and `pass-record-audit.spec.ts` caught it.** This
+   entry's **Window:** line first read `→ 07:2xZ` — a literal placeholder, not a measured time — so `endMs` was
+   not finite and three of the spec's twenty cases failed, including the real-artifact audit. That is exactly the
+   defect `10352df` was written for and exactly the guard `f816747` moved to the lock ceremony. **The guard works
+   and this pass is its first independent confirmation** — the cost of the miss was one spec run, not a corrupted
+   record. Two process rules earned the hard way this pass, both mine: never pipe a gate command, and never leave
+   a placeholder in a field a spec parses.
+
+### Next-pass candidates
+
+- **This is the SECOND CONSECUTIVE pass whose work was repair rather than profitability**, and §4 asks for a
+  recommendation rather than a shrug when that happens. The honest reading: both passes' repairs were forced by
+  real defects on or adjacent to the money path, and Pass 71's would have wedged §3 for every future pass, so
+  neither was avoidable or misprioritised. **But the loop is a profitability engine and has now spent two passes
+  not being one.** The structural observation worth acting on is that all three of this pass's defects were
+  _measurement_ defects — a check asserting a false invariant, a cursor whose safety premise was a comment, and a
+  study condition applied at the wrong scope. None was found by a gate; all three were found by adversarial
+  review of work that had already passed every gate. **Recommendation: the next pass that finds no §3 alarm
+  should spend its improvement slot on the entry signal, not on more instrumentation** — the standing findings
+  say the deficit is a hit-rate problem and no amount of correct measurement closes it.
+- **CANDIDATE: the UTC day slot is UNSPENT and untested.** `loop:authoring` was not run and the event-driven mint
+  gate was not consulted, so this pass establishes nothing about eligibility either way. The next pass should ask
+  the gate rather than infer from this one.
+- **OOS arm: the supply ceiling is unchanged** — the decide leg can only see rows within ~60 min of a pass being
+  live, so ~75% of the corpus still expires unseen. With `7a873c2` shipped, entry-heavy firings are no longer
+  discarded, which should raise the realised rate toward the structural ceiling rather than past it. Re-measure
+  the per-firing yield over the next three passes before re-projecting a seal date.
+- **WATCH-V4-27's first non-zero reading** is the thing to look for: it is the first direct evidence of how often
+  the venue actually withholds trades, and the answer determines whether 300 s of overlap is generous or thin.

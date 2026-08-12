@@ -9586,3 +9586,200 @@ Two concrete changes, both cheap:
 
 Neither is profitability work, and that is the point: the loop cannot get back to profitability while
 each pass spends itself proving the previous pass's instruments were lying.
+
+## 2026-08-10 — Pass 66 (the stop moved past the window, the evidence for minting evaporated, and the pass-64 fix turned out to salvage a shape that never occurs)
+
+**Window:** 2026-08-10T08:51Z → 2026-08-10T12:00Z. Lease 08:51:24Z (nonce `9e9f1b3a99e54f68`), released
+and re-armed 09:12:27Z (`810ce9cc3741aa7d`) — the sanctioned Pass-63 pattern. **The loop had been dark
+~90h**: the `daily-profitability-loop` scheduled task was **disabled**, not crashed (last fired
+2026-08-06T16:05:13Z, ~11 passes missed). Re-enabled at the top of this pass. A **host Docker update
+stopped the entire stack mid-pass**; recreated 09:38:49Z on the SAME image (`5deaac5`, no rebuild —
+lane work was uncommitted), healthy, RestartCount 0. **Every since-boot counter reset at that instant**;
+the readings below are anchored to boot `815e01b8` and are not re-readable from the current boot.
+
+### The checkpoint: the program's expected ending changed
+
+Checkpoint #1 was due 08-11T12:00Z and was run **27h08m early, labelled early**. One `evaluate()`
+sample at **2026-08-10T08:52:03Z**: `windowDays=17.50014773148148, roundTrips=80,
+netPnlUsd=−81.2138271444, llmCostUsd=40.0934201, winRate=0.275`, reasons `[NON_POSITIVE_NET_PNL,
+BELOW_PASSIVE_BENCHMARK]`. **`INSUFFICIENT_WINDOW` has cleared and the gate still does not open** —
+exactly as § 2 predicted, because the window never touched `NON_POSITIVE_NET_PNL`.
+
+Measured **−$81.21 against the pre-declared line's −$97.14 at this instant: better by $15.92.**
+Scoreboard § 2.5 rule 2 makes "better" as reportable as "worse" and forces a re-derivation, so all four
+rates were re-derived. **Every restated S3 date now lands AFTER the 2026-08-31 close** — 2026-09-30
+(forward −$2.3037/day), 09-08 (wall-clock), 09-04 (conservative `windowDays`), 09-02 (the original
+composed rate) — against a declared band of 08-27→09-01. **The window and the −$200 trigger are
+untouched; a checkpoint re-derives a date, never a criterion.** What changed is which mechanism ends
+the program: **expect the written verdict, not a triggered S3.** That flips § 2.2's own flagged
+interaction, and the flip is recorded now rather than discovered at the close.
+
+The book got better and the reasons are not creditable to anything this program did. Forward-window
+gross is **−$0.0830/trip** against a **−$0.6483** book average, and the hit rate on those 19 trips is
+**31.58%** against 24.49% at A1 — still short of the 41.65% gross break-even. Four caveats travel with
+those numbers wherever they are quoted: **n=19 with clusters unread**; the bps form is an estimate on a
+stale notional denominator; **ZERO configuration changed in that window** (container on `5deaac5`,
+RestartCount 0 — the _loop_ was dark, the _app_ was not), so there is **no lever confound and a full
+regime confound**; and the forward-return instrument agrees with the regime reading.
+
+### The evidence that would have justified minting did not survive its own population growing
+
+Fresh `pnpm loop:forward-return` at **08:53Z**, v10 `flat_only`: h=1 −7.6 [−19.5, +6.9] n=55; h=4 −9.3
+[−32.1, +15.7] n=55; h=8 −20.8 [−45.1, +3.9] n=54; h=24 −15.5 [−44.6, +29.2] n=54. **Every interval
+includes zero.** The 2026-08-04 amendment recorded the same two cells EXCLUDING zero (−45.3 [−122.0,
+−0.3] and −52.8 [−134.9, −1.5]) on n=21. On 2.6× the population the point estimates moved to −9.3 and
+−20.8 and both intervals opened. **The adverse-POWERED signature was a small-population reading.** The
+honest statement is that v10's forward edge is **indistinguishable from zero** — not that it is good;
+the point estimate is negative at all four horizons. WATCH-PLAYBOOK-V10-1 tier 2 is superseded and its
+intervals must not be re-quoted. The n=21/k=8 vs n=26/k=9 discrepancy the record never reconciled is
+**accrual, not filters**. The replay divergence is unchanged and still fires at h=8 and h=24.
+
+This matters because the **event-driven mint gate shipped this pass** keys on exactly that reading.
+On today's data it **REFUSES**, and that is the gate working, not a bug.
+
+### Six days late, both levers adjudicated — on a window that had to be re-based first
+
+L1 and L4 went live in **one instant, 2026-08-04T08:00:23Z** (the prompt-hash partition switches to
+`aefafb3c…` at `:23.693878Z`, confirming it to the second), so **neither is separately creditable**.
+Their registered "first two full UTC days" are 08-05 and 08-06 — **both corrupted by the Pass-65 feed
+wedge** (2920 and 2560 `agent_decisions` rows against 3840 on an intact day). The window was **re-based
+to the three clean days 08-07→08-09, declared before the numbers were read against it.**
+
+**L4 — all three clauses MET, no rollback.** `forced_move` 28.9/day against a 94/day baseline (−69.3%);
+decide spend −$0.6844/day, an **over-delivery** against the declared $0.15–$0.60 band, recorded as one
+because § 3.4 printed its upper bound precisely so over-delivery would be as falsifiable as under-;
+and Σ one-way notional **ROSE 1.45%** while spend fell 26.5%. Its most-likely named defect — "the lever
+bought less trading, not cheaper trading" — **does not fire**, and neither does the fallback-absorption
+defect (`forced_fallback` fell to 7.4/day from 29). **The LLM term moved 82.77 → 59.99 bps/round trip.
+That is the first lever in this program to move the § 1.3 identity in the right direction for the right
+reason: spend fell while turnover did not.**
+
+**L1 — primary FALSIFIED, and its cost clause passes only through a confound.** Rows carrying
+`truncated_max_tokens:` at exactly `output_tokens = 4096` number **4 and 3** on the two registered days
+against a registered expectation of zero. On the clean window the 4096-pinned rate is 2.17% of priced
+decides against 3.35% before — a ~35% relative fall on 17 vs 7 rows, not distinguishable from noise and
+not the registered zero. Its spend clause passes only because the lane made **36.4% fewer priced calls**
+— which is L4's mechanism — while **cost per decide ROSE 15.6%**. Latency and schema-rejection defects
+do not fire (p95 30,556 ms vs 29,009; zero rows ≥75s; `schema_rejected` 7.67/day vs 18).
+
+**L1 is NOT unset today, and not out of optimism.** Whether `effort` reaches the model at all is
+unanswerable from these columns — a request-parameter effect and a payload-size effect produce an
+identical row, and the payload grew independently when the liquidation and perp trade-flow channels
+went live the same day. `stop_reason` ships this pass to separate them. **Registered read: the
+`max_tokens` share on the `+eff-medium` partition over 7 days; unchanged-or-higher ⇒ UNSET
+`AGENTIC_OUTPUT_EFFORT`; deadline 2026-08-17; the unset is the DEFAULT on a silent instrument.**
+
+**A separate falsification, of the instrument rather than the lever:** WATCH-V4-12's own recorded line
+that truncation rows are "all pinned at exactly 4096" **is false in both eras** — 33% of prefix rows
+before the enable and 58% after are NOT at the ceiling. Two different events have been aggregated under
+that watch since it opened, and every prior count under it inherits that.
+
+### The Pass-64 consult-discard fix salvages a shape that does not occur
+
+WATCH-V4-20, read one day past deadline: **`batch_stringified_recovered` = 0 while `{kind="batch"}`
+fired 13 times in 3.64 days**, and **zero `empty_tool_input:` rows exist across six days** against 47
+`schema_rejected:`. Both counters zero-seed at boot, so both are real absences. **Two of the four named
+defects FIRE.** Per the clause's own instruction the recovery is no longer claimed. Whole-batch
+discards continue at ~3.6/day; the rate did fall from the 21.4% baseline **but not by the mechanism
+this fix shipped**, and the cause is unidentified. The third defect (`nextConsultBars` clamp) was not
+read — **an unrun check is not a passing one**, so it stays open with no deadline claim.
+
+### The NOFILL re-read is blocked on the cell nobody was counting
+
+55 v10 entry decisions, 55 produced an intent, **45 filled, 10 intent-with-no-fill**. The total clears
+n≥12 — but **the binding constraint is the UNFILLED cell at n=10**, so the filled-vs-unfilled split,
+the only instrument that can show adverse selection, still cannot be scored. Saying "n=55, powered"
+here would have been wrong. Re-read ~2026-08-12. `computeForwardReturn` carries no fill-status
+partition; the seam is recorded, not built.
+
+### What shipped
+
+- **`stop_reason` journaling** (`fe84c61`) — nullable column, migration `0003` (a clean single
+  `ALTER TABLE`, inspected for the churn `0002`'s header documents), threaded from an envelope field
+  the schema had been parsing and discarding for its whole life. Batch stamps the first resolved
+  proposal only, so `stop_reason IS NOT NULL` means exactly one row per HTTP call. **The migration must
+  be applied BEFORE this code deploys** — an insert naming a column the database lacks kills journaling
+  while every surface reads healthy, which is this program's signature failure.
+- **Authoring budget preflight + event-driven mint gate** (`abcfc61`). Every authoring run had been
+  arithmetically guaranteed to abort — ~$6.47 declared against a $5.00 cap — burning the UTC slot and
+  producing nothing for ten days. `classifyDeclaredBudget` now refuses **before** `claimTodaysSlot`,
+  fails CLOSED, and the default shape becomes 2 arms × 150 rows = $4.3116. **Arms are cut before rows**:
+  at 90 rows `judgeHalves` starves its 12-entries-per-half floor and every mint refuses, so cutting rows
+  would have swapped a budget abort for a quieter one. `classifyMintTrigger` permits a mint only on the
+  incumbent's adverse-POWERED reading. **Eight live playbook versions shared 78 entries — 9.75/version
+  against a floor of 12 — which is why only v1 and v2 ever reached powered evidence.** Event-driven
+  minting **dissolves** that exclusivity instead of trading one horn for the other.
+- **The OOS session arm's machinery** (`924f8b2`) — and the defect that mattered most was not the
+  missing trigger. **`sealBatch` routed through `logTrials`, which silently no-ops in production**, so
+  the arm could have decided for weeks while every sweep reported "no sealed window exists". Replaced
+  with a direct INSERT and a fail-CLOSED read-back. Cadence amended to 3×/day (owner: no new daemons)
+  while the arm is still UNSTARTED and the amendment is therefore admissible.
+- **Per-symbol fill watermarks** (`e574bd3`) — the per-venue watermark let one persistently failing
+  symbol pin `since` for every symbol on its venue, and that hold ends not in an error but in two
+  silent truncations (Binance's 500-row page; the perp endpoint's 7-day window returning EMPTY).
+- **The fee-truth enable (L6)**, registered `09fa553` **before** it shipped, with a **derived magnitude
+  of ZERO** — and the registration refutes a hypothesis this pass's own plan carried.
+- Orphaned `ACKED` algo-rail stop rows now terminalize through a reconciliation-sanctioned path, and
+  #149's clock half is closed by a durable open-time source.
+
+### The finding that cost the plan a premise
+
+The plan justified the fee-truth enable partly on a suppression hypothesis: the model is told a round
+trip costs 20 bps on a book that really costs 7.2, and that 2.8× overstatement plausibly suppresses
+what it will trade. **Measured before shipping the fix, it does not survive.** Proposed
+`takeProfitPct` on 112 non-replay perp entry decisions: min **0.012**, median **0.035**, max 0.070;
+spot n=14: min 0.020, median 0.031. **Not one proposal on either venue ever came within a factor of six
+of the 0.002 floor.** The median perp target is **17.5× the overstated cost and 48× the true one**.
+
+A 2.8× overstatement cannot bind a target that already clears the true cost by 48×. **The hypothesis is
+refuted on the exit-target axis and untested on the entry axis**, which is the one this read cannot
+see. It also explains mechanically why the TP-floor gate has never fired — re-verified at 0 rejections
+all-time — instead of leaving that as an unexplained zero. So L6 ships as a **correctness fix and a
+confound removal**, never as an improvement, and any post-enable gain attributed to it is refuted in
+advance. Its clauses grade **rendered bytes and floor values, never PnL**, and its harm-rollback cohort
+(perp trips with TP < 0.002) is expected to be **empty** — recorded as unfired-for-want-of-population,
+which is not a pass.
+
+`TRADE_TEMPLATE_VERSION` goes **v4 → v6, skipping v5 deliberately**: `PROMPT_TEMPLATE_VERSION` in the
+same file already holds `'v5'`, and reusing that string for a different template composition is exactly
+the collision `computePromptHash`'s distinctness spec exists to catch. A lane caught that; the plan had
+said v5.
+
+### Process
+
+**Three of this pass's own records were wrong or self-defeating, and every one was caught by something
+other than the orchestrator.** The plan's E1 watch read "perp reject rate falls" with a rollback on
+"reject rate unchanged at 48h" — against a baseline of **0 rejections all-time**, the expected-positive
+was vacuous and the rollback would have fired automatically on `0 == 0`. The plan asserted "ten playbook
+versions"; the measured figure is **eight live** (ten is the mint-ledger count, which never deletes a
+row). And two committed records introduced **16 MD049 lint errors** on a validator that is part of
+`pnpm checks`. **The recurring failure is unchanged: the orchestrator asserting what it has not
+checked.**
+
+**A production-gate spec was RED at HEAD when this pass opened** — `pass-record-audit.spec.ts`, because
+Pass 65's entry wrote `Window:` unbolded, which is the exact defect Pass 63 corrected in its own entry.
+It shipped because **the pass record is written AFTER the gate run, so no pass can catch its own
+malformed record.** Fixed here.
+
+**Five lanes early-stopped or were killed mid-flight** (a session restart took all of them), and in
+every case the artifacts were further along than the report. Checking `git status` and the diff, not
+the report, is what recovered them. One lane returned a **NEEDS_DECISION** rather than guessing at a
+missing port — it had proved that no port, service, in-memory map or table carried a live position's
+open time — and that halt was the correct outcome, not a failure.
+
+**A fourth orchestrator miss, caught by the instrument that exists for it.** The first deploy of this
+pass was run as a plain `docker compose up -d --build app`, omitting the `GIT_SHA=$(git rev-parse
+--short HEAD)` prefix the playbook § deploy step spells out. The image built and the container came up
+healthy — and `build_info{git_sha}` read **`"unknown"`**, because `${GIT_SHA:-unknown}` bakes the
+literal. **The playbook documents this exact failure mode**, and the deploy "succeeding" while being
+unverifiable by its own instrument is the pass's own through-line pointed back at itself. Redeployed
+with the prefix. **Never verify a deploy by container health alone; the sha is the verification.**
+
+**A scoping fact on #149's clock fix, recorded because it bounds where the fix is live.**
+`RoundTripEvidenceReader` — the concrete `RoundTripEvidencePort` the new closure reuses — hardcodes
+`DEMO_MODE = 'testnet'` (pre-existing, untouched, correct for the reflection-evidence job it was built
+for). So `openPositionOpenedAt` returns `null` for any position whose fills are recorded under
+`mode='paper'`, and the clock **fails open to `barsElapsed: 0` there — never worse than before, but
+inert.** This deployment's `mode_info` settles to `effective="testnet"` after the documented ~69 s
+boot transient and its fills carry `mode='testnet'`, so the fix **is** live here. If the lane is ever
+run in paper mode, this fix is a no-op until the reader's mode is threaded rather than hardcoded.

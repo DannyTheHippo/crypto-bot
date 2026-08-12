@@ -1155,6 +1155,115 @@ before acting; do not re-derive from this line.
 **Resolution deadline:** 2026-08-18, or the first reading of any named outcome above, whichever comes
 first.
 
+### WATCH-V4-27 — the fill poller's watermark can no longer outrun trades the venue withheld (2026-08-12, Pass 71)
+
+**Shipped:** `demo-fill-poller.service.ts` now reads from `since = max(highWater − SWEEP_OVERLAP_MS, floor)`
+with `floor = max(bootAnchor, now − MAX_TRADE_LOOKBACK_MS)`, while the STORED mark stays the high-water
+value (`maxTs` seeds from `highWater`, written back under `if (maxTs > current)`). `SWEEP_OVERLAP_MS`
+= 300_000, mirroring `DEFAULT_RECON_CONFIG.overlapMs`. New counter
+`demo_fill_poller_overlap_recovered_total{venue,symbol}`, zero-seeded per polled key.
+
+**The defect it repairs, measured.** On 2026-08-11 the venue returned trade `56287002`
+(ts 1786479340803) while WITHHOLDING already-executed `56286996`–`56287001` (ts 1786479338135–…340419)
+for intent `019ff277-34bd-7b21-a378-dd4d0bf7a4d4` (KAITO/USDT:USDT). The poller ingested the newest
+alone and pinned its cursor past the six; four subsequent polls journalled nothing for them. Only
+`ReconciliationService`'s independent 300 s-overlap cursor recovered them, 42.5 s later — configuration
+luck, not an interlock. The comment asserting `fetchMyTrades(since)` "returns ALL trades with ts ≥ since"
+was a falsifiable claim and is now falsified. **No fill was lost:** the order is FILLED/terminal with
+`cum_qty` 79.800000000000000000 exactly equal to the sum of its 10 fills.
+
+**Expected-positive:** `demo_fill_poller_overlap_recovered_total` exists as a series for every polled
+`(venue, symbol)` — at 0 — and goes NON-ZERO on the next occasion the venue withholds an older trade,
+which is the event that previously cost a permanent skip. Because the seed is real, **a sustained 0 is a
+true negative, not a void read.** Base rate is low: exactly one qualifying episode in 528 lifetime fills.
+
+**Named defect outcomes:**
+
+- **A series missing entirely for a polled `(venue, symbol)`** ⇒ the zero-seed regressed and every "stays
+  0" reading since is VOID, not negative. Re-check the seed before drawing any conclusion from a zero.
+- **The counter incrementing on ordinary deduped re-reads** ⇒ the `applied === true` guard or the strict
+  `f.venueTimestamp < highWater` comparison broke; the series then measures poll cadence, not recovery.
+- **`venue "…" symbol … returned a FULL myTrades page` at error** ⇒ the 500-row saturation guard fired.
+  That is the guard WORKING (it drops the overlap for one poll so the frontier read resumes), but it also
+  means the overlap window alone filled the venue's page — re-measure trade density before widening
+  anything. Max observed density is 18 fills per `(venue, symbol)` per 5 min, 3.6% of the ceiling.
+- **A symbol silently ingesting nothing for days while others progress** ⇒ suspect the >7-day ccxt
+  `endTime` derivation (`binance.js:8261-8266`, linear markets only). The rolling `MAX_TRADE_LOOKBACK_MS`
+  floor exists to prevent exactly this; its absence was the second must-fix this change carried.
+
+**Untested by construction, stated so it is not mistaken for covered:** the guarded write protects
+against a concurrent-poll overtake (`trading-runtime.module.ts` fires `void this.runFillPoll()` on a bare
+10 s interval with no `skipIfBusy`), but no single-threaded fixture can drive that interleaving. The
+branch is covered; the race is not.
+
+**Resolution deadline:** 2026-08-19, or the first non-zero recovery count, whichever comes first.
+
+### WATCH-V4-28 — the sweep's fill-ordering check asserts the invariant the walk actually depends on (2026-08-12, Pass 71)
+
+**Shipped:** W1 re-expressed. It now reads each `(strategy_id, symbol, mode, venue)` group under the
+PRODUCTION ordering (`venue_timestamp, fill_id` — `promotion-stats.repository.ts:83`) and asserts
+`venue_trade_id` monotonicity, bounded to `PROMOTION_EVIDENCE_EPOCH`. Kinds: `fill_ordering_violation` /
+`fill_ordering_unreadable` / `fill_ordering_void` (ALARMS, fail CLOSED) and `fill_ordering_incomparable`
+(annotation). Separate `fill_ingest_lag` annotation (12 h-bounded, fails OPEN) keeps the ingest-lag signal
+with an explicit disclaimer that it says nothing about the walk.
+
+**Why:** the old check asserted that fills read in `ingested_at` order never go backwards in
+`venue_timestamp`, and its comment claimed `PromotionStatsRepository` orders by `ingested_at`. **That
+claim was false when written** — the producer has ordered by `venue_timestamp, fill_id` since `1b45183`
+(2026-07-06), four weeks before W1 landed (`1f68d6f`, 2026-08-03), and `ingested_at` appears in `src/`
+exactly once, as a schema column. The check therefore asserted a property no consumer has ever depended
+on, and being unbounded over an immutable journal, its first true positive would have **wedged §3
+permanently** — verified: the pre-Pass-71 query returns `1|528` against the live DB right now.
+
+**Baseline at ship (live, this pass):** `violations|compared|incomparable|checked = 0|510|0|528`;
+ingest-lag `1|13`. Sensitivity control — same query with the sort reversed — returns `510|510|0|528`, so
+the 0 is a live negative, not a vacuous one. Non-vacuity: 48 of 528 rows sit in 14 same-millisecond
+`venue_timestamp` buckets where the tiebreak is `fill_id` (insertion order), 34 tie pairs, 0 violations.
+
+**Expected-positive:** `fill_ordering_violation` stays absent while `fill_ingest_lag` annotates the known
+2026-08-11 heal event on the next sweep and then ages out of its 12 h window on its own.
+
+**Named defect outcomes:**
+
+- **`fill_ordering_violation` fires** ⇒ a real one. The walk consumed fills out of venue execution order,
+  so round-trip boundaries and every count/window derived from them are computed off a mis-sequenced
+  book. Do NOT reach for the epoch to clear it: moving `PROMOTION_EVIDENCE_EPOCH` is the only clearing
+  lever and it discards accumulated promotion evidence as a side effect.
+- **`fill_ordering_void`** ⇒ pairs existed and NONE was comparable: the control is disabled, not merely
+  weakened, and a clean alarm list would otherwise have meant nothing.
+- **`fill_ordering_incomparable` alone** ⇒ expected once paper fills share the table (`paper-trade-N`
+  restarts at 1 each reboot, so those ids are not monotonic even in principle). Disclosed, never alarmed.
+- **`fill_ingest_lag` sustained across many windows** ⇒ the venue is withholding trades routinely; that is
+  WATCH-V4-27's territory, not a walk-corruption signal.
+
+**Resolution deadline:** 2026-08-19, or the first firing of any kind above.
+
+### WATCH-V4-29 — the OOS arm stopped voiding whole firings on a seal-time condition (2026-08-12, Pass 71)
+
+**Shipped:** `test/eval/agentic/oos-arm-decide.ts`'s `checkEntryRateBound` became `measureEntryRate`,
+which never voids. VOID condition 3(b) (the 65% absolute ceiling) is defined over the SEALED rows and was
+already enforced there — `scripts/loop-oos-arm-core.mjs:82`, `:436` — so the per-firing duplicate
+protected nothing. Caps-faithfulness (VOID condition 1) still gates the write, unchanged.
+
+**Why:** at 1–6 rows per firing the only reachable rates are coarse fractions, so the ceiling could only
+discard ENTRY-HEAVY firings while keeping hold-heavy ones — a selection effect acting on the arm's own
+primary statistic. It destroyed 4 rows on two consecutive firings (Pass 70 firing 2, n=1; Pass 71 firing
+1, n=3, all three `open_long`). Those rows are LOST and are NOT backfilled.
+
+**Expected-positive:** the next firing whose entry rate exceeds 65% RECORDS its rows, with the measured
+rate reported alongside the write rather than used as a gate.
+
+**Named defect outcomes:**
+
+- **A firing voided on entry rate again** ⇒ the per-firing check came back; the fix was reverted or
+  duplicated elsewhere.
+- **A sealed read that should void on `S > 65%` failing to void** ⇒ the condition got LOST in the move
+  rather than relocated; check `loop-oos-arm-core.mjs:436` fires over the sealed window.
+- **Caps-faithfulness ceasing to block a write** ⇒ the narrowing over-reached; condition 1 must still
+  abort the whole firing.
+
+**Resolution deadline:** read 1's first seal.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

@@ -1,5 +1,13 @@
 # crypto-bot Operations Runbook (v3)
 
+> **Decommissioned 2026-08-12.** This deployment was torn down — no process, container, or volume
+> from this project is currently running. The agentic lane's net-of-cost PnL reached -83.86 USD
+> over the demo window and never earned `PromotionReadinessService` certification for live; the
+> repository is now source-only and archival (see the README [Status](../README.md#status)
+> section). The procedures below remain valid instructions for anyone who restores the stack from
+> a clean checkout (see [Cold restore](../README.md#cold-restore)) — nothing about them changed at
+> teardown; they describe a **restored** deployment, not the state of this repository right now.
+
 Operational procedures for the named incident classes: **halt**, **reconciliation mismatch**,
 **re-arm**, and **paper-honesty**, plus deploy / backup / promotion for the post-cutover stack.
 Procedures reflect the implemented one-book behavior (2026-07-21 v3 cutover). Items marked
@@ -547,8 +555,9 @@ There is no separate perp DB — one book, one dump.
 ## Open / deferred (verified at the out-of-session RUN, not in CI)
 
 The sandbox order-lifecycle scenarios (`pnpm test:testnet`) are **RUN-verified against both Binance
-Spot Testnet and Binance Demo Trading**. The v3 single-app dual-venue demo boot is in production use
-(local cutover 2026-07-21). Still out-of-session:
+Spot Testnet and Binance Demo Trading**. The v3 single-app dual-venue demo boot was in production
+use from the 2026-07-21 local cutover until the 2026-08-12 decommission. Still out-of-session as of
+teardown:
 
 - the **live** venue connection and order RUN
 - a **live reconcile cadence** (today auto-resume is inert on live for this reason)

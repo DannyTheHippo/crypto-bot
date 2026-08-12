@@ -22,6 +22,46 @@ ingested into net-of-cost PnL — same process, knobs in `.env.app` (no separate
 
 ---
 
+## Status
+
+**Decommissioned 2026-08-12.** No process, container, or volume from this project is running.
+
+The agentic lane's net-of-cost PnL (`agentic_promotion_net_pnl_usd`) reached -83.86 USD over the
+demo evaluation window, so `PromotionReadinessService` never certified it for live trading. It
+never traded real funds — `TRADING_MODE` was `testnet` at shutdown.
+
+Teardown removed the Postgres, Prometheus (90-day TSDB), and Grafana volumes, plus all build
+output and dependencies. A final pre-teardown `pg_dump` sits alongside the earlier dumps in
+`backups/`, and `.env` is in place at the repo root — both gitignored, neither committed.
+
+This repository is source-only and archival: complete and buildable from a clean checkout, but it
+carries no runtime state.
+
+### Cold restore
+
+`node_modules` and all local state are gone. To bring a fresh checkout back to a running stack:
+
+```bash
+pnpm install
+cp .env.example .env # secrets only
+pnpm build
+pnpm migrate # apply drizzle/ migrations — needs a reachable Postgres first
+pnpm start # paper mode
+```
+
+Or via compose, which provisions Postgres/Prometheus/Grafana itself (run `pnpm migrate` against it
+the same way, pointing `DATABASE_URL` at its `postgres` service before or after `up`):
+
+```bash
+GIT_SHA=$(git rev-parse --short HEAD) docker compose up --build
+```
+
+`pnpm migrate` runs `drizzle-kit migrate` against `DATABASE_URL` (defaults to
+`postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot` — see
+[`drizzle.config.ts`](drizzle.config.ts)).
+
+---
+
 ## Features / safety highlights
 
 - **Paper is the default.** Any missing or invalid `TRADING_MODE` input safely resolves to paper.
@@ -124,6 +164,7 @@ Non-runtime artifacts live under `research/`:
 | `research/scorecards/` | Tracked promoted eval/tournament scorecards |
 | `research/candidates/` | Ignored ephemeral dumps / jsonl |
 | `research/studies/` | Tracked study writeups |
+| `research/oos-arm/` | Tracked out-of-sample arm decisions/attestations (jsonl) |
 
 Scripts: `pnpm loop:*`, `pnpm eval:*`, `pnpm backtest`, `pnpm fetch:edge-tournament`, `pnpm run:edge-tournament`.
 
@@ -166,12 +207,12 @@ src/
     trading/{composition,risk,execution,mode-control}/
     strategy/agentic/
   database/{schemas/trading,repositories/{common,venue,trading,strategy}}/
-  config/  shared/  app.module.ts
+  config/  shared/  app.module.ts  main.ts
 test/
   features/{common,venue,trading,strategy}/  # mirrors features
   domain/  ports/                            # pure + port contract specs
-  paper/ livegate/ backtest/ eval/ db/ testnet/
-research/{loop,scorecards,candidates,studies}/
+  paper/ livegate/ backtest/ eval/ db/ testnet/ shared/
+research/{loop,scorecards,candidates,studies,oos-arm}/
 docs/{runbook.md,planning/}
 drizzle/  observability/  scripts/
 ```

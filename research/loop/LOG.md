@@ -15,235 +15,7 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, **Pass 63's at Pass 68**, **Pass 64's at Pass 69**, **Pass 65's at Pass 70**, and **Pass 66's at Pass 71** (five-entry retention). Nothing deleted — every `LOG.md § Pass 65` and `LOG.md § Pass 66` pointer now resolves in that archive._
-
-## 2026-08-10 — Pass 67 (the out-of-sample arm stopped being UNSTARTED, and the one owed enable is refused by its own precondition)
-
-**Window:** 2026-08-10T16:07Z → 16:46Z. Lease `04fb519b02bec364` taken 16:07:41Z, released 16:46Z. `date -u` anchored
-BEFORE any timestamp forensics (16:07:16Z). Sweep `2026-08-10T16:07:51Z`: **ZERO alarms**, 17
-annotations. Boot `a5279f26-8b35-4275-8a7b-d1a7ca6a4569`, StartedAt 2026-08-10T09:49:33Z,
-RestartCount 0, running build **`917e542`** (`build_info` read directly, not inferred), working tree
-tip `3a23dc1` — the three commits above `917e542` are docs-only, so the deployed build IS the newest
-app-code commit. 26 Prometheus rules loaded, 0 firing.
-
-**Fan-out:** 2 read-only lanes declared and joined. `loop:fanout join` line, verbatim:
-`loop-fanout: COMPLETE — all 2 declared lane(s) returned (recon-adopt-nonadoptable, e1-e2-derivatives-readiness).`
-
-### The four mandatory per-pass signals — read POSITIVELY, never inferred from the absence of an alarm
-
-| signal | reading | verdict |
-| --- | --- | --- |
-| `kill_switch_state{state="RUNNING"}` | 1 | RUNNING |
-| `reconciliation_last_success_timestamp_seconds` | 1786378326.167, age **83s** | fresh, non-zero |
-| `agentic_budget_remaining_usd` | **1.8424065** of the one $3/day breaker | non-zero |
-| `agent_decisions` on the current bootId | Δ1000 rows, **21 REAL** model decides, newest 15:45:23Z | flowing |
-
-Also read: `agentic_last_gate_timestamp_seconds` age **774s** (WATCH-V4-22 holds — the 2700s
-`AgenticLaneNotTicking` threshold is not close), `agentic_capability_violations_total{kind="open_short_on_spot"}` = **0**,
-`mode_info{requested="testnet",effective="testnet"}`, live menu **10** symbols.
-**Migration `0003` VERIFIED APPLIED** — `agent_decisions.stop_reason` is present in `\d`, 4 rows in
-`drizzle.__drizzle_migrations` (newest 1786352088242 = 08:54:48Z). STATUS's "`pnpm migrate` MUST run
-before the next deploy" is therefore **DISCHARGED**, not outstanding.
-
-### §3 — the sweep is clean, and the two RESOLVED alerts were investigated anyway
-
-The playbook's own rule ("a resolved critical is a defect investigation anyway") was applied, not waived.
-
-- **`ReconcilerStalled` (critical) — 1 firing sample at 2026-08-10T09:49:55Z**, i.e. **22 seconds after
-  StartedAt**. This is the redeploy carve-out, **seventh timed confirmation**. Not a defect. Read off
-  Prometheus' own `ALERTS` series by range query, so the timing is measured, not assumed.
-- **`ReconciliationMismatch` (warning) — two DISTINCT classes, and only one was already explained.**
-  `class="algo_orphan_adopted"` 09:54:55Z→09:58:55Z (5 samples) is the known post-boot orphan
-  re-adoption. **`class="adopt_non_adoptable"` fired 11:47:55Z→12:06:55Z (10 samples) — two hours into
-  a healthy boot, not a boot transient**, and was investigated as a defect candidate.
-
-#### `adopt_non_adoptable` — VERDICT BENIGN for this episode, with a discriminator that makes the next sighting cheap
-
-Mechanism (`src/features/trading/execution/reconciliation.service.ts:77`, counter at `:268-272`,
-candidate selection at `:892-897`): _we hold this order open locally, but this pass's `fetchOpenOrders`
-did not list it._ Three bump sites inside `adoptTerminal`/`backfillClosedOrderTrades` (`:1097-1103`,
-`:1105`, `:1147-1150`); only `canceled`/`expired` are legally adoptable (`terminalEventFor`, `:1174-1183`).
-**Fails CLOSED — refuse, leave alone, re-check next pass**: every bump is followed by a bare `return`,
-no `acc.halts.push`, no fold, no cancel. The one real cost is documented at `:1130-1137` — a persistent
-occurrence blocks `lastCleanAt` and with it auto-resume.
-
-Two rows in the window, both `binanceusdm`: id **57770** at 11:46:04.768Z (`adopt_non_adoptable:1,backfilled_fill:1`)
-and id **57798** at 12:01:11.018Z (`adopt_non_adoptable:2`). Both `result=MISMATCH`, **never HALT**; the
-kill switch was never engaged; equity flat at 4961.39–4961.55 USDT across 11:57Z–12:06Z and the position
-vector unchanged. Two increments × `increase(...[5m])` × the :55 eval offset reproduces the 10 reported
-samples exactly. Episode A healed in **62s** via `DemoFillPollerService` (`poll:` dedupe-key prefix minted
-only at `demo-fill-poller.service.ts:170`); Episode B was a venue-endpoint disagreement (`fetchOrder`
-said `open` while per-symbol `fetchOpenOrders` had not propagated a ~35s-old ACK) and cleared on the next
-pass (57800 at 12:02:22Z, `open_orders_checked` 2→4, CLEAN). Both heals are **named mechanisms, not luck**.
-
-**Recurrence: 8 distinct days, 121 increments lifetime** (58,268 `reconciliations` rows scanned). This
-clears the N≥2 bar, so it is root-caused here rather than normalised — **and the histogram contains two
-different phenomena that must never be pooled**: 2026-07-27's **100 rows over 3.5h of consecutive passes**
-is the DEFECT shape already documented at `:1412-1420` (a stale-snapshot fold stranding a venue-FILLED
-order, since fixed at `:1422`); 07-30 → 08-10 are 1–3 isolated rows clearing on the next pass.
-
-> **DISCRIMINATOR, binding on every future sighting:** the same coid bumping this class on **≥2
-> consecutive passes on the same venue = DEFECT** (something is stranded non-terminal); a **one-shot bump
-> whose successor pass is CLEAN = the venue-read race**, benign. What would overturn BENIGN: (a) that
-> ≥2-consecutive-pass repeat, (b) an order that took a bump never reaching a non-null `terminal_at`, or
-> (c) a bump coinciding with a `position_drift`/`fill_overflow` halt on the same symbol. **None of the
-> three holds for 2026-08-10.**
-
-**Recorded, NOT shipped — with a named trigger.** All three bump sites are anonymous: no log line, no
-`acc.notes` entry, and `detail` carries only `class:count`, so the lane had to identify the objects by
-arithmetic and elimination and **still could not pin which two of three fresh LIMITs took the 12:01Z
-bumps**. The minimal mirror of `recordPositionDrift`'s existing bounded `acc.notes` channel (`:798-819`)
-is written out in full in this pass's lane report. **Trigger to ship it: the next deploy this loop makes
-for any other reason** — it is diagnosability-only on a fail-closed path the lane verified is behaving
-correctly, and a deploy whose sole purpose is diagnostics would add a boot transient to E1's in-flight
-soak (below) for no measurement gain.
-
-### §1a — THE OUT-OF-SAMPLE SESSION ARM IS NO LONGER UNSTARTED
-
-**This is the pass's headline.** Firing #1 of the decide leg ran end to end against real data for the
-first time since the machinery landed (`924f8b2`, Pass 66). Previous sweeps annotated
-`_oos_arm_unstarted_` and `_oos_arm_decision_record_empty_`; both are now false.
-
-1. **Gather** — `loop:oos-gather` wrote **4** candidate rows, `gatheredAtMsFromDb=1786378131000` (DB
-   clock, per § vi, never the host's). One playbook version across the window (v10), so the
-   version-span refusal did not fire.
-2. **Blind decide** — dispatched subagent, VOID-4 convention (amendment 2026-08-10 § 4). Its entire input
-   was the candidates file plus the composed prompt surface from `buildLiveSystemPrompt`/`buildPlaybookBlock`
-   — **never hand-composed**: `systemPromptSha256 f719d5455c28f00f…`, `toolSchemaSha256 7cddfe56c51020f7…`.
-   Decisions: `67526` PEPE/USDT **hold**, `67525` BTC/USDT:USDT **hold**, `67527` SOL/USDT:USDT
-   **open_short**, `67573` KAITO/USDT:USDT **open_long**.
-3. **Record** — `OOS_ARM_RUN=1 … exec vitest run test/eval/agentic/oos-arm-run.spec.ts`, 6 tests passed
-   (5 always-on + the gated leg). **`research/oos-arm/decisions-2026-08-10.jsonl`, 4 lines**, every row
-   `capsSource:"recorded"` (VOID condition 1 clean) and `schemaValid:true`. Both VOID checks
-   (caps-faithfulness, entry-rate bound) ran BEFORE the append and passed — session entry rate this
-   firing **2/4 = 50%**, under the absolute 65% ceiling of condition 3(b). `agentPromptCommitSha`
-   `3a23dc1823e96d3f…`, `agentPromptBlobSha` `5ed73d67f21a0d8f…`.
-
-**FIRING #2 (pass end, 16:37:49Z)** fired as the amendment's dual-leg cadence requires —
-`gatheredAtMsFromDb=1786379870575`, **2 rows** after rowId-dedupe against firing #1 (`67602` KAITO/USDT:USDT
-**open_long**, `67652` ZEC/USDT:USDT **hold**), same prompt surface (`f719d545…` / `7cddfe56…`, unchanged
-because nothing was deployed between the firings), both `capsSource:"recorded"`, both VOID checks clean.
-**NO GAP this pass: both legs fired.** Transcript artifact: agent `af2b50ff6292ce0af` — same durability
-blocker as firing #1.
-
-**NOTHING WAS SEALED, and that is correct** (amendment § 7): read 1's target is **202 rows** and this pass
-brings the window to **6** (4 + 2). A seal IS a scored read against the family's 6-read budget, so sealing
-early buys an UNDERPOWERED read for a spent slot. At the amendment's own 33.675 rows/day the target lands
-≈2026-08-16 — though **this pass delivered 6 rows, not the 11.2 the amendment's per-firing rate projects**,
-so that date is optimistic on today's evidence and the next passes should watch the realised rate.
-
-**FLAGGED — the VOID-4 artifact is not durable, and this pass could not make it durable.** The
-pre-registration requires the deciding subagent's transcript to be _checked before the seal is written_
-and "never summarized, redacted, or regenerated". That transcript (222 KB, agent id
-`a16c5a955547fa858`) lives in **session-scoped harness storage outside the repo**, and the seal is ~6 days
-and ~50 firings away. An attempt to copy it into `research/oos-arm/transcripts/` was **DENIED by the
-host permission gate** — this is a genuine BLOCKER, not a scheduling choice: the pass could not obtain
-the capability. Stated plainly because the consequence is concrete: **if these transcripts are not
-preserved, VOID condition 4 becomes unverifiable for read 1 and the read is void by construction.** The
-retention design is also non-trivial (≈200 KB × 6 firings/day ≈ 1.2 MB/day, ~7 MB to first seal, ~40 MB
-across the family), so it needs a decision, not a reflex. Next pass owes it.
-
-### §4 — pass type MAINTENANCE, and CANDIDATE is ineligible on the gate's own reading
-
-**CANDIDATE ineligible.** Minting is EVENT-DRIVEN since `abcfc61`: permitted only when the incumbent
-reads adverse-POWERED (`powered ∧ ciHi < 0`, `flat_only`, h=4 or h=8) on a fresh recomputation.
-**This sweep's own recomputation: v10 `flat_only` h=8 = −13.7 bps [−29.1, **+5.9**] n=58 clusters=11.**
-The interval includes zero, so `classifyMintTrigger` (`scripts/loop-authoring-core.mjs:1426`, `:1486`)
-does not permit a mint. Pass 66's independent read of h=4 (−9.3 [−32.1, **+15.7**]) agrees. **The trigger
-not firing IS it working.**
-
-`loop:authoring --dry-run` was run (exempt from the day slot, writes nothing) and is recorded for what it
-does and does not prove: **`dryRun` is the ONLY exemption to `classifyMintTrigger`** (`:1479`, `:1491`),
-so the dry run **bypassed** the event gate rather than clearing it — it does not establish eligibility.
-What it did measure: incumbent `incumbent_v10`, entry rate **41/150 = 27.3%** on the same rows;
-`dryrun_variant_1` won 3/4 horizons (h=1 +12.8, h=4 +16.6, h=8 +10.1) but **LOST the primary h=24 (−5.7)**
-and was **HALF_LOST** on chronological halves — "a win located in half of a single-regime window", fails
-CLOSED. RESEARCH bar 4/4 cells, 0 passes ⇒ NO_SURVIVOR. **`MINT GATE: REFUSED`.** No registry rows were
-written (dry run), so **the UTC day's authoring slot is UNSPENT** and no honest-N row ids exist to record.
-
-**PROMOTION ineligible** — `promotion_evidence` this sweep: `windowDays=17.909358402777777`,
-`roundTrips=83`, `netPnlUsd=−80.6143034444`, `llmCostUsd=40.5201836`, `winRate=0.2891566265060241`,
-`ready=false`, reasons `[NON_POSITIVE_NET_PNL, BELOW_PASSIVE_BENCHMARK]` — all seven fields from ONE
-`evaluate()` call. Against Checkpoint #1's tuple 7h15m earlier (08:52:03Z: 17.500/80/−81.2138/40.0934/0.275):
-**+3 round trips, net PnL +$0.5995 BETTER, LLM spend +$0.4268, win rate 0.275 → 0.2892.** Gross on those
-3 trips ≈ **+$1.03**. **n=3 — quoted as a window delta, never as a trend.** Per-version scoreboard sums to
-83 trips exactly, so the book and the version split agree.
-
-### The owed action: E2 is REFUSED today, on its own stated precondition
-
-STATUS owed item (1) is "add `AGENTIC_DERIVATIVES_V2_ENABLED=true` to `.env.app` … only after E1 soaks one
-pass, and only after confirming **no active sweep compares d1-tagged rows first**." **Both clauses fail.**
-
-- **The d1-tag precondition FAILS.** `feedTags` (`anthropic-agent-client.ts:1783-1790`) puts `d2` in the
-  same slot as `d1`, and the joined tag is SHA-256'd into `agent_decisions.prompt_hash`
-  (`agent-prompt.ts:523-536`) — an opaque digest, so a partition identified by its hash **silently loses
-  every post-flip row**. The code says so in terms: _"ENABLING V2 MID-FACTORIAL IS FORBIDDEN"_
-  (`agent-prompt.ts:44-49`, mirrored `environment.config.ts:389-397`). Since this boot there is exactly
-  **one** partition, `7ee5a76d`, 24 rows / 20 perp / 4 perp entries (positive control: the same query
-  without the boot filter returns 4,608 perp rows over 3 days). **Two open measurements would break:**
-  (a) **E1/L6's own registered watch** — clause 1 is already MET (the hash moved off `aefafb3c…`), but
-  clauses 2 and 3 grade the _first 20 perp trips_ and _first 50 v6 perp proposals_ against the d1-era
-  baseline and are at 20 rows / 4 entries today; (b) **L1's `stop_reason` read, deadline 2026-08-17** —
-  registered as the `max_tokens` share on the `+eff-medium` partition over **7 days of post-deploy rows**,
-  ~6.5h elapsed, n=12, 1 `max_tokens`. Breaking it is both mechanical (new digest) **and substantive**: the
-  watch exists to separate a request-parameter effect from a payload-size one, and d2 grows the payload
-  mid-window — re-introducing the exact confound the instrument was built to remove.
-- **E1 has not soaked one pass.** E1 = the L6 fee-truth enable `917e542`, live at boot 09:49:33Z —
-  **~6.5h, and its effective measurement clock is ~4.5h** (earliest accepted decide under `7ee5a76d` is
-  11:45:29Z). The loop's own precedent is deploy-in-N / soak-verdict-in-N+1; no soak verdict exists.
-- **A rider the enable would fire and not satisfy.** `derivatives_feed_poll_errors_total` **structurally
-  cannot count spot-ticker sub-poll failures** (`fetchSpotTicker` catches its own rejections and never
-  touches `errorCount`) — re-confirmed live: the counter reads **0** while the LTC spot-ticker warn counter
-  reads **1**. Its recorded trigger to ship is _"any enable of derivatives v2"_, and E2 as specified is
-  env-only, so flipping the flag fires that trigger and leaves it unmet.
-
-**Cost was NOT the reason to refuse and is recorded so no later pass re-derives it:** +136 bytes payload
-(≈+2.0% of a 6,862-byte user message) and +159 chars of cached system prompt ≈ cents/day against $3.
-**Earliest clean flip:** after L1's `stop_reason` read completes (08-17) **and** E1's soak verdict is filed
-with its cohorts full. The exact one-line edit, in this file's own comment style, is carried in the lane
-report — **not applied.**
-
-The v2 fields are **FOUR, not the three STATUS names**: `spotPerpBasisBps`, `oiChangePct`,
-`fundingTrendDelta`, **`fundingTrendDirection`**. Baseline re-measured: **0/326** payload-bearing perp rows
-over 3 days carry any of them (positive control: **all 326 carry a `derivatives` block**, so the zeros are
-real absences). On the frozen entry-decision filter the old "0/94" is now **0/130**.
-
-### "E1" and "E2" were defined NOWHERE in this repository
-
-The lane could not find a definition: STATUS.md's owed item uses both labels, and a repo-wide search of
-`*.md` returns only that line plus `LOG.md`'s Pass 66 reference to "the plan's E1 watch". The
-identification E1 = L6/`917e542` is an **inference** from that reference plus Pass 66's shipped set — and
-`verdicts.md` uses "E2" for an unrelated thing (the haiku-4.5 decide-model re-test). **A dated owed action
-whose subject is unnamed is a state-file defect**, and it is fixed in STATUS this pass by naming both
-labels with their commits. Recorded rather than smoothed: this pass spent a lane's time recovering a
-definition that should have been one line.
-
-### Diff, gates, deploy
-
-**No code shipped and NOTHING WAS DEPLOYED — deliberate, and this is the rationale.** The sweep was clean;
-the one investigated alarm class is benign on a fail-closed path; the only owed enable is refused by its own
-precondition; and CANDIDATE is ineligible on the mint gate's own reading. The single available code change
-(the `adopt_non_adoptable` diagnostic) is diagnosability-only and carries a named trigger instead. A deploy
-this pass would have bought nothing and added a boot transient to E1's in-flight soak.
-
-Files: `research/oos-arm/decisions-2026-08-10.jsonl` (new, the arm's first real record),
-`research/loop/LOG.md`, `research/loop/STATUS.md`, `research/loop/archive/LOG-through-pass-47.md`
-(Pass 62 rotated verbatim). Gates: `pnpm lint:md` and `pnpm format:check` green; the husky pre-commit hook
-validates the whole repo on commit. Full `build`/`lint`/`typecheck`/`test` not re-run — **no source file
-was touched this pass**, and the sweep already carries this morning's harness reads
-(`loop-sweep-specs` 379/379, `eval:agentic` 102 passed/21 skipped, `backtest` 80 passed/10 skipped, all
-PASS 6.3h ago). Soak: **N/A, nothing deployed.** WATCH-V3-1: RSS delta is annotated
-`_rss_delta_spans_warmup_` this sweep — the prior sample sits 1 min into the boot, inside the 45-min
-warm-up grace, so the Δ327 MB **neither establishes nor refutes** a slope and is not read as one.
-
-### Flagged / next-pass candidates
-
-1. **The VOID-4 transcript durability BLOCKER above** — the arm accrues rows every pass from here, and each
-   un-preserved transcript is a row-block that cannot be blindness-checked at seal time. Highest priority.
-2. **Re-read Checkpoint #1 at the first pass after 2026-08-11T12:00Z**, then 08-18 and 08-25.
-3. **L1's `stop_reason` read, due 2026-08-17** — n=12 today; do not flip any payload flag into that window.
-4. **E2 stays owed but DATED-BLOCKED** — earliest clean flip after 08-17 with E1's soak verdict filed.
-5. **The `adopt_non_adoptable` diagnostic diff**, to ride the next deploy made for another reason.
+_Pass 62's entry rotated VERBATIM to `archive/LOG-through-pass-47.md` at Pass 67, **Pass 63's at Pass 68**, **Pass 64's at Pass 69**, **Pass 65's at Pass 70**, **Pass 66's at Pass 71**, and **Pass 67's at Pass 72** (five-entry retention). Nothing deleted — every `LOG.md § Pass 65`, `§ Pass 66` and `§ Pass 67` pointer now resolves in that archive._
 
 ## 2026-08-11 — Pass 68 (the VOID-4 blocker is a capability limit, not a scheduling choice — so the pass shipped the CHECK instead of the copy)
 
@@ -1427,3 +1199,273 @@ P68 failure was silently aging candidates past the registered `k ≤ 3`, and tha
   the per-firing yield over the next three passes before re-projecting a seal date.
 - **WATCH-V4-27's first non-zero reading** is the thing to look for: it is the first direct evidence of how often
   the venue actually withholds trades, and the answer determines whether 300 s of overlap is generous or thin.
+
+## 2026-08-12 — Pass 72 (the edge policy told spot it lost a race it was never entered in, and that voids the evidence for retiring spot)
+
+**Window:** 2026-08-12T08:07Z → 09:08Z (end = this entry's own commit instant, the P69/P71 convention). **The
+start carried seconds in the first draft (`08:07:32Z`) and `pass-record-audit.spec.ts` REJECTED the whole entry**
+— `parseWindowSide` accepts `YYYY-MM-DDTHH:MM` or bare `HH:MM` and nothing else, so `endMs` came back `null` and
+three of that spec's twenty cases failed. Second independent confirmation that this guard works (P71 was the
+first, on a literal placeholder). Leases: `0c087fb25d22873f` taken 08:07:58Z, released 08:46:31Z and
+re-armed as `42ee4ffa403daa63` at 08:46:37Z — **pre-emptive, not a stall recovery**: P71's 5.8h stall and P68's
+~7h one made the re-arm the standing way to run past the 2h lease, and this pass took it while gates were still
+running rather than discovering the expiry later. `date -u` re-anchored SIX times (08:07:32, 08:20:08, 08:31:50,
+08:45:17, 08:49:17, 08:55:07, 08:58:57Z) per the P71 rule. Sweep `08:08:08Z`: **ZERO alarms**, 15 annotations.
+Boot at sweep time `fb63d188-d4c8-4623-a535-4bb468e02ab1`, StartedAt 2026-08-12T01:17:32Z, RestartCount 0,
+running build `be5de80`, working tree tip `1b4c661` (docs-only above the build). 26 Prometheus rules, 0 firing.
+**No fan-out roster: one read-only lane and one write lane, dispatched one at a time, so §4.6 needs no declare.**
+
+### The four mandatory per-pass signals — read POSITIVELY off the endpoint, never inferred from alarm silence
+
+At 08:09:15Z: `kill_switch_state{state="RUNNING"}` = **1**; `reconciliation_last_success_timestamp_seconds` =
+1786522085.403, age **70.2s** (non-zero and recent); `agentic_budget_remaining_usd` = **2.486502** at 08:09Z, i.e.
+~$0.5135 spent in 8.15h ⇒ **~$1.51/day**, against WATCH-V4-26's ~$2.90/day rollback trigger — **CHECKED, NOT
+tripped**; `agent_decisions` on the current bootId — Δ160 rows / **Δ6 REAL model decides**, lifetime 1906, newest
+07:45:25Z. Also positive: gate age 524s (WATCH-V4-22 holds), `agent_client_latch_cause` all **0** across
+`insufficient_credit`/`auth`/`other`, `agentic_capability_violations_total` **0**, menu 10 symbols spanning both
+venues, `build_info{git_sha="be5de80"}` matching the running build.
+
+**WATCH-V3-1: RSS 810.7 MiB at 6.9h uptime.** P71 read 810.6 MiB at 5.9h and flagged it as "worth the next pass's
+eye" because it exceeded P70's 783.8 at 7.2h. **Read this pass: 810.6 → 810.7 over one hour is FLAT.** Above the
+~673 MiB paper reference, below the ~900 MiB defect signal, and — the point — **not climbing**. P71's concern does
+not extend into a slope. Post-deploy the process reset to 384.5 MiB.
+
+**WATCH-V4-27 second reading: 40 `demo_fill_poller_overlap_recovered_total` series, all still 0.** The zero-seed
+is intact, so this is a **TRUE negative**, not a void read — the venue has withheld no trade since `be5de80`.
+
+### §3 — clean, so the pass proceeded to §4; and the incident-first gate was not engaged
+
+Zero alarms on both the opening and the post-deploy sweeps. The 15 annotations were the standing set
+(`venue_reject_rate_undetermined [binance]` — silence, not health; the v10 forward-return divergences; the
+underpowered rollup; `oos_arm_unstarted`; `fill_ingest_lag` on its way out of the 12h window) plus three
+`harness_stale`, which the pass acted on — see the next section.
+
+### A negative result worth the space: `harness_stale` does NOT clear by running the harness
+
+The sweep reported `loop-sweep-specs`, `eval-agentic` and `backtest` all **46.3h stale**. I ran two of them
+directly — `pnpm eval:agentic` **PASS** (104 passed / 22 skipped) and `pnpm backtest` **PASS** (80 passed / 10
+skipped) — and the next sweep still said **47.0h stale**. **Running a harness proves it green; it does not refresh
+the annotation.** The stamp the sweep reads is `.harness-runs.json` (`loop-sweep-core.mjs:2126`), written only by
+`scripts/loop-harness.mjs:109` — i.e. by `pnpm loop:harness`, which runs the harnesses AND records the verdict.
+Ran it; the annotation cleared. **Recorded in STATUS because this is a cheap trap**: a pass that runs the harness
+directly will believe it cleared a staleness annotation it did not clear, and will then read the next sweep's
+repeat as a new problem. Both direct runs were still real evidence — the harnesses are green.
+
+### §4 — CANDIDATE is INELIGIBLE, and unlike Pass 71 this pass ESTABLISHED that by asking the gate
+
+P71 closed by noting it had established nothing about eligibility because it never consulted the gate. This pass
+consulted it. Verbatim:
+
+```text
+EVENT-DRIVEN MINT TRIGGER — a fresh read of the incumbent’s own forward return
+  MINT TRIGGER: NOT FIRED
+  [as-of 2026-08-12T08:15:46.014Z] incumbent v10 flat_only is not adverse-POWERED at h=4 or 8:
+  h=4 POWERED mean=-3.2 n=68 clusters=12 CI=[-22.6, +12.9];
+  h=8 POWERED mean=-14.1 n=67 clusters=12 CI=[-38.4, +6.0].
+```
+
+**The UTC day slot is UNSPENT and asking cost nothing** — verified in code before running it, not assumed:
+`classifyMintTrigger` is evaluated at `loop-authoring.mjs:703` and returns at `:718`, while the slot is claimed by
+`claimTodaysSlot` at `:826`, after `classifySameDayGate` at `:805`. The budget precondition also passed first
+(`DECLARED BUDGET: WITHIN CAP`, $4.3116 against the $5.00 cap), so P66's burn-the-slot-on-an-abort failure mode did
+not arise. **Standing instruction for future passes: ask the gate every pass; it is free and it is the only
+mechanical answer.**
+
+Both flat_only cells are now comfortably astride zero at n=68. STATUS's older note that the v10 raw live cell
+"excludes zero at h=4/h=8 (−45.3 [−122.0, −0.3], −52.8 [−134.9, −1.5])" was read at n=21 and **has not survived
+3.2× the population** — exactly the caution STATUS already carries about not re-quoting the 08-04 cells.
+
+Pass type: **MAINTENANCE by elimination**, spent on the entry signal per P71's explicit handoff ("the next pass
+that finds no §3 alarm should spend its improvement slot on the entry signal, not on more instrumentation").
+
+### The hypothesis I went in with was REFUTED, and I am recording it as such
+
+Firing 1's two candidate rows both showed `edgePolicy.sideEligibility` pointing at the side OPPOSITE the obvious
+technical read (UNI collapsing but long-eligible; KAITO strong but short-eligible). **Hypothesis H:** eligibility is
+systematically anti-correlated with the conventional read, so a model that does not apply v10's inversion finds its
+preferred side blocked and holds — which would make the low entry rate structural.
+
+**H is REFUTED.** Opposition share is **54.9%** on a rank-median proxy (347/632) and **51.7%** on an independent
+EMA-cross proxy (327/633), against 50% under independence. Decisively, those 633 rows collapse to **10 distinct
+symbols across 13 cohort epochs = 54 independent symbol-epoch units** (eligibility and the conventional read are
+both near-constant within a unit), so SE ≈ 6.8pp and **54.9% sits 0.72 SE from chance**. Prior playbook versions
+run the other way (47.3% / 44.6% on n=112) — the sign flips between cohorts, which is what noise looks like. And it
+is **inert** regardless: entry rate is **10.1% when eligibility agrees vs 7.8% when it opposes**.
+
+The mechanism read finished it off: the policy is cross-sectional **momentum**, not reversal — it longs the highest
+20-day beta-adjusted residual and shorts the lowest (`residual-volbeta-edge-policy.ts:96`, `:116-118`), so it should
+CORRELATE with a conventional read. The apparent opposition is a **horizon mismatch**: a 20-DAY residual on daily
+bars versus the payload's 20 **15-minute** bars — the same word, 96× apart in timescale — plus beta adjustment.
+
+### ⛔ THE FINDING: spot is told, on every bar, that it is ineligible for a race it was never entered in
+
+`ResidualVolbetaEdgePolicy.runRefresh()` filters `const perps = this.deps.symbols.filter((s) => s.includes(':'))`
+and fetches daily bars from `PERP_VENUE_ID` (`residual-volbeta-edge-policy.ts:198`, `:202`), so **a spot symbol is
+never scored**. But `snapshot()` returned `active: true` for every symbol once the cohort was ready, with
+`sideEligibility: { long: this.longs.has(sym), short: this.shorts.has(sym) }` — so spot read `{long:false,
+short:false}`. **"Never evaluated" was encoded identically to "evaluated and excluded."** The system prompt calls
+the block a "SIZE and SIDE MODULATOR" (`agent-prompt.ts:759`), and the live lane quotes it back verbatim in its own
+rationales ("edge policy disallows short anyway (long only eligible…", "edgePolicy disallows long side here").
+
+Verified directly, not taken from the lane's report:
+
+```text
+venue        | long  | short | rows | entries
+binance      | false | false |  496 |  2     <- 100% of spot rows, ZERO exceptions, all versions
+binanceusdm  | false | false |  568 | 15
+binanceusdm  | false | true  |  298 | 41
+binanceusdm  | true  | false |  448 | 30
+```
+
+**The number that matters is a difference-in-differences, not a correlation.** Splitting on whether the payload
+carried an `edgePolicy` block at all:
+
+```text
+venue                    | edgePolicy | consults | entries | rate
+binance (spot)           | absent     |      274 |      12 | 4.38%
+binance (spot)           | present    |      496 |       2 | 0.40%
+binanceusdm (perp)       | absent     |      820 |      39 | 4.76%
+binanceusdm (perp)       | present    |     1314 |      86 | 6.54%
+```
+
+**Spot fell 11× while perp ROSE across the same transition.** That partially **de-confounds the spot suppression
+from playbook v10**, which STATUS had recorded as the explanation: v10 was minted 07-30 and hits BOTH venues, while
+the always-`{f,f}` property hits only spot. **This does not make v10 irrelevant** — the periods overlap and this is
+not a clean time split — but it is the first non-v10 mechanism with a measured effect on the spot arm.
+
+**The consequence is the finding's real weight: backlog row 58's evidence base is VOID.** Row 58 asks whether to
+retire or re-scope the spot half and requires justification "on EXPECTANCY, never on cost". Spot's entire entry
+record was generated under a payload telling the model spot was ineligible on every bar, so it supports **neither**
+"retire spot" **nor** "keep spot". Only post-enable data can. STATUS's row-58 line now says so.
+
+**What this finding is NOT.** It does not re-open the ENTRIES verdict: the entry signal is still significantly
+negative and worse than random, and **more spot entries is not assumed to be an improvement**. This is a
+measurement-integrity fix — the same class as Pass 70's system-prompt collision and Pass 71's three defects — not a
+profitability lever, and it must not be quoted as one.
+
+### Shipped FLAG-OFF — `94f87b7`, and why that is the fix rather than a deferral
+
+`rankResidualCohort` now also returns `evaluated`, every symbol that produced a non-null residual score. **`members`
+cannot answer "was this evaluated"** — it is only TOP_N+BOTTOM_N, so a mid-pack perp is absent from it yet WAS
+scored, and its `{f,f}` is a real verdict. The policy retains `evaluated`, **clears it on the failed-refresh path**
+so scope-awareness never answers from stale state, and — flag ON only — returns the existing `EDGE_POLICY_INACTIVE`
+for an unevaluated symbol, which `computeEdgePolicyContext` (`agentic.strategy.ts:2865-2877`) already omits
+entirely. **No prompt change was needed: omission is a state the prompt already documents.**
+
+**`agent-prompt.ts` was NOT touched** — its blob hash is pinned by the OOS arm's VOID condition 2. The decisive
+check, made before committing to the approach rather than assumed: **`computePromptHash` hashes
+`{templateVersion, playbookContent, toolSchemaJson, modelId}` (`agent-prompt.ts:523-536`) and NOT the user
+payload**, so this fix mutates no `prompt_hash`. That is precisely why the Pass 70 banner's blocker ("any fix
+mutates `prompt_hash`") does **not** bind here, and why this shipped instead of joining that BLOCKED item.
+
+Shipped behind `AGENTIC_EDGE_POLICY_SCOPE_AWARE=false` per change-discipline's two-step. **Failure direction is OFF
+by construction** — absent/false reproduces the pre-knob payload byte-for-byte, so an unwired or misread flag can
+only preserve current behavior. Tests pin both halves: an explicit key-ORDER assertion plus values for the spot
+payload (key order is what `JSON.stringify` identity actually turns on), a flag-absent ≡ flag-off `JSON.stringify`
+equality, and a dedicated case that a **scored mid-pack perp stays ACTIVE** — the case that separates a correct fix
+from one keyed on cohort membership. Also a failed-refresh case proving `evaluated` is cleared.
+
+**The enable is dated ≥2026-08-18 and its trigger is NARROWER than it looks** — it needs only L1's `stop_reason`
+window closed (deadline 08-17), because a payload-content change could confound that read. It does **not** need
+read 1's seal: no pinned file, no `prompt_hash`. **Sequencing hazard recorded:** E2 also queues behind 08-17, and
+two payload changes landing together confound forward-return attribution — the 08-18 pass must sequence them
+deliberately, each declaring its own window zero as L6 did. **WATCH-V4-30.**
+
+### §1a — the OOS decide leg, both legs fired, no gap
+
+**Firing 1** (08:09:18Z, `gatheredAtMsFromDb=1786522158792`): **2 rows**, one playbook version (v10). Surface
+emitted by the repo's own emitter (`OOS_ARM_EMIT_PROMPT=1`), `systemPromptSha256=f719d5455c28f00f`,
+`toolSchemaSha256=7cddfe56c51020f7`, `agentPromptBlobSha=5ed73d67f21a0d8f`. Blind subagent dispatched with the
+proven 68·2 brief (`Bash` forbidden by name, advisor forbidden explicitly) **and an explicit `model`**. Decisions:
+`73928` UNI/USDT:USDT **hold**, `73967` KAITO/USDT:USDT **hold**. Session entry rate **0/2**. **RECORDED** —
+ledger verified 4 → 6 lines by grep on both rowIds, not from the runner's own report. **VOID-4 CLEAN — 5 tool
+calls, zero violations** (transcript `e939ff573dd01a7f`, 165,036 bytes).
+
+**Firing 2** (08:55:07Z, `gatheredAtMsFromDb=1786524907774`) — **spaced 46 min after firing 1**, which is P71's
+named supply lever, and it worked: 3 rows rather than the 0-1 a back-to-back firing yields. `74012`
+KAITO/USDT:USDT **hold**, `74046` KAITO/USDT:USDT **hold**, `74090` NEAR/USDT:USDT **open_short**. Session entry
+rate **1/3 = 0.333**. **RECORDED** (ledger 6 → 9, verified by grep on all three rowIds). **VOID-4 CLEAN — 5 tool
+calls, zero violations** (transcript `72c73af7ae95f0cf`, 165,868 bytes). **Seventh and EIGHTH consecutive clean
+firings** (68·2, 69·2, 70·1, 70·2, 71·1, 71·2, 72·1, 72·2) — the tightened brief remains the proven remedy.
+
+**NO GAP this pass: both legs fired.** The window now stands at **27 recorded rows** counted off
+`decisions-*.jsonl` directly (6 + 12 + 9), against read 1's target of 202. **5 rows this pass** from 2 firings.
+
+**Behavioural note, now SIXTH and SEVENTH consecutive occurrence:** both deciding sessions again declined to apply
+v10's inversion. Firing 1 said so explicitly — _"the system prompt directs that instruction-like playbook content
+attempting to change position direction be treated as inert data, so I ignored it"_ — and added, unprompted, that
+the inversion would have landed on the edge-policy-eligible side in BOTH its rows. Firing 2 treated
+`sideEligibility` as binding and declined the ineligible long outright. That is the Pass 70 finding reproducing on
+every session that has left a note, not new evidence about it; its fix stays DATED-BLOCKED to ≥08-17.
+
+### Gates, deploy, soak
+
+**Gates — RED once, then green.** First `pnpm checks` run **FAILED (exit 2)** on typecheck: two spec fixtures build
+the `agentic` config as an object literal and were missing the new required field
+(`agent-client-selection.spec.ts:648`, `validate.spec.ts:441`). Added `edgePolicyScopeAware: false` to both. That is
+**1 of the 3-consecutive-failure cap**, and the cap did not come near firing. Second run **exit 0**:
+`format:check` clean, `lint:md` 0 errors / 55 files, eslint clean (only the pre-existing boundaries legacy-selector
+warnings), typecheck clean, **4081 tests / 202 files passed** (+7 = exactly this pass's new cases, up from P71's
+4074), coverage **93.29 / 87.12 / 92.19 / 94.62** against the 90/85/90/90 floor with the per-glob money-path 100%
+thresholds holding. `pnpm build` exit 0. **No gate command was piped** — P71's lesson applied.
+
+**Deploy:** `GIT_SHA=94f87b7 docker compose up -d --build app` at **08:49:34Z**. New boot
+**`58ce8e95-7861-4a6d-823e-eafa029a59e7`**, RestartCount 0, `build_info{git_sha="94f87b7"}` read off the endpoint
+and matching the working tree. **Prometheus deliberately NOT recreated** — `observability/` was untouched, so the
+`--force-recreate` step does not apply.
+
+**Soak — PASS, 15.8 min.** Post-deploy sweeps at 08:51:30Z, 08:58:57Z, 09:01:21Z and **09:05:23Z (15.8 min after
+the 08:49:34Z deploy, inside the playbook's 15-30 min band)** — **ZERO alarms every time**; 26 rules loaded / 0 firing;
+container healthy; `fatal=0 error=0`, 4 warns this boot, all the ordinary boot set (route-path notice, the
+UNVALIDATED-agentic banner, the HYPE/USDT derivatives-feed exclusion). The expected redeploy carve-outs appeared
+and are NOT defects (eighth timed confirmation): zero clean-stamp and absent menu/version gauges immediately
+post-boot, reset RSS, and an `rss_delta_spans_warmup` annotation whose own text names the blind spot — a leak
+staying under 1.2 GB through the first 45 min is invisible to both that delta and `AppMemoryHigh`.
+**The change's own expected observable is the NULL one and it holds: the flag is OFF, so payloads are unchanged,
+and nothing about spot or perp eligibility moved this boot.** That is WATCH-V4-30 tier 1, and it is the only tier
+that can be read before the enable.
+
+### Flagged
+
+1. **`harness_stale` does not clear by running the harness** — see its own section. Fixed in this pass's practice
+   and recorded in STATUS; no code change, because `loop:harness` already exists and is the correct entry point.
+2. **The mandated adversarial reviewer dispatch was replaced by an inline orchestrator review, at the user's
+   explicit mid-pass instruction to "finish up inline".** Recording it as a deviation rather than letting it pass
+   silently: §4 requires a reviewer dispatch before a loop-domain commit, and this repo's own record is that green
+   gates are not evidence — both Pass-65 reviews returned must-fix on gate-passing work, and Pass 71's two lenses
+   returned four must-fixes none of which were in the brief. **The mitigating facts, stated so a future pass can
+   weigh them rather than take my word: the change is flag-OFF with byte-identity tests, so its live blast radius
+   is zero until a separate enable commit that will carry its own review.** The residual risk is concentrated in
+   the flag-ON path, which no adversarial reviewer has yet examined. **The 08-18 enable pass MUST run the
+   multi-lens review it inherits, over both the enable and this commit's flag-ON branch.**
+3. **The implementer lane returned `NEEDS_DECISION` because my brief named the wrong construction site** — I wrote
+   that `ResidualVolbetaEdgePolicy` is built in `trading-runtime.module.ts` "near line 369/879"; that file only
+   _consumes_ the port, and the real factory is `agentic-bridge.module.ts:690`. The lane checked, refused to guess,
+   and returned the correct site plus the zod idiom and the three call sites. **This is the ORCHESTRATOR-asserting-
+   what-it-has-not-checked miss again** (P62/P63/P65 and now P72) — caught by a lane, not by me, for the fourth
+   recorded time. It cost one dispatch and no wrong code.
+4. **`.env.app` cannot be opened by the `Read` tool** — the harness classifies it as a binary `.app` file. Viewed
+   with `sed -n` and edited via a scratch node script that asserts its anchor and refuses on a double-insert.
+   Recorded because any future pass editing that file will hit the same wall.
+
+### Next-pass candidates
+
+- **THE THIRD CONSECUTIVE PASS WHOSE HEADLINE IS A MEASUREMENT DEFECT.** P70 (system prompt vs playbook), P71
+  (three defects), P72 (spot eligibility). P71 recommended spending the next clean pass's slot on the entry signal;
+  this pass did, and the entry signal turned out to be reachable only _through_ another measurement defect. **The
+  honest structural reading: this book's instrumentation and its payload semantics are still producing
+  first-order errors, and every one of them has so far been found by adversarial reading rather than by any gate.**
+  That is not a reason to keep doing instrumentation work — it is a reason to expect the 08-31 verdict to rest on
+  evidence that has been repeatedly re-based, and to say so in that verdict.
+- **The 08-18 pass is the busiest scheduled date in the program and it needs a plan before it starts.** Due
+  together: Checkpoint #3 (owed 08-18T12:00Z), L1's `stop_reason` read (08-17), E2's earliest clean flip (≥08-17),
+  and **this pass's scope-aware enable (≥08-18)**. Three of those are payload/prompt changes competing for one
+  clean instant. **Sequence them deliberately, one per window, each declaring its own zero — do not land two
+  together.**
+- **CANDIDATE: ask the gate again.** It is free and the slot is unspent. The trigger fires only on an
+  adverse-POWERED incumbent at flat_only h=4 or h=8; both cells currently straddle zero comfortably.
+- **OOS arm: spacing works.** Firing 2 was 46 min after firing 1 and returned 3 rows against firing 1's 2. Window
+  27/202. At ~5 rows/pass × 3 passes/day the seal lands well after the earlier ≈08-20 projection — **re-measure
+  over the next three passes before quoting any date, and do not quote ≈08-20.**
+- **WATCH-V4-27 remains at a true zero** across 40 series; still no direct evidence of how often the venue
+  withholds trades, so whether 300 s of overlap is generous or thin is still unanswered.

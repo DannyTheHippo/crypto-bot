@@ -1264,6 +1264,65 @@ rate reported alongside the write rather than used as a gate.
 
 **Resolution deadline:** read 1's first seal.
 
+### WATCH-V4-30 — the edge policy stopped telling spot it was ineligible for a race it never entered (2026-08-12, Pass 72)
+
+**Shipped FLAG-OFF (`AGENTIC_EDGE_POLICY_SCOPE_AWARE=false`).** `ResidualVolbetaEdgePolicy` ranks PERPS
+ONLY — `runRefresh()` filters `s.includes(':')` and fetches from `PERP_VENUE_ID`
+(`residual-volbeta-edge-policy.ts:198`, `:202`) — so a spot symbol is never scored. But `snapshot()`
+returned `active: true` for every symbol once the cohort was ready, with
+`sideEligibility: { long: this.longs.has(sym), short: this.shorts.has(sym) }`, so spot read
+`{long:false, short:false}`: **"never evaluated" encoded identically to "evaluated and excluded."** The
+system prompt tells the model to treat the block as a "SIZE and SIDE MODULATOR"
+(`agent-prompt.ts:759`), so spot was told, on every bar, that neither side was permitted.
+`rankResidualCohort` now returns its `evaluated` universe, the policy retains it, and — flag ON only —
+an unevaluated symbol returns the existing `EDGE_POLICY_INACTIVE`, which `computeEdgePolicyContext`
+(`agentic.strategy.ts:2865-2877`) already omits entirely. **No prompt change: omission is a state the
+prompt already documents.** `agent-prompt.ts` was NOT touched — its blob hash is pinned by the OOS arm's
+VOID condition 2.
+
+**Why this is measurement integrity first, not "make spot trade."** Spot bars carrying the block enter at
+**0.40% (2/496)**; spot bars from BEFORE the block existed enter at **4.38% (12/274)**; perp went
+**4.76% (39/820) → 6.54% (86/1314)** across the same transition. The venue that always reads
+`{f,f}` collapsed while the venue with real eligibility improved — a difference-in-differences that
+**partially de-confounds the spot suppression from v10**, which STATUS had recorded as the explanation
+(v10 was minted 07-30 and hits BOTH venues; the `{f,f}`-always property hits only spot). **The
+consequence: backlog row 58's evidence base is VOID** — spot's entry record was generated under a payload
+telling the model spot was ineligible, so it cannot support "retire spot" OR "keep spot." Only
+post-enable data can. **This does NOT re-open the ENTRIES verdict** (`verdicts.md`): the entry signal is
+still significantly negative, and more spot entries is not assumed to be an improvement.
+
+**Expected-positive, in two tiers.** *Flag OFF (now):* payloads byte-identical — spot still reports
+`active:true` + `{f,f}`, guarded by an explicit key-order + value assertion, plus a flag-absent ≡ flag-off
+`JSON.stringify` equality test. *Flag ON (post-enable):* spot consult rationales citing edge-policy
+ineligibility fall to ~0 (the live lane quotes it verbatim — "edge policy disallows short anyway",
+"edgePolicy disallows long side here"), and spot entry rate on consulted rows moves off the 0.40%/496
+baseline in EITHER direction — this watch is symmetric, a rise is not a success and a fall is not a
+failure.
+
+**Named defect outcomes:**
+
+- **Byte-identity broken while the flag is off** ⇒ the two-step leaked; the enable happened by accident.
+  This is the one outcome that invalidates the ship itself.
+- **A scored mid-pack PERP going INACTIVE** ⇒ the guard keyed on cohort membership instead of the
+  evaluated universe. `members` is only TOP_N+BOTTOM_N; a mid-pack perp's `{f,f}` is a REAL verdict and
+  must survive. Covered by a dedicated case.
+- **Perp payloads changing at enable** ⇒ the scope test is wrong; only spot should move.
+- **A symbol staying "in scope" across a failed refresh** ⇒ `evaluated` was not cleared on the `!ranked`
+  path and scope-awareness is answering from stale state.
+- **Spot entry rate unmoved after enable** ⇒ the eligibility block was NOT the suppressing mechanism;
+  record it and hand row 58 back to the v10 confound rather than re-deriving this.
+
+**Enable trigger — narrower than it looks, do not over-block it.** The enable needs only **L1's
+`stop_reason` window closed (≥2026-08-18, that read filed)**, because a payload-content change could
+confound it. It does **NOT** need read 1's first seal: `computePromptHash` covers
+`{templateVersion, playbookContent, toolSchemaJson, modelId}` (`agent-prompt.ts:523-536`) and NOT the user
+payload, so this fix mutates no `prompt_hash` and touches no pinned file — the compound trigger that binds
+the Pass 70 `:762` fix does not bind this one. **Sequencing hazard:** E2 (`AGENTIC_DERIVATIVES_V2_ENABLED`)
+also queues behind 08-17. Two payload changes landing together confound forward-return attribution — the
+08-18 pass must sequence them deliberately, each declaring its own window zero as L6 did.
+
+**Resolution deadline:** 2026-08-26 (one week past the earliest clean enable).
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

@@ -974,11 +974,18 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
 
   // Deliverable B: five DB integrity invariants (W1, I1, I2, I4, W3). All ALARMS, all fail CLOSED —
   // each guards a named corruption mode where an unreadable answer is itself the finding (see each
-  // section below). Deliberately NOT gated on containerHealthy or bootMatches, for the same reason
+  // section below), with W1's single incomparable-id-space annotation the one derived carve-out.
+  // Deliberately NOT gated on containerHealthy or bootMatches, for the same reason
   // classifyVenueRejectRates above is not: these read DURABLE Postgres state that stays true whether
   // this pass's container is healthy right now or not, so gating on container health would let an
   // unhealthy container suppress the very finding most likely to accompany one.
-  alarms.push(...classifyFillOrdering(probes.fillOrdering).alarms);
+  {
+    const fillOrderingVerdict = classifyFillOrdering(probes.fillOrdering);
+    alarms.push(...fillOrderingVerdict.alarms);
+    annotations.push(...fillOrderingVerdict.annotations);
+  }
+  // Disclosure only, and unconditional so an absent probe cannot pass as clean (classifyFillIngestLag).
+  annotations.push(...classifyFillIngestLag(probes.fillIngestLag).annotations);
   alarms.push(...classifyUnresolvedFillIntents(probes.unresolvedFillIntents).alarms);
   alarms.push(...classifyCumQtyMismatch(probes.cumQtyMismatch).alarms);
   alarms.push(...classifyUnconvertibleFillFees(probes.unconvertibleFillFees).alarms);
@@ -1510,11 +1517,13 @@ export function classifyPromotionEvidence(probe) {
 }
 
 // ── Deliverable B: five DB integrity invariants ─────────────────────────────────────────────────
-// None of these existed before this pass. All five are ALARMS and fail CLOSED — each guards a named
-// corruption mode where an unreadable answer is itself the finding, the opposite direction from
-// Deliverable A above (a measurement/veto-only gate) and matching classifyVenueRejectRates' own
-// fail-CLOSED argument (rules/code-hygiene.md: measurement/veto-only gates fail OPEN, safety/
-// integrity gates fail CLOSED).
+// All five are ALARMS and fail CLOSED — each guards a named corruption mode where an unreadable
+// answer is itself the finding, the opposite direction from Deliverable A above (a measurement/
+// veto-only gate) and matching classifyVenueRejectRates' own fail-CLOSED argument
+// (rules/code-hygiene.md: measurement/veto-only gates fail OPEN, safety/integrity gates fail
+// CLOSED). EXACTLY ONE branch across the five is not CLOSED — W1's incomparable-id-space annotation,
+// derived in its own header — and it is a carve-out for a question that is UNASKABLE, never one left
+// unanswered.
 //
 // EXPLICITLY NOT ALARMS, and why — so a later pass does not "helpfully" promote them:
 //   I3 (recomputing the round-trip walk must reproduce the promotion gauges — verified byte-exact
@@ -1526,22 +1535,74 @@ export function classifyPromotionEvidence(probe) {
 //   and would be ignored, which is worse than not having it. Its DRIFT is nonetheless the cheapest
 //   available proxy for the demo mark and should be recorded per pass as a measurement, not a gate.
 
-// ── W1: out-of-order fill ingestion ─────────────────────────────────────────────────────────────
+// ── W1: the fill sequence the promotion walk receives must run in venue execution order ─────────
 // The load-bearing one. walkRoundTrips (domain/trading/risk/round-trips.ts) walks each
-// (strategyId, symbol) group's fills in the order they ARRIVE in its input array — that array is
-// built by PromotionStatsRepository ordering fills by ingested_at, on the assumption that reading
-// rows in ingestion order reproduces venue execution order. `fills` carries no append-only trigger:
-// drizzle/0001_v3_append_only_hardening.sql hardens exactly five tables (audit_log, order_events,
-// funding_events, funding_payments, experiments) and fills is created UNTRIGGERED at
-// drizzle/0000_v3_initial.sql:114 — nothing in the DB enforces that a later-ingested fill also
-// carries a later venue_timestamp within its group. Every round-trip count and window feeding
-// Deliverable A's tuple (and the live PromotionReadinessService verdict) rests on this prefix-
-// determinism holding, and nothing before this pass checked it. Measured live at authoring time:
-// 0 violations.
+// (strategyId, symbol) group's fills in the order they ARRIVE in its input array, and that array is
+// built by PromotionStatsRepository.fillsForMode ordering `venue_timestamp, fill_id`
+// (promotion-stats.repository.ts:83). So the probe reads the SAME two keys: a check that sorts by
+// anything else — ingested_at, say — answers a question no consumer asks, and would pass while the
+// consumer's own sequence was wrong.
+//
+// WHY venue_trade_id IS THE PROXY for venue execution order, and the assumption that carries it: the
+// venue mints trade ids monotonically per (mode, venue, symbol) id-space — the same key `fills`
+// declares UNIQUE at trading.schema.ts:164 — so within one id-space a later trade carries a larger
+// id. The check therefore asserts that reading a group under the production keys yields a strictly
+// increasing venue_trade_id, and it only ever compares a row against a predecessor in ITS OWN
+// id-space, because the WINDOW itself partitions by (strategy_id, symbol, mode, venue). Partitioning
+// any coarser was a live defect, not a style point: with (strategy_id, symbol) alone, a row from
+// another mode sitting between two same-id-space rows made BOTH pairs merely `incomparable`, so an
+// inversion 100 → 'paper-trade-1' → 50 read as 0 violations and annotated (measured `0|0|2|3`
+// against `1|1|0|3` for the partitioned form) — the check going blind in exactly the mixed-mode
+// state the incomparable branch below exists to anticipate.
+//
+// ASSUMPTION, recorded so a later venue that breaks it is a known consideration rather than a
+// surprise: a venue whose trade ids are not per-symbol monotonic (a
+// random or hashed id) would read every pair as a violation — such a venue must be added to the
+// incomparable branch below, not have this check weakened. `<=` rather than `<` because the UNIQUE
+// index makes a duplicate id within an id-space impossible, so the stricter form is free and catches
+// a dedupe failure too.
+//
+// WHAT MAKES IT NON-VACUOUS (measured live 2026-08-12): 48 of 528 rows sit in 14 same-millisecond
+// venue_timestamp buckets — 9.1%. Inside a tie the production sort falls through to `fill_id`, which
+// is INSERTION order, so a tie is precisely where the sequence handed to the walk can diverge from
+// venue sequence. All 34 tie pairs resolve correctly today, and nothing else in this sweep covers
+// them.
+//
+// SCOPED to PROMOTION_EVIDENCE_EPOCH (the runner passes the bound; absent ⇒ all time, matching the
+// consumer's optional sinceMs). Note what the bound does and does NOT reproduce: fillsForMode also
+// filters `mode = <DEMO_MODE>` and this reads every mode, so the probe judges each id-space's own
+// subsequence under the production sort and the gate reads the demo one of exactly those sequences.
+// The epoch is here for two reasons: it keeps the check pointed at the era the promotion gate
+// judges, and it keeps a genuine violation from becoming a permanent journal row that blocks
+// playbook §3 forever — an alarm that can never clear is not a gate, it is a wedge.
+//
+// COUPLING a later pass must not reach for casually: moving the epoch forward is the ONLY lever that
+// clears a genuine violation, and it is the same knob the promotion EVIDENCE window rides on
+// (promotion-evaluator.ts:108). Clearing a W1 wedge that way discards accumulated round-trip
+// evidence as a side effect — an owner decision about evidence, never a §3 unblocking move.
 //
 // FAILS CLOSED: an unreadable ordering check is not the same as a proven-ordered journal.
+//
+// THE ONE NON-CLOSED BRANCH, and why it is not a loosening — the same distinction the
+// reconcile_halt_in_boot bootId carve-out above draws. Paper mints its own trade ids
+// ('paper-trade-N', PaperAdapter) off a counter that RESTARTS AT 1 on every reboot
+// (trading.schema.ts:129-136), and paper, testnet and live share one database. Such an id is not
+// merely unread — it is not orderable in principle, and no later read of this probe can ever make
+// 'paper-trade-7' comparable to its neighbour. So those pairs are counted `incomparable` and
+// DISCLOSED, never alarmed: alarming would raise a blocking defect no pass could ever answer.
+// Positive findings still stand — a violation among the comparable pairs alarms exactly as before
+// even when incomparable pairs exist alongside it, the same discipline alert_window_unverified
+// applies to a weakened control.
+//
+// WEAKENED IS NOT DISABLED, and only the first of the two may pass quietly. If EVERY adjacent pair
+// is incomparable the control's coverage is ZERO while the alarm list reads clean, and §3 blocks on
+// alarms only — the same "an empty read is not a pass" refusal negative_read_void makes above. That
+// state ALARMS (`fill_ordering_void`, fail CLOSED): it says the invariant went unproven, not that
+// any particular pair is unaskable. Gated on `incomparable > 0` rather than `checked > 1` so a young
+// journal of singleton groups — no adjacency to judge at all — does not read as a disabled control.
 export function classifyFillOrdering(probe) {
   const alarms = [];
+  const annotations = [];
   try {
     if (!probe || probe.ok !== true || !probe.value) {
       alarms.push({
@@ -1551,33 +1612,57 @@ export function classifyFillOrdering(probe) {
           `(${(probe && probe.error) || 'no probe result'}) — fails CLOSED: an unread ordering ` +
           'check is not evidence the journal is ordered',
       });
-      return { alarms };
+      return { alarms, annotations };
     }
-    const { violations, checked } = probe.value;
+    const { violations, compared, incomparable, checked } = probe.value;
+    const counts = [violations, compared, incomparable, checked];
     if (
-      !Number.isFinite(violations) ||
-      !Number.isFinite(checked) ||
-      violations < 0 ||
-      checked < 0 ||
-      violations > checked
+      !counts.every((n) => Number.isFinite(n)) ||
+      counts.some((n) => n < 0) ||
+      violations > compared ||
+      compared + incomparable > checked
     ) {
       alarms.push({
         kind: 'fill_ordering_unreadable',
         detail:
-          `incoherent violations/checked pair (violations=${String(violations)}, ` +
-          `checked=${String(checked)}) — the query did not answer the question, fails CLOSED`,
+          `incoherent count set (violations=${String(violations)}, compared=${String(compared)}, ` +
+          `incomparable=${String(incomparable)}, checked=${String(checked)}) — the query did not ` +
+          'answer the question, fails CLOSED',
       });
-      return { alarms };
+      return { alarms, annotations };
     }
     if (violations > 0) {
       alarms.push({
         kind: 'fill_ordering_violation',
         detail:
-          `${violations} of ${checked} fill(s), grouped by (strategy_id, symbol) and read in ` +
-          'ingested_at order, carry a venue_timestamp EARLIER than the fill read immediately before ' +
-          "them in the same group — walkRoundTrips' (domain/trading/risk/round-trips.ts) prefix-" +
-          'determinism assumption is violated for at least one group, which can corrupt every ' +
-          'round-trip count and window this sweep and the live promotion gate report',
+          `${violations} of ${compared} comparable fill pair(s) (of ${checked} fills read), grouped ` +
+          'by (strategy_id, symbol, mode, venue) and read under the production ordering ' +
+          '`venue_timestamp, fill_id` (PromotionStatsRepository.fillsForMode), carry a ' +
+          'venue_trade_id that does not increase against the fill read immediately before them in ' +
+          'that id space — the sequence walkRoundTrips (domain/trading/risk/round-trips.ts) receives is NOT ' +
+          'venue execution order, so every round-trip count and window this sweep and the live ' +
+          'promotion gate report is derived from a mis-ordered walk',
+      });
+    }
+    if (incomparable > 0 && compared === 0) {
+      alarms.push({
+        kind: 'fill_ordering_void',
+        detail:
+          `NONE of the ${incomparable} adjacent fill pair(s) in ${checked} fills read were ` +
+          'comparable, so W1 proved nothing at all this sweep — a fully DISABLED control, not a ' +
+          'weakened one, and it would otherwise leave an empty alarm list reading as a clean ' +
+          'journal. Fails CLOSED for the same reason every other invariant here does: an ordering ' +
+          'the sweep never judged is not an ordering it verified',
+      });
+    } else if (incomparable > 0) {
+      annotations.push({
+        kind: 'fill_ordering_incomparable',
+        detail:
+          `${incomparable} of ${checked} fill(s) could not be ordered against their predecessor — a ` +
+          "non-numeric venue_trade_id (paper's 'paper-trade-N', which restarts at 1 each reboot). " +
+          'Disclosed, not alarmed: those pairs are unaskable rather than unanswered, and no later ' +
+          `read can resolve them. The ${compared} comparable pair(s) were still judged, and any ` +
+          'violation among them alarms.',
       });
     }
   } catch (err) {
@@ -1588,7 +1673,87 @@ export function classifyFillOrdering(probe) {
         'fails CLOSED, because an integrity check that cannot run is not one that passed',
     });
   }
-  return { alarms };
+  return { alarms, annotations };
+}
+
+// ── The ingest-lag DISCLOSURE, which is a different question from W1 above ───────────────────────
+// A fill can land carrying a venue_timestamp EARLIER than one already journalled in its group — a
+// heal/backfill path recovering a fill after a newer one was written. That does NOT corrupt the
+// walk: fillsForMode sorts by (venue_timestamp, fill_id), so the walk's input is unaffected by
+// arrival order entirely, and W1 above is the check on the property that would actually corrupt it.
+// What it does mean is that a round-trip output published BEFORE the late arrival is no longer
+// reproducible from the row set that produced it — the fills-side instance of the reproducibility
+// concern promotion-stats.repository.ts:98-112 already documents for the cost fold.
+//
+// ANNOTATION, FAILS OPEN as a measurement must (rules/code-hygiene.md): an unread probe is a named
+// disclosure, never a silent pass and never a blocking alarm. Mandatory in the promAlertsSince shape
+// above — the generic probe-failure loop only visits keys that EXIST, so an absent probe would
+// otherwise vanish and read as a clean digest. It covers ABSENCE only, for the same reason the other
+// mandatory-probe guards in this file do: a probe that ran and FAILED is already named once by that
+// generic loop, and a second identical annotation is duplication, not disclosure. The incoherent
+// ok:true shapes below stay this classifier's own — the generic loop cannot see them.
+// The runner bounds the read to ALERT_LOOKBACK_MS so the signal self-clears: `fills` is immutable in
+// practice, so an unbounded count could only ever rise.
+export function classifyFillIngestLag(probe) {
+  const annotations = [];
+  try {
+    if (!probe) {
+      annotations.push({
+        kind: 'probe_failed',
+        probe: 'fillIngestLag',
+        detail: 'no result — retroactive fill arrivals were never read this sweep',
+      });
+      return { annotations };
+    }
+    if (probe.ok !== true) return { annotations };
+    if (!probe.value) {
+      annotations.push({
+        kind: 'probe_failed',
+        probe: 'fillIngestLag',
+        detail: 'the probe reported success with no value — no reading, not a clean one',
+      });
+      return { annotations };
+    }
+    const { retroactive, checked, windowMs } = probe.value;
+    if (
+      !Number.isFinite(retroactive) ||
+      !Number.isFinite(checked) ||
+      retroactive < 0 ||
+      checked < 0 ||
+      retroactive > checked
+    ) {
+      annotations.push({
+        kind: 'probe_failed',
+        probe: 'fillIngestLag',
+        detail:
+          `incoherent retroactive/checked pair (retroactive=${String(retroactive)}, ` +
+          `checked=${String(checked)}) — no reading, not a clean one`,
+      });
+      return { annotations };
+    }
+    if (retroactive > 0) {
+      const hours = Number.isFinite(windowMs) ? (windowMs / 3_600_000).toFixed(0) : '?';
+      annotations.push({
+        kind: 'fill_ingest_lag',
+        detail:
+          `${retroactive} of ${checked} fill(s) ingested in the last ${hours}h arrived carrying a ` +
+          'venue_timestamp EARLIER than a fill journalled before them in their (strategy_id, symbol) ' +
+          `group WITHIN THAT SAME ${hours}h window (a predecessor ingested before the window is out ` +
+          'of this read, so this is a floor, not a total) — a heal/backfill recovery. This is NOT a ' +
+          'walk-corruption claim: fillsForMode sorts ' +
+          'by (venue_timestamp, fill_id), so the sequence walkRoundTrips receives is unaffected by ' +
+          'arrival order (W1 is the check on that property). What it does say is that round-trip ' +
+          'outputs published before these arrivals are no longer reproducible from the earlier row set',
+      });
+    }
+  } catch (err) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'fillIngestLag',
+      detail: `the fill-ingest-lag classifier threw: ${err instanceof Error ? err.message : String(err)} — no reading`,
+    });
+  }
+  return { annotations };
 }
 
 // ── I1: fills.intent_id must never be NULL ──────────────────────────────────────────────────────

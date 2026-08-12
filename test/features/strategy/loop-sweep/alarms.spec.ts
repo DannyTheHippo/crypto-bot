@@ -90,6 +90,7 @@ interface Probes {
   // optional/untyped here, same convention as orderRejects above: their own behaviour is pinned in
   // db-integrity.spec.ts / promotion-evidence.spec.ts, this file only needs them to stay silent.
   fillOrdering?: Record<string, unknown>;
+  fillIngestLag?: Record<string, unknown>;
   unresolvedFillIntents?: Record<string, unknown>;
   cumQtyMismatch?: Record<string, unknown>;
   unconvertibleFillFees?: Record<string, unknown>;
@@ -192,7 +193,16 @@ function baseProbes(): Probes {
     // for the same reason orderRejects is: every one of these fails CLOSED, so an absent probe would
     // alarm and every unrelated test in this file would carry a spurious defect. Own behaviour pinned
     // in db-integrity.spec.ts.
-    fillOrdering: { ok: true, value: { violations: 0, checked: 100 } },
+    fillOrdering: {
+      ok: true,
+      value: { violations: 0, compared: 90, incomparable: 0, checked: 100 },
+    },
+    // The ingest-lag disclosure is unconditional (an absent probe annotates), so its quiet shape
+    // belongs in the base bag alongside the five. Pinned in db-integrity.spec.ts.
+    fillIngestLag: {
+      ok: true,
+      value: { retroactive: 0, checked: 10, windowMs: 12 * 60 * 60 * 1000 },
+    },
     unresolvedFillIntents: { ok: true, value: { count: 0 } },
     cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
     unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },

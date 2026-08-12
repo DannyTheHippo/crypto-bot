@@ -339,7 +339,16 @@ function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
       // Deliverable B: clean readings for all five DB integrity invariants — every one fails CLOSED
       // (an absent probe alarms), same reasoning as orderRejects above. Own behaviour pinned in
       // db-integrity.spec.ts.
-      fillOrdering: { ok: true, value: { violations: 0, checked: 100 } },
+      fillOrdering: {
+        ok: true,
+        value: { violations: 0, compared: 90, incomparable: 0, checked: 100 },
+      },
+      // Unconditional disclosure (an absent probe annotates) — quiet shape here, pinned in
+      // db-integrity.spec.ts.
+      fillIngestLag: {
+        ok: true,
+        value: { retroactive: 0, checked: 10, windowMs: ALERT_LOOKBACK_MS },
+      },
       unresolvedFillIntents: { ok: true, value: { count: 0 } },
       cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
       unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },

@@ -733,33 +733,97 @@ function gather() {
   // classifyConfigSnapshotDrift (loop-sweep-core.mjs) for the derivation, the fail-CLOSED argument,
   // and each check's own header. This runner half only gathers the raw counts.
 
-  // W1: out-of-order fill ingestion. `fill_id` is the tiebreak, not a second ordering key — it is
-  // the IDENTITY column's own monotonic insertion order, so ties on `ingested_at` (bulk inserts in
-  // one transaction all share a `now()` timestamp) still resolve to true insertion order. INNER JOIN
-  // to order_intents deliberately drops NULL-intent fills from THIS check (I1 below owns those) —
-  // same exclusion walkRoundTrips itself applies via its `strategyId === null` filter.
+  // W1: does the fill sequence the promotion walk RECEIVES run in venue execution order? The read
+  // reproduces PromotionStatsRepository.fillsForMode's ORDER BY verbatim — `venue_timestamp,
+  // fill_id` (promotion-stats.repository.ts:83) — because a check that sorts by any other key
+  // answers a question no consumer asks. It does NOT reproduce that method's WHERE: fillsForMode
+  // filters `mode = <DEMO_MODE>` and this reads every mode, so the probe covers each id-space's own
+  // subsequence under the production sort, of which the gate reads the demo one. `venue_trade_id` is
+  // the proxy for venue sequence, minted per (mode, venue, symbol) — exactly the uniqueness key at
+  // trading.schema.ts:164 — so THAT tuple, not (strategy_id, symbol) alone, is the partition: a
+  // window any coarser interleaves two id-spaces and reads a genuine inversion as merely
+  // unorderable. INNER JOIN to order_intents deliberately drops NULL-intent fills from THIS check
+  // (I1 below owns those) — same exclusion walkRoundTrips applies via its `strategyId === null`
+  // filter. The `~ '^[0-9]+$'` gate yields NULL rather than casting, so a non-numeric id (paper's
+  // 'paper-trade-N') cannot abort the whole probe; the core reads those as `incomparable`.
   probes.fillOrdering = (() => {
+    // `VAR=` means UNSET in this stack's env_file convention (root CLAUDE.md), so an empty value is
+    // an absent bound rather than an epoch of 0 — matching the consumer, whose sinceMs is optional.
+    // The shape gate mirrors the app's own zod refinement (environment.config.ts:526-534) rather
+    // than bare Date.parse, which accepts a date-only '2026-07-21' and silently resolves it to
+    // midnight UTC — a window hours off the owner's instant, which the gate refuses at construction.
+    const epochRaw = envValue(containerEnv, 'PROMOTION_EVIDENCE_EPOCH');
+    let epochPredicate = '';
+    if (epochRaw !== null && epochRaw !== '') {
+      const epochMs = Date.parse(epochRaw);
+      if (
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(epochRaw) ||
+        !Number.isFinite(epochMs)
+      ) {
+        return {
+          ok: false,
+          error: `unparseable PROMOTION_EVIDENCE_EPOCH (${epochRaw}) — the row set this check reads is undefined`,
+        };
+      }
+      epochPredicate = ` where f.venue_timestamp >= ${epochMs}`;
+    }
     const row = parsePsqlRow(
       psql(
         'select ' +
-          'count(*) filter (where prev_ts is not null and f_ts < prev_ts) as violations, ' +
+          'count(*) filter (where comparable and tid <= prev_tid) as violations, ' +
+          'count(*) filter (where comparable) as compared, ' +
+          'count(*) filter (where prev_fill is not null and not comparable) as incomparable, ' +
+          'count(*) as checked ' +
+          'from (select prev_fill, tid, prev_tid, ' +
+          '(prev_fill is not null and tid is not null and prev_tid is not null) as comparable ' +
+          'from (select ' +
+          "case when f.venue_trade_id ~ '^[0-9]+$' then f.venue_trade_id::numeric end as tid, " +
+          "lag(case when f.venue_trade_id ~ '^[0-9]+$' then f.venue_trade_id::numeric end) " +
+          'over w as prev_tid, ' +
+          'lag(f.fill_id) over w as prev_fill ' +
+          'from fills f join order_intents i on i.intent_id = f.intent_id' +
+          epochPredicate +
+          ' window w as (partition by i.strategy_id, f.symbol, f.mode, f.venue ' +
+          'order by f.venue_timestamp, f.fill_id)) s) t',
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const [violations, compared, incomparable, checked] = row.value.map((c) => Number(c));
+    return [violations, compared, incomparable, checked].every((n) => Number.isFinite(n))
+      ? { ok: true, value: { violations, compared, incomparable, checked } }
+      : { ok: false, error: `unparseable fill-ordering counts: ${row.value.join('|')}` };
+  })();
+
+  // The ingest-lag DISCLOSURE (annotation only — see classifyFillIngestLag). Same groups read in
+  // ARRIVAL order instead, which no consumer uses: this measures whether a fill landed carrying a
+  // venue_timestamp earlier than one already journalled in its group, i.e. whether a round-trip
+  // output published before that arrival is still reproducible from the earlier row set. Bounded to
+  // the same ALERT_LOOKBACK_MS window every other retrospective probe here uses, so a heal/backfill
+  // event ages out instead of accumulating forever against an unbounded journal.
+  probes.fillIngestLag = (() => {
+    const row = parsePsqlRow(
+      psql(
+        'select ' +
+          'count(*) filter (where prev_ts is not null and f_ts < prev_ts) as retroactive, ' +
           'count(*) as checked ' +
           'from (' +
           'select f.venue_timestamp as f_ts, ' +
           'lag(f.venue_timestamp) over (' +
           'partition by i.strategy_id, f.symbol order by f.ingested_at, f.fill_id' +
           ') as prev_ts ' +
-          'from fills f join order_intents i on i.intent_id = f.intent_id' +
+          'from fills f join order_intents i on i.intent_id = f.intent_id ' +
+          `where f.ingested_at >= now() - interval '${ALERT_LOOKBACK_MS} milliseconds'` +
           ') t',
         { cwd: REPO_ROOT },
       ),
     );
     if (!row.ok) return row;
-    const violations = Number(row.value[0]);
+    const retroactive = Number(row.value[0]);
     const checked = Number(row.value[1]);
-    return Number.isFinite(violations) && Number.isFinite(checked)
-      ? { ok: true, value: { violations, checked } }
-      : { ok: false, error: `unparseable fill-ordering counts: ${row.value[0]}|${row.value[1]}` };
+    return Number.isFinite(retroactive) && Number.isFinite(checked)
+      ? { ok: true, value: { retroactive, checked, windowMs: ALERT_LOOKBACK_MS } }
+      : { ok: false, error: `unparseable fill-ingest-lag counts: ${row.value[0]}|${row.value[1]}` };
   })();
 
   // I1: fills.intent_id must never be NULL.

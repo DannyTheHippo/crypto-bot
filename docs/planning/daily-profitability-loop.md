@@ -163,12 +163,16 @@ Run each firing as follows:
    (`pnpm --dir <repo> vitest …` fails EACCES — `exec` is required, same as every other ad hoc vitest
    invocation in this playbook). Decides every ELIGIBLE, ANSWERED row via the file-backed replay path
    (zero network egress beyond what the dispatched subagent itself made in step 2), reports the count
-   of rows skipped for a missing answer, runs the caps-faithfulness and entry-rate VOID checks, and —
-   only if both are clean — appends one line per decided row to
-   `research/oos-arm/decisions-YYYY-MM-DD.jsonl` (dated off the gather instant). An ineligible row in
-   the candidates file (the gather step's own bound should prevent this, but the runner asserts it
-   independently) ABORTS the whole firing; a VOID caps/entry-rate check writes nothing. Either way, do
-   not retry the same candidates file — re-gather fresh at the next firing.
+   of rows skipped for a missing answer, runs the caps-faithfulness VOID check (VOID condition 1), and —
+   only if it is clean — appends one line per decided row to `research/oos-arm/decisions-YYYY-MM-DD.jsonl`
+   (dated off the gather instant). The entry rate is MEASURED and reported alongside the write, never a
+   per-firing gate: VOID condition 3(b) (the 65% absolute ceiling) is a seal-time condition over the
+   sealed rows (pre-registration § 1, 2026-08-04 amendment), already enforced where the sealed window
+   exists (`scripts/loop-oos-arm-core.mjs:436`) — a 1-6-row firing cannot carry that condition, and
+   voiding on it would select against entry-heavy firings. An ineligible row in the candidates file (the
+   gather step's own bound should prevent this, but the runner asserts it independently) ABORTS the
+   whole firing; a VOID caps-faithfulness check writes nothing. Either way, do not retry the same
+   candidates file — re-gather fresh at the next firing.
 
 **Sealing is a SEPARATE, later action this step does not perform.** Per the pre-registration's
 2026-08-10 amendment (§ Seal targets), a window is sealed only once it reaches its target row count
@@ -244,8 +248,10 @@ CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused an
 
 The sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
 authoritative list — re-verify against that file before citing, per this playbook's own standing
-rule). 24 kinds total as of this refresh (2026-08-06, Pass 65): the 12 liveness/venue alarms below,
-plus the 12 DB-integrity kinds in their own group further down.
+rule). 25 ALARM kinds total, re-verified against the core Pass 71 (2026-08-12): the 12 liveness/venue
+alarms below, plus the 13 DB-integrity kinds in their own group further down. ANNOTATION kinds are NOT
+in that 25 and are listed separately below — Pass 71 added two (`fill_ordering_incomparable`,
+`fill_ingest_lag`) and one alarm (`fill_ordering_void`, the 25th).
 
 **Liveness and venue-health alarms:**
 
@@ -306,16 +312,41 @@ plus the 12 DB-integrity kinds in their own group further down.
   produced an incoherent submits/rejects pair for a venue. This is a HEALTH probe and fails CLOSED,
   unlike the forward-return measurement/veto-only gates, which fail OPEN.
 
-**DB-integrity invariants (5 checks, 12 kinds, all fail CLOSED — added by `1f68d6f` on 2026-08-03):**
-distinct from the liveness alarms above, these guard the durable Postgres journal itself rather than
+**DB-integrity invariants (5 checks, 12 alarm kinds, all fail CLOSED except W1's one annotation branch
+— added by `1f68d6f` on 2026-08-03; W1 re-expressed Pass 71, 2026-08-12):** distinct from the liveness
+alarms above, these guard the durable Postgres journal itself rather than
 process/container liveness. I3 (recomputing the round-trip walk) and I5 (equity reconciliation) were
 deliberately left OUT of this set — I3 needs the TypeScript `walkRoundTrips` outside this stdlib-only
 `.mjs`'s reach, and I5 carries a built-in demo/live frame residual that is expected to fire.
 
-- `fill_ordering_violation` / `fill_ordering_unreadable` (W1) — a fill reads out of `venue_timestamp`
-  order within its `(strategy_id, symbol)` ingestion group, breaking `walkRoundTrips`'
-  (`domain/trading/risk/round-trips.ts`) prefix-determinism assumption — `fills` carries no
-  append-only trigger, so nothing in the DB enforces ingestion order matching venue execution order.
+- `fill_ordering_violation` / `fill_ordering_unreadable` (W1) — reading each `(strategy_id, symbol)`
+  group in the PRODUCTION order the walk actually receives (`venue_timestamp, fill_id` —
+  `promotion-stats.repository.ts:83`), a fill's `venue_trade_id` fails to exceed the one before it:
+  the sequence `walkRoundTrips` consumes is not in venue execution order, so that group's round-trip
+  boundaries and every count/window derived from them are computed off a mis-sequenced book. **What
+  this bullet said before Pass 71 was FALSE and had been since W1 was written** — it claimed the walk
+  input is ordered by `ingested_at` and that ingestion order was the invariant. It is not:
+  `PromotionStatsRepository` has ordered by `venue_timestamp, fill_id` since `1b45183` (2026-07-06),
+  four weeks BEFORE W1 was added, and `ingested_at` appears in `src/` exactly once, as a schema column
+  definition. The old check therefore asserted a property no consumer has ever depended on, and — being
+  unbounded over an immutable journal — its first true positive (2026-08-11, a heal path recovering six
+  trades 42s late) would have wedged §3 permanently. Bounded to `PROMOTION_EVIDENCE_EPOCH` so a real
+  violation has an owner-controlled clearing lever. The live risk it now covers: 48 of 528 rows sit in
+  14 same-millisecond `venue_timestamp` buckets where the sort's tiebreak is `fill_id` — INSERTION
+  order, which a backfill can invert.
+- `fill_ordering_incomparable` (W1, ANNOTATION not an alarm) — `venue_trade_id` is `text` and paper mints
+  `paper-trade-N` off a counter that RESTARTS AT 1 each reboot, so those ids are not monotonic even in
+  principle. These are counted and disclosed, never alarmed: the question is UNASKABLE rather than
+  unanswered, and no later read can resolve it — alarming would wedge §3 forever on the first paper
+  fill. A positive `violations` count still ALARMS even when `incomparable > 0`. Pairs are compared
+  only within one `(strategy_id, symbol, mode, venue)` id-space because the probe's window partitions
+  on all four; a coarser window let a foreign-mode row between two same-id-space fills turn a real
+  inversion into two `incomparable` pairs and no alarm (measured `0|0|2|3` vs `1|1|0|3`).
+- `fill_ordering_void` (W1, ALARM, fails CLOSED, added Pass 71) — adjacent pairs existed and NONE were
+  comparable, so W1 proved nothing at all that sweep. Weakened coverage annotates; ZERO coverage
+  alarms, because an empty alarm list would otherwise read as a verified journal (§C.9 negative-read
+  void). Gated on `incomparable > 0` rather than a raw row count so a young journal of singleton
+  groups — no adjacency to judge — is not mistaken for a disabled control.
 - `unresolved_fill_intent` / `unresolved_fill_intent_unreadable` (I1) — any `fills.intent_id IS NULL`,
   which silently trips `PromotionReadinessService`'s `UNRESOLVED_FILL` reason with no series naming
   which fills, how many, or since when.
@@ -338,8 +369,9 @@ by searching `loop-sweep-core.mjs` for `kind: 'probe_failed'` before treating it
 line range: this is the THIRD stale line-range citation on this exact sentence — first `:117-133`
 pointed at `extractCounters`, then `~L182-220` rotted as the file kept growing pass over pass (632
 lines when first measured, well past 1900 by 2026-08-03, and different again by the time this
-sentence is next read), and a line-range citation would only rot again from here. Verified this pass: 10 push
-sites, all into `annotations`, zero into `alarms`), but it still forces the same investigation
+sentence is next read), and a line-range citation would only rot again from here. Verified Pass 71
+(2026-08-12) by `grep -c "kind: 'probe_failed'"`: 15 push sites, all into `annotations`, zero into
+`alarms`), but it still forces the same investigation
 posture: a stack read errored, so nothing downstream of it can be trusted this sweep (§C.9
 negative-read-void discipline).
 
@@ -351,6 +383,15 @@ before the pass ran, leaving the sweep reporting one unrelated alarm and naming 
   in the last `ALERT_LOOKBACK_MS` (12h) and is no longer firing. Deliberately NOT alarms: a fixed
   lookback would make them sticky for 12h, and §3 blocks improvement work until an alarm clears, which
   history can never do. **A resolved critical is a defect investigation anyway** — treat it as one.
+- `fill_ingest_lag` (added Pass 71, 2026-08-12) — within the last `ALERT_LOOKBACK_MS` (12h), a fill was
+  journalled carrying a `venue_timestamp` EARLIER than a group-sibling already journalled before it, i.e.
+  a heal/backfill path recovered a late trade. **This describes the INGEST pipeline ONLY and makes no
+  claim about the walk** — the round-trip walk sorts by `(venue_timestamp, fill_id)` and is unaffected by
+  arrival order; W1 above owns the property that would actually corrupt it. Annotation, fails OPEN, and
+  window-bounded on purpose so it self-clears and cannot wedge §3 the way the pre-Pass-71 W1 did. It is
+  still worth reading: a late arrival means round-trip outputs published for that group before it landed
+  are no longer reproducible from the earlier row set (the fills-side instance of defect #150's `asOfMs`
+  concern).
 - `probe_voided` — a sibling of `probe_failed` with a distinct meaning: the probe itself SUCCEEDED, but
   a control it depends on did not, so its result carries no evidential weight. Today the only case is
   the alert history when the live rules probe failed: nothing is available to subtract currently-firing

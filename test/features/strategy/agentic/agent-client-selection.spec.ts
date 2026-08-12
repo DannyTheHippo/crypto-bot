@@ -669,6 +669,7 @@ describe('agenticEnv', () => {
       episodicMemoryEnabled: false,
       edgePolicyEnabled: false,
       edgePolicyFamily: 'none',
+      edgePolicyScopeAware: false,
       portfolioConsultEnabled: true,
       portfolioWindowMs: 4000,
       planMode: false,

@@ -100,6 +100,11 @@ export function rankResidualCohort(bySymbol: ReadonlyMap<string, DailyCloseSerie
   readonly members: readonly EdgePolicyCohortMember[];
   readonly longs: readonly string[];
   readonly shorts: readonly string[];
+  // Every symbol that produced a non-null residual score this refresh — the universe the ranking
+  // actually considered. `members` is only TOP_N+BOTTOM_N, so it cannot answer "was this evaluated":
+  // a mid-pack perp is absent from `members` yet was scored, and its {false,false} eligibility is a
+  // real verdict. Only symbols absent from THIS set were never judged at all.
+  readonly evaluated: readonly string[];
   readonly decisionTs: number;
 } | null {
   const btc = bySymbol.get(BTC_SYMBOL);
@@ -126,7 +131,7 @@ export function rankResidualCohort(bySymbol: ReadonlyMap<string, DailyCloseSerie
       return { symbol: sym, score: String(row.score), rank: TOP_N + i + 1 };
     }),
   ];
-  return { members, longs, shorts, decisionTs };
+  return { members, longs, shorts, evaluated: scored.map((x) => x.sym), decisionTs };
 }
 
 export interface ResidualVolbetaEdgePolicyDeps {
@@ -134,6 +139,11 @@ export interface ResidualVolbetaEdgePolicyDeps {
   readonly symbols: readonly string[];
   readonly now: () => EpochMs;
   readonly pinState: EdgeCohortPinState;
+  // Scope-awareness (AGENTIC_EDGE_POLICY_SCOPE_AWARE, default false). When true, a symbol this
+  // family never evaluated reports INACTIVE instead of {long:false, short:false}. Failure direction
+  // is OFF by construction: absent/false reproduces the pre-knob payload byte-for-byte, so an
+  // unwired or misread flag can only preserve current behavior, never silently change the payload.
+  readonly scopeAware?: boolean;
   readonly logger?: { warn(msg: string): void; log?(msg: string): void };
 }
 
@@ -146,6 +156,7 @@ export class ResidualVolbetaEdgePolicy implements EdgePolicyPort {
   private members: readonly EdgePolicyCohortMember[] = [];
   private longs = new Set<string>();
   private shorts = new Set<string>();
+  private evaluated = new Set<string>();
   private asOfMs: EpochMs | null = null;
   private lastRefreshMs = 0;
   private refreshInFlight: Promise<void> | null = null;
@@ -164,6 +175,15 @@ export class ResidualVolbetaEdgePolicy implements EdgePolicyPort {
       return EDGE_POLICY_INACTIVE;
     }
     const sym = String(args.symbol);
+    // This family ranks PERPS ONLY (runRefresh filters `s.includes(':')` and fetches from
+    // PERP_VENUE_ID), so a spot symbol is never scored. Reporting that as {long:false, short:false}
+    // encodes "never evaluated" identically to "evaluated and excluded", and the system prompt tells
+    // the model to read sideEligibility as a side modulator — so spot was told both sides were
+    // ineligible on every bar. Measured: spot entry rate 0.40% (2/496) with this block present vs
+    // 4.38% (12/274) before it existed, while perp rose 4.76% -> 6.54% across the same transition.
+    // EDGE_POLICY_INACTIVE makes computeEdgePolicyContext omit the block entirely (agentic.strategy
+    // .ts:2865-2877), which the prompt already documents as a supported state — no prompt change.
+    if (this.deps.scopeAware === true && !this.evaluated.has(sym)) return EDGE_POLICY_INACTIVE;
     return {
       active: true,
       familyId: 'residual20-volbeta',
@@ -227,6 +247,9 @@ export class ResidualVolbetaEdgePolicy implements EdgePolicyPort {
         this.members = [];
         this.longs = new Set();
         this.shorts = new Set();
+        // Cleared with the rest: a symbol evaluated by a PRIOR refresh must not stay "in scope"
+        // across a refresh that produced no ranking, or scope-awareness would answer from stale state.
+        this.evaluated = new Set();
         this.asOfMs = null;
         this.deps.pinState.clear();
         this.log.warn('residual20-volbeta cohort unavailable — EdgePolicy inactive');
@@ -236,6 +259,7 @@ export class ResidualVolbetaEdgePolicy implements EdgePolicyPort {
       this.members = ranked.members;
       this.longs = new Set(ranked.longs);
       this.shorts = new Set(ranked.shorts);
+      this.evaluated = new Set(ranked.evaluated);
       this.asOfMs = epochMs(ranked.decisionTs);
       this.deps.pinState.set([...ranked.longs, ...ranked.shorts]);
       this.log.log?.(

@@ -692,6 +692,7 @@ function isTestEnv(): boolean {
           symbols: config.strategy.symbols,
           now: () => clock.now(),
           pinState,
+          scopeAware: config.agentic.edgePolicyScopeAware,
           logger: {
             warn: (m) => Logger.warn(m, 'ResidualVolbetaEdgePolicy'),
             log: (m) => Logger.log(m, 'ResidualVolbetaEdgePolicy'),

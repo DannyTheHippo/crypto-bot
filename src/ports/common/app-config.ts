@@ -209,6 +209,9 @@ export interface AppConfig {
     // Selected trial family id ('none' when unset). Inert without a registered winner calculator
     // (createEdgePolicyPort fail-closed — see disabled-edge-policy.ts).
     edgePolicyFamily: EdgePolicyFamilyId;
+    // When true, a symbol the active family never evaluated reports INACTIVE rather than
+    // {long:false, short:false} — see the schema comment. Default false ⇒ byte-identical payload.
+    edgePolicyScopeAware: boolean;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

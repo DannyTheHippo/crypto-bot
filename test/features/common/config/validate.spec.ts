@@ -439,6 +439,7 @@ describe('validate()', () => {
         episodicMemoryEnabled: false,
         edgePolicyEnabled: false,
         edgePolicyFamily: 'none',
+        edgePolicyScopeAware: false,
         crossSymbolEnabled: false,
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,

@@ -470,6 +470,15 @@ const envSchema = z
       .default('none')
       .transform((v) => (v === '' ? 'none' : v))
       .pipe(z.enum([...EDGE_POLICY_TRIAL_FAMILY_IDS, 'none'])),
+    // Scope-aware eligibility (Pass 72): residual20-volbeta ranks PERPS ONLY, so a spot symbol was
+    // never scored — yet the payload reported {long:false, short:false}, encoding "never evaluated"
+    // identically to "evaluated and excluded". When true, an unevaluated symbol reports INACTIVE and
+    // the edgePolicy block is omitted. 'true'/'false' (not z.coerce.boolean(), same rationale as
+    // AGENTIC_TRACK_RECORD_ENABLED above). Default 'false' ⇒ payload byte-identical to pre-knob.
+    AGENTIC_EDGE_POLICY_SCOPE_AWARE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the up-to-5 concurrent
     // single-symbol propose() calls landing within one window into ONE Anthropic call via
     // BatchingAgentClient/submit_portfolio, instead of 5 separate submit_decision calls. 'true'/
@@ -998,6 +1007,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_EPISODIC_MEMORY_ENABLED: agenticEpisodicMemoryEnabled,
     AGENTIC_EDGE_POLICY_ENABLED: agenticEdgePolicyEnabled,
     AGENTIC_EDGE_POLICY_FAMILY: agenticEdgePolicyFamily,
+    AGENTIC_EDGE_POLICY_SCOPE_AWARE: agenticEdgePolicyScopeAware,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
     AGENTIC_PORTFOLIO_WINDOW_MS: agenticPortfolioWindowMs,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
@@ -1221,6 +1231,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       episodicMemoryEnabled: agenticEpisodicMemoryEnabled,
       edgePolicyEnabled: agenticEdgePolicyEnabled,
       edgePolicyFamily: agenticEdgePolicyFamily,
+      edgePolicyScopeAware: agenticEdgePolicyScopeAware,
       portfolioConsultEnabled: agenticPortfolioConsult,
       portfolioWindowMs: agenticPortfolioWindowMs,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,

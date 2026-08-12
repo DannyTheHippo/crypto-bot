@@ -255,6 +255,16 @@ AGENTIC_TRACK_RECORD_ENABLED=true
 # Owner override 2026-07-24: deploy residual20-volbeta EdgePolicy in demo
 AGENTIC_EDGE_POLICY_ENABLED=true
 AGENTIC_EDGE_POLICY_FAMILY=residual20-volbeta
+# Scope-aware eligibility (Pass 72, 2026-08-12): residual20-volbeta ranks PERPS ONLY, so a spot
+# symbol is never scored — yet the payload reported sideEligibility {long:false, short:false},
+# encoding "never evaluated" identically to "evaluated and excluded". Measured: spot entry rate
+# 0.40% (2/496) with the block present vs 4.38% (12/274) before it existed, while perp rose
+# 4.76% -> 6.54% across the same transition. When true, an unevaluated symbol reports INACTIVE and
+# the block is omitted (a state the system prompt already documents — no prompt change).
+# SHIPPED FLAG-OFF: false is byte-identical to pre-knob. The enable is a separate config-only
+# commit with its own review, DATED >=2026-08-18 — it must not land inside L1's stop_reason read
+# window (deadline 2026-08-17). See research/loop/watches.md WATCH-V4-30.
+AGENTIC_EDGE_POLICY_SCOPE_AWARE=false
 # Plan-authoritative exits (2026-07-30): once a plan is declared at entry its declared
 # stopLossPct/takeProfitPct/maxHoldBars own the exit, and a later mid-trade 'close' from the model
 # is dropped. Reproduces the exit-attribution study's Arm 2 (+29.7 bps/trip over the discretionary

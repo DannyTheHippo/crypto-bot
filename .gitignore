@@ -10,6 +10,9 @@ coverage
 !.env.app
 *.tsbuildinfo
 .claude/settings.local.json
+# Per-agent project memory and per-slice detection cache are working state for future dispatches.
+.claude/agent-memory/
+.claude/detection-cache.json
 .serena/
 .DS_Store
 # Diagnostic OHLCV caches (~40MB, reproducible via test/backtest/fetch-data.mjs; exact fetch

@@ -1,5 +1,5 @@
 {
-  "stack": "_base",
+  "stack": "nest",
   "packageManager": "pnpm",
   "runner": "vitest",
   "formatter": "prettier",
@@ -8,76 +8,188 @@
   "languages": ["node"],
   "primaryLanguage": "node",
   "frameworkVersions": {
-    "nestjs": "11.1.x",
-    "typescript": "5.8.x",
-    "vitest": "4.1.x",
-    "drizzle-orm": "0.45.x",
-    "ccxt": "4.5.58"
+    "nestjs": "^11.1.26",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.8",
+    "drizzle-orm": "0.45.2",
+    "drizzle-kit": "0.31.10",
+    "pg": "8.21.0",
+    "ccxt": "4.5.58",
+    "zod": "^4.4.3",
+    "class-validator": "^0.15.1",
+    "eslint": "^9.28.0",
+    "prettier": "^3.5.3"
   },
   "scripts": {
     "build": "pnpm build",
     "lint": "pnpm lint",
+    "lint:md": "pnpm lint:md",
     "typecheck": "pnpm typecheck",
     "format": "pnpm format:check",
-    "test": "vitest run test/features test/domain test/ports test/livegate",
-    "test:livegate": "vitest run test/livegate",
-    "coverage": "vitest run --coverage test/features test/domain test/ports test/livegate",
-    "checks": "pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck && pnpm test"
+    "format:write": "pnpm format",
+    "test": "pnpm test",
+    "test:livegate": "pnpm test:livegate",
+    "test:paper": "pnpm test:paper",
+    "test:cov": "pnpm test:cov",
+    "test:db": "pnpm test:db",
+    "checks": "pnpm checks",
+    "db:check": "pnpm exec drizzle-kit check",
+    "migrate": "pnpm migrate",
+    "start:dev": "pnpm start:dev"
   },
   "agentDefaults": {
     "model": "opus",
     "effort": "xhigh"
   },
+  "autonomy": "standing",
+  "authorizedWrites": {
+    "commit": true,
+    "push": false,
+    "deploy": "docker-local"
+  },
+  "pathAlias": "/Users/danielhendrich/.claude/aliases/crypto-bot",
   "meta": {
-    "projectSize": 116013,
+    "projectSize": 175308,
+    "projectSizeScope": "src, test, scripts (*.ts|*.js|*.mjs, excluding *.generated.ts); the earlier value 116013 had no recorded scope",
     "agentDefaultsBasis": "loc-heuristic",
+    "agentDefaultsUserDecision": "model: opus (2026-09-03 refresh) — agrees with the heuristic; effort xhigh preserved",
     "monorepo": false,
     "framework": "nestjs",
-    "testScope": ["test/features", "test/domain", "test/ports", "test/livegate"]
+    "typescript": {
+      "strict": true,
+      "module": "CommonJS",
+      "target": "ES2023",
+      "decorators": true,
+      "pathAliases": {}
+    },
+    "testScope": ["test/features", "test/domain", "test/ports", "test/livegate"],
+    "coverageThresholds": {
+      "global": { "lines": 90, "branches": 85, "functions": 90, "statements": 90 },
+      "moneyPaths100": [
+        "src/domain/trading/risk/**",
+        "src/features/trading/risk/**",
+        "src/domain/trading/oms/**",
+        "src/domain/trading/mode/**",
+        "src/features/trading/execution/**",
+        "src/features/trading/mode-control/**"
+      ]
+    },
+    "ci": {
+      "provider": "github-actions",
+      "workflows": [".github/workflows/ci.yml", ".github/workflows/nightly.yml"],
+      "gate": [
+        "pnpm exec drizzle-kit check",
+        "pnpm build",
+        "pnpm lint",
+        "pnpm typecheck",
+        "pnpm format:check",
+        "pnpm lint:md",
+        "pnpm test",
+        "pnpm eval:agentic",
+        "pnpm test:paper",
+        "pnpm test:cov",
+        "pnpm test:db"
+      ]
+    },
+    "preCommitHook": ".husky/pre-commit: format:check + lint:md + lint + typecheck",
+    "deploy": {
+      "kind": "docker-local",
+      "composeFile": "docker-compose.yml",
+      "composeServices": ["app", "postgres", "prometheus", "grafana"],
+      "deployCommand": "docker compose up -d --build app",
+      "appPort": 3100,
+      "healthPath": "/health/live",
+      "provenanceNote": "GIT_SHA build arg stamps the build_info metric's git_sha label; when omitted the image reports 'unknown' and the deploy still succeeds"
+    },
+    "stackScores": {
+      "nest": 7,
+      "mean": 0,
+      "mern": 0,
+      "python": 0,
+      "_base": 0
+    },
+    "stackScoreNotes": "nest: @nestjs/core +3, nest-cli.json +2, src/ +1, test/ +1. mean vetoed: requiredDependencies @angular/core absent.",
+    "refresh": {
+      "previousStack": "_base",
+      "previousDiscoveredAt": "2026-07-25T07:34:00.000Z",
+      "commitsSincePrevious": 209,
+      "detectionASignalsChanged": ["package.json", "vitest.config.ts", "eslint.config.mjs", "Dockerfile", "docker-compose.yml", ".github/workflows/ci.yml"],
+      "detectionBResampled": "all categories (every recorded sample file changed since previous discovery)"
+    }
   },
-  "discoveredAt": "2026-07-25T07:34:00.000Z",
+  "discoveredAt": "2026-09-03T15:47:37Z",
   "discovery": {
     "sampleSize": 8,
     "samples": [
       {
         "category": "nestjs-module",
         "file": "src/features/strategy/agentic/agentic-strategy.module.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "controller",
+        "file": "src/features/trading/mode-control/arming.controller.ts",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "dto",
+        "file": "src/features/trading/mode-control/dtos/request/arm-request.request.dto.ts",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "port",
         "file": "src/ports/strategy/agentic-strategy.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "domain",
         "file": "src/domain/trading/risk/evaluate.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "repository",
         "file": "src/database/repositories/trading/order.repository.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "schema",
+        "file": "src/database/schemas/trading/custom-types.ts",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "feature-test",
         "file": "test/features/trading/risk/evaluate.spec.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "domain-test",
         "file": "test/domain/trading/round-trips.spec.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "port-test",
         "file": "test/ports/common/clock.spec.ts",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       },
       {
         "category": "eslint-boundaries",
         "file": "eslint.config.mjs",
-        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "test-config",
+        "file": "vitest.config.ts",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "ci",
+        "file": ".github/workflows/ci.yml",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
+      },
+      {
+        "category": "container",
+        "file": "docker-compose.yml",
+        "lastSampledAt": "2026-09-03T15:47:37Z"
       }
     ]
   }

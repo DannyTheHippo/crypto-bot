@@ -128,6 +128,10 @@ Domain/risk tests use exact money strings and branded id mint helpers.
 - **Research:** `research/loop/STATUS.md` is the loop's entry point (charter/verdicts/watches
   alongside it); scorecards/studies committed;
   candidates ephemeral.
+- **Stack template:** `nest` (`project-discovery.json.stack`). Path-scoped rules in
+  `.claude/rules/` (`nestjs.md`, `drizzle-postgres.md`, `typescript-general.md`) load on matching
+  edits; `.claude/contexts/` files route by keyword via `context-manifest.json`. The template's
+  Jest and Mongoose assets were not copied — this project is Vitest + Drizzle.
 
 ## Validation
 
@@ -137,10 +141,27 @@ Run before any completion claim:
 pnpm format:check && pnpm lint && pnpm typecheck && pnpm test
 ```
 
-Also required per root hard rules: `pnpm build` must be green. Shortcut:
+Also required per root hard rules: `pnpm build` must be green. CI additionally runs
+`pnpm exec drizzle-kit check` (schema/migration consistency) before build — run it after any
+schema or migration change. Shortcut:
 
 ```bash
-pnpm checks   # format:check + lint:md + lint + typecheck + test
+pnpm checks   # format:check + lint:md + lint + typecheck + test:cov
 ```
 
 Research scripts (`pnpm backtest`, `pnpm eval:*`, `pnpm loop:*`) are off the production gate.
+
+## Standing instructions (2026-09-03)
+
+Source: a transcript-mining pass over the owner's own messages, recorded by `/init --refresh`.
+Autonomy is `standing`; `project-discovery.json.authorizedWrites` = commit yes, push no, deploy
+`docker-local`.
+
+1. Run and verify the app on the local docker stack (`docker compose`; services `app`, `postgres`,
+   `prometheus`, `grafana`; app on port 3100, liveness at `/health/live`). That is how the owner
+   runs it — not host `pnpm start`.
+2. After a green validation gate (§ Validation above), commit locally and deploy to the local docker
+   stack (`docker compose up -d --build app`) without asking — standing authorization. Never a
+   remote or live deploy, never `git push`. This deploys the paper-mode stack only: root
+   `CLAUDE.md` rule 3 (paper default, four live gates, arming ceremony) is untouched by this
+   authorization; it never arms live.

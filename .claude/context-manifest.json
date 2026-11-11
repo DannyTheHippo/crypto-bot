@@ -2,36 +2,12 @@
   "version": 1,
   "mappings": [
     {
-      "pattern": "controller|service|module|nestjs|dto|guard|interceptor|inject|@Module",
-      "file": "contexts/nestjs-features.md"
+      "pattern": "controller|service|module|nestjs|api|endpoint|route|dto|guard|interceptor",
+      "file": "contexts/api-conventions.md"
     },
     {
-      "pattern": "domain|pure|evaluate|reducer|reconcile|oms|risk/|signal\\.ts",
-      "file": "contexts/domain-patterns.md"
-    },
-    {
-      "pattern": "port|Symbol\\(|RISK_|EXECUTION_|CLOCK|token",
-      "file": "contexts/ports-di.md"
-    },
-    {
-      "pattern": "boundaries|eslint-plugin-boundaries|hexagonal|composition",
-      "file": "contexts/hexagonal-boundaries.md"
-    },
-    {
-      "pattern": "money|decimal|price\\(|qty\\(|branded|NUMERIC",
-      "file": "contexts/money-safety.md"
-    },
-    {
-      "pattern": "drizzle|repository|schema|postgres|migrate",
+      "pattern": "schema|mongoose|mongo|collection|index|aggregate|populate|drizzle|pg|postgres|migration|sql",
       "file": "contexts/database-conventions.md"
-    },
-    {
-      "pattern": "vitest|spec\\.ts|coverage|test:livegate|toBeCloseTo",
-      "file": "contexts/vitest-testing.md"
-    },
-    {
-      "pattern": "agentic|playbook|llm|promotion|edge.tournament|backtest",
-      "file": "contexts/agentic-strategy.md"
     }
   ],
   "businessContextKeywords": {
